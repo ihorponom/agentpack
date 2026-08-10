@@ -46,6 +46,10 @@ try {
   const modernResourcesResponse = await client.request("resources/list", { _meta: modernMeta });
   assertModernCachePolicy(modernResourcesResponse, "resources/list");
 
+  const modernResourceTemplatesResponse = await client.request("resources/templates/list", { _meta: modernMeta });
+  assertEqual(modernResourceTemplatesResponse.result?.resourceTemplates?.length, 0, "resources/templates/list returns no resource templates");
+  assertModernCachePolicy(modernResourceTemplatesResponse, "resources/templates/list");
+
   const modernResourceResponse = await client.request("resources/read", {
     _meta: modernMeta,
     uri: "agentpack://resume/latest"

@@ -62,6 +62,7 @@ const MODERN_CACHEABLE_METHODS = new Set([
   "tools/list",
   "prompts/list",
   "resources/list",
+  "resources/templates/list",
   "resources/read"
 ]);
 
@@ -729,6 +730,10 @@ function route(root: string, method: string | undefined, params: Record<string, 
         }
       ]
     };
+  }
+
+  if (method === "resources/templates/list") {
+    return { resourceTemplates: [] };
   }
 
   if (method === "resources/read") {

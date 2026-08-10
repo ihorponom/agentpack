@@ -3930,6 +3930,17 @@ test("serves MCP JSON-RPC tools over newline-delimited stdio", async () => {
   assert.equal(tools.result.ttlMs, undefined, "legacy tool responses must not gain modern cache fields");
   assert.equal(tools.result.cacheScope, undefined, "legacy tool responses must not gain modern cache fields");
 
+  const legacyResourceTemplates = await mcp.send({
+    jsonrpc: "2.0",
+    id: 500,
+    method: "resources/templates/list",
+    params: {}
+  });
+  assert.deepEqual(legacyResourceTemplates.result.resourceTemplates, []);
+  assert.equal(legacyResourceTemplates.result.resultType, undefined, "legacy resource-template responses must not gain modern envelope fields");
+  assert.equal(legacyResourceTemplates.result.ttlMs, undefined, "legacy resource-template responses must not gain modern cache fields");
+  assert.equal(legacyResourceTemplates.result.cacheScope, undefined, "legacy resource-template responses must not gain modern cache fields");
+
   const modernMeta = {
     "io.modelcontextprotocol/protocolVersion": "2026-07-28",
     "io.modelcontextprotocol/clientInfo": { name: "agentpack-test", version: "1.0.0" },
@@ -3962,7 +3973,8 @@ test("serves MCP JSON-RPC tools over newline-delimited stdio", async () => {
   for (const [id, method, params] of [
     [205, "prompts/list", {}],
     [206, "resources/list", {}],
-    [207, "resources/read", { uri: "agentpack://resume/latest" }]
+    [207, "resources/templates/list", {}],
+    [208, "resources/read", { uri: "agentpack://resume/latest" }]
   ] as const) {
     const response = await mcp.send({
       jsonrpc: "2.0",
@@ -3973,6 +3985,9 @@ test("serves MCP JSON-RPC tools over newline-delimited stdio", async () => {
     assert.equal(response.result.resultType, "complete", `${method} returns a modern complete result`);
     assert.equal(response.result.ttlMs, 0, `${method} uses a conservative cache TTL`);
     assert.equal(response.result.cacheScope, "private", `${method} uses a private cache scope`);
+    if (method === "resources/templates/list") {
+      assert.deepEqual(response.result.resourceTemplates, []);
+    }
   }
 
   const modernCall = await mcp.send({
