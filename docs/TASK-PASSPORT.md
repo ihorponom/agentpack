@@ -8,6 +8,10 @@ It captures the reviewed state a future agent needs in order to continue the cur
 
 It stores reviewed durable state, not raw agent activity.
 
+Read-only `task audit` can surface bounded ceremony review candidates from retained
+evidence and lifecycle history. These are observable patterns for human judgment,
+never lifecycle gates or proof that a workflow was wasteful.
+
 ## Model
 
 Default rule:

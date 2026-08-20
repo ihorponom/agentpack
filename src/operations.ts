@@ -1,13 +1,13 @@
-import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, lstatSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { referencedEvidenceIds } from "./core/compact.js";
-import { getFileRecord, normalizePath, resolveRegularFileWithin, sha256File } from "./core/hash.js";
+import { getFileRecord, normalizePath, resolveRegularFileWithin, sha256, sha256File } from "./core/hash.js";
+import { findCeremonyDiagnostics, type CeremonyDiagnostic } from "./core/ledger.js";
 import { getGitInfo } from "./core/git.js";
 import { listTaskIds, readPassport } from "./core/tasks.js";
 import {
   appendEvent,
   getPackPath,
-  listCheckpoints,
   PACK_DIR_MODE,
   PACK_FILE_MODE,
   readEvents,
@@ -18,6 +18,9 @@ import {
 import { createId } from "./core/ids.js";
 import { redactForRoot } from "./core/redaction.js";
 import type { AgentpackEvent, SourceRecord, TaskStatus } from "./core/types.js";
+
+const CEREMONY_SCAN_LIMIT = 30;
+const CEREMONY_FILE_LIMIT_BYTES = 256 * 1024;
 
 interface SourceRecordOptions {
   summary?: string;
@@ -75,6 +78,8 @@ export interface LedgerStatus {
     changed: number;
     missing: number;
   };
+  ceremonyDiagnostics: CeremonyDiagnostic[];
+  warnings: string[];
 }
 
 export function addSourceRecord(root: string, filePath: string, options: SourceRecordOptions = {}): SourceRecord {
@@ -313,11 +318,12 @@ export function replayEvents(root: string, limit = 50): string {
 }
 
 export function getLedgerStatus(root: string): LedgerStatus {
-  const events = readEvents(root);
+  const eventRead = readGlobalEventsBestEffort(root);
+  const events = eventRead.events;
   const evidenceEvents = events.filter((event) => event.type === "evidence");
   const referencedEvidence = referencedEvidenceIds(root, events);
   const sourceCounts = countSourceStatuses(getSourceStatuses(root));
-  const checkpoints = listCheckpoints(root);
+  const checkpoints = listSafeCheckpointIds(root);
   const evidenceStats = directoryStats(getPackPath(root, "evidence"));
   const checkpointStats = directoryStats(getPackPath(root, "checkpoints"));
   const exportStats = directoryStats(getPackPath(root, "exports"));
@@ -345,8 +351,79 @@ export function getLedgerStatus(root: string): LedgerStatus {
       files: exportStats.files,
       bytes: exportStats.bytes
     },
-    sources: sourceCounts
+    sources: sourceCounts,
+    ceremonyDiagnostics: getCeremonyDiagnostics(root, events),
+    warnings: eventRead.malformedLines > 0
+      ? [`Skipped ${eventRead.malformedLines} malformed global event line(s).`]
+      : []
   };
+}
+
+export function getCeremonyDiagnostics(root: string, events = readRecentGlobalEvents(root)): CeremonyDiagnostic[] {
+  const taskIds = listSafeTaskIds(root).slice(-CEREMONY_SCAN_LIMIT);
+  const passports = taskIds.flatMap((taskId) => {
+    try {
+      const passportPath = path.join("tasks", taskId, "passport.json");
+      readBoundedPackFile(root, passportPath, "ceremony task passport");
+      return [readPassport(root, taskId)];
+    } catch {
+      return [];
+    }
+  });
+  const verificationTransitions = passports.map((passport) => ({
+    taskId: passport.id,
+    statuses: safeReadTaskEvents(root, passport.id)
+      .filter((event) => event.type === "task-verify" && typeof event.verificationStatus === "string")
+      .map((event) => String(event.verificationStatus))
+  }));
+  const evidence = events.filter((event) => event.type === "evidence").slice(-CEREMONY_SCAN_LIMIT).flatMap((event) => {
+    if (typeof event.id !== "string" || typeof event.path !== "string") return [];
+    try {
+      const normalizedPath = normalizePath(event.path);
+      if (!normalizedPath.startsWith("evidence/")) return [];
+      const content = readBoundedPackFile(root, normalizedPath, "ceremony evidence file");
+      return [{ id: event.id, fingerprint: sha256(JSON.stringify([event.kind || "", event.command || "", event.exitCode ?? null, sha256(content)])) }];
+    } catch {
+      return [];
+    }
+  });
+  const checkpoints = listSafeCheckpointIds(root).slice(-CEREMONY_SCAN_LIMIT).flatMap((id) => {
+    try {
+      const checkpointRelativePath = path.join("checkpoints", id);
+      const manifest = JSON.parse(readBoundedPackFile(root, path.join(checkpointRelativePath, "checkpoint.json"), "ceremony checkpoint manifest").toString("utf8")) as Record<string, unknown>;
+      let completeFingerprint = true;
+      const stableFiles = ["git-status.txt", "diff.patch"].map((file) => {
+        const relativePath = path.join(checkpointRelativePath, file);
+        if (!existsSync(getPackPath(root, relativePath))) {
+          completeFingerprint = false;
+          return "";
+        }
+        try {
+          return `${file}:${sha256(readBoundedPackFile(root, relativePath, `ceremony checkpoint ${file}`))}`;
+        } catch {
+          completeFingerprint = false;
+          return "";
+        }
+      });
+      const fingerprint = completeFingerprint
+        ? sha256(JSON.stringify({
+            summary: manifest.summary,
+            status: manifest.status,
+            nextActions: manifest.nextActions,
+            git: manifest.git,
+            stableFiles
+          }))
+        : "";
+      const resumeRelativePath = path.join(checkpointRelativePath, "resume.md");
+      const resume = existsSync(getPackPath(root, resumeRelativePath))
+        ? readBoundedPackFile(root, resumeRelativePath, "ceremony checkpoint resume").toString("utf8")
+        : "";
+      return [{ id, fingerprint, staleSourcePaths: staleSourcePathsFromResume(resume) }];
+    } catch {
+      return [];
+    }
+  });
+  return findCeremonyDiagnostics({ passports, verificationTransitions, evidence, checkpoints });
 }
 
 export function formatLedgerStatus(root: string): string {
@@ -361,9 +438,141 @@ export function formatLedgerStatus(root: string): string {
     `Sources: ${status.sources.recorded} recorded, ${status.sources.unchanged} unchanged, ${status.sources.changed} changed, ${status.sources.missing} missing`,
     status.evidence.oldest ? `Oldest evidence: ${status.evidence.oldest}` : "Oldest evidence: none",
     status.checkpoints.oldest ? `Oldest checkpoint: ${status.checkpoints.oldest}` : "Oldest checkpoint: none",
+    ...(status.warnings.length ? ["", "Warnings:", ...status.warnings.map((warning) => `- ${warning}`)] : []),
+    ...(status.ceremonyDiagnostics.length ? ["", "Ceremony review candidates:", ...formatCeremonyDiagnostics(status.ceremonyDiagnostics)] : []),
     "",
     "No cleanup was performed."
   ].join("\n");
+}
+
+export function formatCeremonyDiagnostics(diagnostics: CeremonyDiagnostic[]): string[] {
+  return diagnostics.flatMap((diagnostic) => [
+    `- [review candidate] ${diagnostic.message}`,
+    ...diagnostic.samples.map((sample) => `  - ${sample}`)
+  ]);
+}
+
+function readGlobalEventsBestEffort(root: string): { events: AgentpackEvent[]; malformedLines: number } {
+  try {
+    return parseEventLines(readBoundedFileWithin(getPackPath(root), "events.jsonl", "ledger event log", Number.POSITIVE_INFINITY).toString("utf8"));
+  } catch {
+    return { events: [], malformedLines: 0 };
+  }
+}
+
+function readRecentGlobalEvents(root: string): AgentpackEvent[] {
+  try {
+    const eventPath = resolveRegularFileWithin(getPackPath(root), "events.jsonl", "ceremony event log");
+    return parseEventLines(readFileTail(eventPath, CEREMONY_FILE_LIMIT_BYTES)).events;
+  } catch {
+    return [];
+  }
+}
+
+function safeReadTaskEvents(root: string, taskId: string): AgentpackEvent[] {
+  try {
+    const content = readBoundedPackFile(root, path.join("tasks", taskId, "events.jsonl"), "ceremony task event log").toString("utf8");
+    return parseEventLines(content).events.slice(-CEREMONY_SCAN_LIMIT);
+  } catch {
+    return [];
+  }
+}
+
+function staleSourcePathsFromResume(resume: string): string[] {
+  const heading = "## Source Cache";
+  const sectionStart = resume.indexOf(heading);
+  if (sectionStart < 0) return [];
+  const remaining = resume.slice(sectionStart + heading.length).replace(/^\r?\n/, "");
+  const nextSection = remaining.search(/^## /m);
+  const section = nextSection >= 0 ? remaining.slice(0, nextSection) : remaining;
+  const paths: string[] = [];
+  const pattern = /^- (.+)\r?\n  - status: (changed|missing)(?:;[^\r\n]*)?$/gm;
+  for (const match of section.matchAll(pattern)) {
+    if (match[1]) paths.push(match[1]);
+  }
+  return paths;
+}
+
+function readBoundedPackFile(root: string, relativePath: string, label: string): Buffer {
+  return readBoundedFileWithin(getPackPath(root), relativePath, label);
+}
+
+function readBoundedFileWithin(root: string, relativePath: string, label: string, limit = CEREMONY_FILE_LIMIT_BYTES): Buffer {
+  const filePath = resolveRegularFileWithin(root, relativePath, label);
+  if (statSync(filePath).size > limit) {
+    throw new Error(`${label} exceeds diagnostic limit`);
+  }
+  return readFileSync(filePath);
+}
+
+function readFileTail(filePath: string, maxBytes: number): string {
+  const size = statSync(filePath).size;
+  const length = Math.min(size, maxBytes);
+  const offset = size - length;
+  const buffer = Buffer.alloc(length);
+  const descriptor = openSync(filePath, "r");
+  try {
+    readSync(descriptor, buffer, 0, length, offset);
+  } finally {
+    closeSync(descriptor);
+  }
+  const content = buffer.toString("utf8");
+  if (offset === 0) return content;
+  const firstNewline = content.indexOf("\n");
+  return firstNewline >= 0 ? content.slice(firstNewline + 1) : "";
+}
+
+function parseEventLines(content: string): { events: AgentpackEvent[]; malformedLines: number } {
+  const events: AgentpackEvent[] = [];
+  let malformedLines = 0;
+  for (const line of content.split("\n")) {
+    if (!line.trim()) continue;
+    try {
+      const value = JSON.parse(line) as unknown;
+      if (!isAgentpackEvent(value)) {
+        malformedLines += 1;
+        continue;
+      }
+      events.push(value);
+    } catch {
+      malformedLines += 1;
+    }
+  }
+  return { events, malformedLines };
+}
+
+function listSafeCheckpointIds(root: string): string[] {
+  return listSafePackDirectories(root, "checkpoints");
+}
+
+function listSafeTaskIds(root: string): string[] {
+  return listSafePackDirectories(root, "tasks")
+    .filter((taskId) => existsSync(getPackPath(root, "tasks", taskId, "passport.json")));
+}
+
+function listSafePackDirectories(root: string, directory: string): string[] {
+  const directoryPath = getPackPath(root, directory);
+  try {
+    const rootStat = lstatSync(directoryPath);
+    if (rootStat.isSymbolicLink() || !rootStat.isDirectory()) return [];
+    return readdirSync(directoryPath, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory() && !entry.isSymbolicLink())
+      .map((entry) => entry.name)
+      .sort();
+  } catch {
+    return [];
+  }
+}
+
+function isAgentpackEvent(value: unknown): value is AgentpackEvent {
+  return Boolean(
+    value
+    && typeof value === "object"
+    && !Array.isArray(value)
+    && typeof (value as Record<string, unknown>).id === "string"
+    && typeof (value as Record<string, unknown>).ts === "string"
+    && typeof (value as Record<string, unknown>).type === "string"
+  );
 }
 
 function readEvidenceContent(root: string, options: EvidenceOptions): string {
@@ -414,6 +623,10 @@ function countSourceStatuses(statuses: SourceStatus[]): LedgerStatus["sources"] 
 
 function directoryStats(dirPath: string): { files: number; bytes: number } {
   if (!existsSync(dirPath)) {
+    return { files: 0, bytes: 0 };
+  }
+  const rootStat = lstatSync(dirPath);
+  if (rootStat.isSymbolicLink() || !rootStat.isDirectory()) {
     return { files: 0, bytes: 0 };
   }
 

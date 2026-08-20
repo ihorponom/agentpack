@@ -8,6 +8,7 @@ import {
   readdirSync,
   readFileSync,
   realpathSync,
+  rmdirSync,
   statSync,
   symlinkSync,
   unlinkSync,
@@ -20,6 +21,7 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { resolveMcpStartDir } from "../src/cli/index.js";
 import { buildDoctorReport } from "../src/core/doctor.js";
+import { findCeremonyDiagnostics } from "../src/core/ledger.js";
 import { getGitInfo } from "../src/core/git.js";
 import { sha256 } from "../src/core/hash.js";
 import { buildResume } from "../src/core/resume.js";
@@ -78,6 +80,181 @@ test("--version and --help run without an initialized pack", () => {
   assert.match(initHelp, /agentpack init/);
   assert.match(initHelp, /Initialize \.agentpack\//);
   assert.equal(existsSync(path.join(dir, ".agentpack")), false);
+});
+
+test("ceremony diagnostics stay conservative and bounded", () => {
+  const passport = (id: string, objective: string, createdAt: string, writeScope = ["src"]): any => ({ id, objective, createdAt, writeScope, status: "completed", closedAt: new Date(Date.parse(createdAt) + 60_000).toISOString() });
+  const quiet = findCeremonyDiagnostics({
+    passports: [passport("task_one", "One coherent task", "2026-01-01T00:00:00.000Z")],
+    verificationTransitions: [{ taskId: "task_one", statuses: ["passed", "pending"] }],
+    evidence: [],
+    checkpoints: []
+  });
+  assert.deepEqual(quiet, [], "one remediation reset remains quiet");
+
+  const diagnostics = findCeremonyDiagnostics({
+    passports: [
+      passport("task_one", "Same objective", "2026-01-01T00:00:00.000Z"),
+      passport("task_two", "Same objective", "2026-01-01T01:00:00.000Z"),
+      passport("task_three", "Same objective", "2026-01-01T02:00:00.000Z"),
+      passport("task_phase", "Different coherent phase", "2026-01-01T02:00:00.000Z")
+    ],
+    verificationTransitions: [{ taskId: "task_one", statuses: ["passed", "pending", "passed", "unknown"] }],
+    evidence: [{ id: "evt_one", fingerprint: "same" }, { id: "evt_two", fingerprint: "same" }, { id: "evt_three", fingerprint: "same" }],
+    checkpoints: [
+      { id: "one", fingerprint: "same", staleSourcePaths: ["src/a.ts"] },
+      { id: "two", fingerprint: "same", staleSourcePaths: ["src/a.ts"] }
+    ]
+  });
+  assert.deepEqual(diagnostics.map((item) => item.signal), [
+    "repeated-verdict-resets",
+    "duplicate-evidence",
+    "duplicate-checkpoints",
+    "repeated-stale-source-warnings",
+    "fragmented-objective"
+  ]);
+  assert.ok(diagnostics.every((item) => item.samples.length <= 3));
+  assert.ok(diagnostics.every((item) => item.message.length <= 240));
+  assert.ok(diagnostics.every((item) => item.samples.every((sample) => sample.length <= 240)));
+});
+
+test("ceremony diagnostics remain additive across CLI, MCP, and malformed retained records", async () => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), "agentpack-ceremony-status-test-"));
+  run(dir, ["init"]);
+  run(dir, ["task", "start", "Quiet task", "--write-scope", "src", "--next", "Verify output"]);
+  const audit = JSON.parse(run(dir, ["task", "audit", "--json"]));
+  const ledger = JSON.parse(run(dir, ["ledger", "status", "--json"]));
+  assert.deepEqual(audit.ceremonyDiagnostics, []);
+  assert.deepEqual(ledger.ceremonyDiagnostics, []);
+
+  run(dir, ["evidence", "add", "--kind", "test", "--content", "same output", "--command", "check", "--exitCode", "0"]);
+  run(dir, ["evidence", "add", "--kind", "test", "--content", "same output", "--command", "check", "--exitCode", "0"]);
+  const globalEventsPath = path.join(dir, ".agentpack", "events.jsonl");
+
+  const outsidePath = path.join(path.dirname(dir), `${path.basename(dir)}-outside.txt`);
+  writeFileSync(outsidePath, "outside content", "utf8");
+  const escapingEvidencePath = path.relative(path.join(dir, ".agentpack"), outsidePath);
+  for (let index = 0; index < 3; index += 1) {
+    writeFileSync(globalEventsPath, `${JSON.stringify({
+      id: `ev_outside_${index}`,
+      ts: new Date().toISOString(),
+      type: "evidence",
+      kind: "test",
+      path: escapingEvidencePath,
+      command: "check",
+      exitCode: 0
+    })}\n`, { encoding: "utf8", flag: "a" });
+  }
+
+  mkdirSync(path.join(dir, ".agentpack", "checkpoints", "broken"));
+  mkdirSync(path.join(dir, ".agentpack", "tasks", "task_broken"));
+  writeFileSync(path.join(dir, ".agentpack", "tasks", "task_broken", "passport.json"), "{not json", "utf8");
+  const confinedLedger = JSON.parse(run(dir, ["ledger", "status", "--json"]));
+  assert.doesNotMatch(
+    JSON.stringify(confinedLedger.ceremonyDiagnostics),
+    /duplicate-evidence/,
+    "escaping retained evidence paths are not read or fingerprinted"
+  );
+
+  mkdirSync(path.join(dir, "src"), { recursive: true });
+  writeFileSync(path.join(dir, "src", "a.ts"), "before\n", "utf8");
+  run(dir, ["source", "add", "src/a.ts", "--summary", "Tracked ceremony source"]);
+  writeFileSync(path.join(dir, "src", "a.ts"), "after\n", "utf8");
+  run(dir, ["checkpoint", "-m", "same retained snapshot"]);
+  run(dir, ["checkpoint", "-m", "same retained snapshot"]);
+  const checkpointLedger = JSON.parse(run(dir, ["ledger", "status", "--json"]));
+  const checkpointSignals = checkpointLedger.ceremonyDiagnostics.map((item: any) => item.signal);
+  assert.ok(checkpointSignals.includes("duplicate-checkpoints"), "real equivalent checkpoints are detected");
+  assert.ok(checkpointSignals.includes("repeated-stale-source-warnings"), "real checkpoint resumes expose repeated stale sources");
+
+  writeFileSync(globalEventsPath, "{not json\nnull\n", { encoding: "utf8", flag: "a" });
+  const degradedLedger = JSON.parse(run(dir, ["ledger", "status", "--json"]));
+  assert.equal(degradedLedger.evidence.events, 5, "valid global events survive a malformed retained line");
+  assert.match(degradedLedger.warnings.join("\n"), /Skipped 2 malformed global event line/);
+
+  const currentTask = JSON.parse(run(dir, ["task", "passport"]));
+  const taskEventsPath = path.join(dir, ".agentpack", "tasks", currentTask.id, "events.jsonl");
+  const taskEvent = (id: string, verificationStatus: string) => JSON.stringify({
+    id,
+    ts: new Date().toISOString(),
+    type: "task-verify",
+    verificationStatus
+  });
+  writeFileSync(taskEventsPath, `${taskEvent("evt_one", "passed")}\n${taskEvent("evt_two", "pending")}\n${taskEvent("evt_three", "passed")}\n${taskEvent("evt_four", "unknown")}\n${"x".repeat(256 * 1024)}\n`, "utf8");
+  const boundedLedger = JSON.parse(run(dir, ["ledger", "status", "--json"]));
+  assert.doesNotMatch(
+    JSON.stringify(boundedLedger.ceremonyDiagnostics),
+    /repeated-verdict-resets/,
+    "oversized task history is skipped instead of parsed"
+  );
+  assert.match(run(dir, ["ledger", "status"]), /No cleanup was performed\.\s*$/);
+
+  const symlinkDir = mkdtempSync(path.join(os.tmpdir(), "agentpack-ceremony-symlink-root-test-"));
+  run(symlinkDir, ["init"]);
+  const outsideEvidenceDir = mkdtempSync(path.join(os.tmpdir(), "agentpack-ceremony-outside-evidence-"));
+  writeFileSync(path.join(outsideEvidenceDir, "outside.txt"), "outside content", "utf8");
+  rmdirSync(path.join(symlinkDir, ".agentpack", "evidence"));
+  symlinkSync(outsideEvidenceDir, path.join(symlinkDir, ".agentpack", "evidence"), "dir");
+  const symlinkEventsPath = path.join(symlinkDir, ".agentpack", "events.jsonl");
+  for (let index = 0; index < 3; index += 1) {
+    writeFileSync(symlinkEventsPath, `${JSON.stringify({
+      id: `ev_symlink_${index}`,
+      ts: new Date().toISOString(),
+      type: "evidence",
+      kind: "test",
+      path: "evidence/outside.txt",
+      command: "check",
+      exitCode: 0
+    })}\n`, { encoding: "utf8", flag: "a" });
+  }
+  const symlinkLedger = JSON.parse(run(symlinkDir, ["ledger", "status", "--json"]));
+  assert.equal(symlinkLedger.evidence.files, 0, "a symlinked evidence root is not inventoried outside the pack");
+  assert.doesNotMatch(
+    JSON.stringify(symlinkLedger.ceremonyDiagnostics),
+    /duplicate-evidence/,
+    "a symlinked evidence root is not trusted as a confinement boundary"
+  );
+
+  const sourceTasksDir = mkdtempSync(path.join(os.tmpdir(), "agentpack-ceremony-source-tasks-"));
+  run(sourceTasksDir, ["init"]);
+  run(sourceTasksDir, ["task", "start", "External task must stay external", "--write-scope", "src"]);
+  const symlinkTasksDir = mkdtempSync(path.join(os.tmpdir(), "agentpack-ceremony-symlink-tasks-"));
+  run(symlinkTasksDir, ["init"]);
+  symlinkSync(path.join(sourceTasksDir, ".agentpack", "tasks"), path.join(symlinkTasksDir, ".agentpack", "tasks"), "dir");
+  const symlinkTaskLedger = JSON.parse(run(symlinkTasksDir, ["ledger", "status", "--json"]));
+  assert.equal(symlinkTaskLedger.tasks.active, 0, "a symlinked task root is not inventoried outside the pack");
+  const symlinkTaskAudit = JSON.parse(run(symlinkTasksDir, ["task", "audit", "--json"]));
+  assert.equal(symlinkTaskAudit.passport, null);
+  assert.doesNotMatch(JSON.stringify(symlinkTaskAudit), /External task must stay external/);
+
+  const compactedDir = mkdtempSync(path.join(os.tmpdir(), "agentpack-ceremony-compacted-test-"));
+  run(compactedDir, ["init"]);
+  const misleadingNextAction = "not-a-source\n  - status: changed";
+  run(compactedDir, ["checkpoint", "-m", "same compacted snapshot", "--next", misleadingNextAction]);
+  run(compactedDir, ["checkpoint", "-m", "same compacted snapshot", "--next", misleadingNextAction]);
+  const compactedCheckpointIds = readdirSync(path.join(compactedDir, ".agentpack", "checkpoints")).sort();
+  writeFileSync(path.join(compactedDir, ".agentpack", "checkpoints", compactedCheckpointIds[0] || "", "diff.patch"), "first diff\n", "utf8");
+  writeFileSync(path.join(compactedDir, ".agentpack", "checkpoints", compactedCheckpointIds[1] || "", "diff.patch"), "second diff\n", "utf8");
+  const beforeCompact = JSON.parse(run(compactedDir, ["ledger", "status", "--json"]));
+  assert.doesNotMatch(JSON.stringify(beforeCompact.ceremonyDiagnostics), /repeated-stale-source-warnings/);
+  assert.doesNotMatch(JSON.stringify(beforeCompact.ceremonyDiagnostics), /duplicate-checkpoints/);
+  run(compactedDir, ["ledger", "compact", "--write", "--keep-checkpoints", "0", "--evidence-age-days", "0"]);
+  const afterCompact = JSON.parse(run(compactedDir, ["ledger", "status", "--json"]));
+  assert.doesNotMatch(
+    JSON.stringify(afterCompact.ceremonyDiagnostics),
+    /duplicate-checkpoints/,
+    "compacted checkpoints without comparison payloads are not treated as exact duplicates"
+  );
+
+  const mcp = createMcpHarness(dir);
+  const response = await mcp.send({
+    jsonrpc: "2.0",
+    id: 1,
+    method: "tools/call",
+    params: { name: "task_audit", arguments: { json: true } }
+  });
+  const mcpAudit = JSON.parse(response.result.content[0].text);
+  assert.ok(Array.isArray(mcpAudit.ceremonyDiagnostics));
 });
 
 test("directional-integrity benchmark covers critical handoff boundaries", { timeout: 30_000 }, () => {

@@ -1,7 +1,7 @@
-import { existsSync, mkdirSync, readFileSync, realpathSync, readdirSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, readdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { getGitInfo, listDirtyFiles } from "./git.js";
-import { normalizePath } from "./hash.js";
+import { normalizePath, resolveRegularFileWithin } from "./hash.js";
 import { createId } from "./ids.js";
 import {
   getPackPath,
@@ -20,6 +20,7 @@ import type {
   TaskStatus,
   TaskVerification
 } from "./types.js";
+import type { CeremonyDiagnostic } from "./ledger.js";
 
 const TASK_STATUSES = new Set<TaskStatus>(["active", "parked", "blocked", "verifying", "completed", "abandoned"]);
 
@@ -82,6 +83,7 @@ export interface TaskAuditIssue {
 export interface TaskAuditReport {
   passport: TaskPassport | null;
   issues: TaskAuditIssue[];
+  ceremonyDiagnostics: CeremonyDiagnostic[];
 }
 
 const CLOSED_STATUSES = new Set<TaskStatus>(["completed", "abandoned"]);
@@ -240,7 +242,15 @@ export function readPassport(root: string, taskId: string): TaskPassport {
   if (!/^task_[A-Za-z0-9][A-Za-z0-9._-]*$/.test(taskId)) {
     throw new Error(`Invalid task id: ${taskId || "(empty)"}`);
   }
-  const value = readJson<unknown>(passportPath(root, taskId), null);
+  if (!existsSync(passportPath(root, taskId))) {
+    throw new Error(`Task passport not found: ${taskId}`);
+  }
+  const safePassportPath = resolveRegularFileWithin(
+    getPackPath(root),
+    path.join("tasks", taskId, "passport.json"),
+    "task passport"
+  );
+  const value = readJson<unknown>(safePassportPath, null);
   if (!value) {
     throw new Error(`Task passport not found: ${taskId}`);
   }
@@ -477,7 +487,7 @@ export function finalizeAdvisories(root: string, passport: TaskPassport): string
   return advisories;
 }
 
-export function auditCurrentTask(root: string, sourceStatuses: TaskAuditSourceStatus[] = []): TaskAuditReport {
+export function auditCurrentTask(root: string, sourceStatuses: TaskAuditSourceStatus[] = [], ceremonyDiagnostics: CeremonyDiagnostic[] = []): TaskAuditReport {
   const issues: TaskAuditIssue[] = [];
   let passport: TaskPassport | null;
 
@@ -488,7 +498,8 @@ export function auditCurrentTask(root: string, sourceStatuses: TaskAuditSourceSt
       passport: null,
       issues: [
         { level: "warn", message: `Cannot read current task passport: ${error instanceof Error ? error.message : String(error)}` }
-      ]
+      ],
+      ceremonyDiagnostics
     };
   }
 
@@ -497,7 +508,8 @@ export function auditCurrentTask(root: string, sourceStatuses: TaskAuditSourceSt
       passport,
       issues: [
         { level: "warn", message: "No current task passport. Run `agentpack task start <title>` before relying on task-scoped handoff." }
-      ]
+      ],
+      ceremonyDiagnostics
     };
   }
 
@@ -551,7 +563,7 @@ export function auditCurrentTask(root: string, sourceStatuses: TaskAuditSourceSt
     issues.push({ level: "ok", message: "No action-required task warnings." });
   }
 
-  return { passport, issues };
+  return { passport, issues, ceremonyDiagnostics };
 }
 
 export function formatTaskAuditReport(report: TaskAuditReport): string {
@@ -566,6 +578,12 @@ export function formatTaskAuditReport(report: TaskAuditReport): string {
           "Metadata",
           ...metadataIssues.map((issue) => `[${issue.level}] ${issue.message}`)
         ]
+      : []),
+    ...(report.ceremonyDiagnostics.length
+      ? ["", "Ceremony review candidates", ...report.ceremonyDiagnostics.flatMap((diagnostic) => [
+          `[review candidate] ${diagnostic.message}`,
+          ...diagnostic.samples.map((sample) => `- ${sample}`)
+        ])]
       : [])
   ].join("\n");
 }
@@ -835,9 +853,13 @@ export function listTaskIds(root: string): string[] {
   if (!existsSync(tasksPath)) {
     return [];
   }
+  const tasksStat = lstatSync(tasksPath);
+  if (tasksStat.isSymbolicLink() || !tasksStat.isDirectory()) {
+    return [];
+  }
 
   return readdirSync(tasksPath, { withFileTypes: true })
-    .filter((entry) => entry.isDirectory())
+    .filter((entry) => entry.isDirectory() && !entry.isSymbolicLink())
     .filter((entry) => existsSync(passportPath(root, entry.name)))
     .map((entry) => entry.name);
 }
@@ -906,7 +928,8 @@ function readCurrentTaskId(root: string): string | null {
   if (!existsSync(filePath)) {
     return null;
   }
-  return readFileSync(filePath, "utf8").trim() || null;
+  const safeCurrentPath = resolveRegularFileWithin(getPackPath(root), path.join("tasks", "current"), "current task pointer");
+  return readFileSync(safeCurrentPath, "utf8").trim() || null;
 }
 
 function writeCurrentTaskId(root: string, taskId: string): void {

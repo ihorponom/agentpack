@@ -80,7 +80,7 @@ next actions are used only when no current passport exists.
 
 `source_status` accepts `changed`, `missing`, and `json` booleans. Pass `{ "changed": true }`, `{ "missing": true }`, or both to focus MCP output on stale source-cache records instead of dumping every unchanged source conclusion. This is the MCP-side equivalent of following `agentpack doctor` source-cache warnings with `agentpack source status --changed --missing`.
 
-`task_audit` checks the current Task Passport for continuity risks: missing or unreadable passport state, closed current task, missing next actions, open verification, missing write scope, branch/head drift, worktree mismatch, and source-cache metadata drift. Pass `{ "json": true }` for structured output.
+`task_audit` checks the current Task Passport for continuity risks: missing or unreadable passport state, closed current task, missing next actions, open verification, missing write scope, branch/head drift, worktree mismatch, and source-cache metadata drift. Its additive bounded ceremony diagnostics are review candidates only; they never block or mutate state. Pass `{ "json": true }` for structured output.
 
 `release_preflight` prints the same read-only release-prep report as
 `agentpack release preflight`. It checks local release metadata and Trusted

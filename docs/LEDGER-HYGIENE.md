@@ -19,6 +19,8 @@ Use:
 agentpack ledger status
 ```
 
+Append `--json` for the same additive inventory as structured data.
+
 The command prints a read-only inventory:
 
 - task counts by lifecycle status
@@ -48,6 +50,18 @@ Safe first steps are diagnostic:
 
 These reports do not imply the data is bad. They give future agents and humans a
 map of where ledger weight is accumulating.
+
+## Ceremony Review Candidates
+
+`task audit` and `ledger status` may show a small, bounded set of `review candidate`
+diagnostics: repeated final-verdict resets, exact duplicate evidence or checkpoints,
+repeated stale-source warnings retained in checkpoint resumes, or several short tasks
+with the exact same objective and overlapping scope. They never block, mutate, clean,
+or claim that time or defects were saved. A preserved external wait and one ordinary
+verification reset stay quiet by design. To bound status cost, diagnostics inspect only
+the newest 30 tasks, task events, evidence events, and checkpoints, skipping individual
+files over 256 KiB. Malformed global event lines are skipped individually and reported
+as additive status warnings; valid retained events remain visible.
 
 ## What Requires Explicit Review
 

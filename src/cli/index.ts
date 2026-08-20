@@ -67,6 +67,8 @@ import {
   formatSourceStatuses,
   getSourceStatus,
   getSourceStatuses,
+  getCeremonyDiagnostics,
+  getLedgerStatus,
   pruneMissingSourceRecords,
   removeSourceRecord,
   reviewSourceRecord,
@@ -400,10 +402,10 @@ Record, inspect, refresh, and prune durable source conclusions.`;
   }
 
   if (command === "ledger") {
-    return `agentpack ledger status
+    return `agentpack ledger status [--json]
 agentpack ledger compact [--write] [--purge] [--keep-checkpoints <n>] [--evidence-age-days <n>]
 
-Print a read-only ledger hygiene inventory: task counts, event/evidence/checkpoint/export sizes, source-cache status counts, and referenced evidence counts.
+Print a read-only ledger hygiene inventory: task counts, event/evidence/checkpoint/export sizes, source-cache status counts, referenced evidence counts, and bounded advisory review candidates.
 compact slims old checkpoints (keeps checkpoint.json, moves diff/status/resume of snapshots beyond the newest ${DEFAULT_KEEP_CHECKPOINTS}), archives superseded source-cache events from events.jsonl, and archives unreferenced evidence older than ${DEFAULT_EVIDENCE_AGE_DAYS} days.
 Decisions, dead ends, referenced evidence, and checkpoint metadata always stay. Dry-run by default; --write moves data into .agentpack/archive/; --purge deletes instead of archiving.
 No cleanup is performed.`;
@@ -500,7 +502,7 @@ Inspection and coordination:
   agentpack task list [--scope <path>] [--status <status>] [--open]
   agentpack task passport
   agentpack task switch <id>
-  agentpack task audit
+  agentpack task audit [--json]
   agentpack task gate [--file <path> ...] [--staged] [--client claude|codex|cursor] [--json]
   agentpack task park
   agentpack task block --reason <text>
@@ -509,7 +511,7 @@ Inspection and coordination:
 Notes:
   Write scopes are repo-relative paths; . means the repository root.
   task status is the quick current-task view.
-  task audit is the diagnostic continuity check.
+  task audit is the diagnostic continuity check; --json exposes additive structured review candidates.
   task handoff is the compact summary for another chat, client, worktree, or agent.
   task finalize refuses unknown or pending verification by default.
   task finalize --status accepted refuses tasks with remaining next actions unless --force is passed.
@@ -842,8 +844,9 @@ function taskCommand(root: string, rest: string[]): void {
   }
 
   if (subcommand === "audit") {
-    const report = auditCurrentTask(root, getSourceStatuses(root));
-    process.stdout.write(`${formatTaskAuditReport(report)}\n`);
+    const parsed = parseArgs(args);
+    const report = auditCurrentTask(root, getSourceStatuses(root), getCeremonyDiagnostics(root));
+    process.stdout.write(`${parsed.options.json === true ? JSON.stringify(report, null, 2) : formatTaskAuditReport(report)}\n`);
     return;
   }
 
@@ -1063,7 +1066,8 @@ function ledgerCommand(root: string, rest: string[]): void {
   }
 
   if (subcommand === "status") {
-    process.stdout.write(`${formatLedgerStatus(root)}\n`);
+    const parsed = parseArgs(rest.slice(1));
+    process.stdout.write(`${parsed.options.json === true ? JSON.stringify(getLedgerStatus(root), null, 2) : formatLedgerStatus(root)}\n`);
     return;
   }
 

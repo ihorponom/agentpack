@@ -12,7 +12,7 @@ import {
   planTaskBundleImport
 } from "../core/bundles.js";
 import { buildReleasePreflightReport } from "../core/release.js";
-import { addEvidence, addSourceRecord, formatSourceStatuses, getSourceStatuses, replayEvents, type SourceStatusKind } from "../operations.js";
+import { addEvidence, addSourceRecord, formatSourceStatuses, getCeremonyDiagnostics, getSourceStatuses, replayEvents, type SourceStatusKind } from "../operations.js";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import type { Readable, Writable } from "node:stream";
@@ -906,7 +906,7 @@ function callTool(root: string, name: string, args: Record<string, unknown>): un
   }
 
   if (name === "task_audit") {
-    const report = auditCurrentTask(root, getSourceStatuses(root));
+    const report = auditCurrentTask(root, getSourceStatuses(root), getCeremonyDiagnostics(root));
     if (booleanValue(args.json, false)) {
       return toolText(redactForRoot(root, JSON.stringify(report, null, 2)));
     }
