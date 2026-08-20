@@ -35,7 +35,9 @@ import {
   formatCurrentTaskHandoff,
   formatCurrentTaskStatus,
   formatTaskAuditReport,
+  formatTaskFinalizationMessage,
   formatTaskList,
+  formatVerificationUpdateMessage,
   getCurrentPassport,
   listTasks,
   parkCurrentTask,
@@ -867,11 +869,7 @@ function taskCommand(root: string, rest: string[]): void {
       summary: redactForRoot(root, stringOption(parsed.options.summary))
     });
     const { passport } = result;
-    if (!result.changed) {
-      process.stdout.write(`Verification unchanged for task ${passport.id} (${passport.verification.status})\n`);
-      return;
-    }
-    process.stdout.write(`Updated verification for task ${passport.id} (${passport.verification.status})\n`);
+    process.stdout.write(`${formatVerificationUpdateMessage(passport, result.changed)}\n`);
     return;
   }
 
@@ -883,7 +881,7 @@ function taskCommand(root: string, rest: string[]): void {
       summary: redactForRoot(root, stringOption(parsed.options.summary)),
       force: parsed.options.force === true
     });
-    process.stdout.write(`Finalized task ${passport.id} (${passport.verification.status})\n`);
+    process.stdout.write(`${formatTaskFinalizationMessage(passport)}\n`);
     const advisories = finalizeAdvisories(root, passport);
     if (advisories.length > 0) {
       process.stdout.write(`Advisories:\n${advisories.map((advisory) => `- ${advisory}`).join("\n")}\n`);

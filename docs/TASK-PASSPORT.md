@@ -184,8 +184,9 @@ historical so they are not mistaken for active instructions.
 
 The normal human-facing sequence is: start the task, keep status/scope/next actions current, record verification with evidence, print a handoff when another agent or chat may continue, then finalize only after verification is final.
 
-The verification order matters: iterate checks while verification is `pending`
-and fix freely; when no edits remain, commit the in-scope changes and confirm
+The verification order matters: keep verification `pending` throughout the
+active fix loop and aggregate intermediate green checks as evidence/checkpoints.
+When no edits remain, commit the in-scope changes and confirm
 the commit changed nothing (clean tree, hooks silent) before recording the
 final verdict. From there the task has two endings. With no external wait, end
 with one `task finalize --status passed` call carrying evidence and the commit
@@ -193,9 +194,9 @@ hash, so no `verifying` window opens. With an external wait (review, PR merge,
 re-score), record `passed`, then `task park`; switching back keeps the task in
 `verifying`, so after the external result finalize — or return verification to
 `pending` before making changes. A
-recorded final verdict moves the task to `verifying` and freezes code changes;
-to commit already-verified changes from there, set verification back to
-`pending`, commit, then re-record the verdict.
+recorded final verdict binds `currentHead` to the reviewed HEAD, moves the task
+to `verifying`, and freezes code changes. Normal iteration should not create a
+passed-to-pending reset: record the final verdict only after edits end.
 
 Temporary work switching uses `task park`, not `task finalize`. Parking keeps a
 passport open and switchable while unrelated work becomes current. Finalization
@@ -204,13 +205,15 @@ means the task is complete, failed, or explicitly accepted as-is.
 Review requests follow the same current-task check. A review that verifies the
 current active or verifying task is verification work for that passport; record
 the review evidence and checkpoint there. Start, switch, or park into a separate
-review task only when the review is unrelated to the current task.
+review task only when it has an unrelated objective, materially different
+authorization boundary, or must own an independent frozen snapshot.
 
 `task start` creates a new current passport only when there is no current task, the current task is closed, or the current task is parked. If the current task is active, blocked, or verifying, Agentpack asks you to park or close it first so unrelated work does not silently overwrite the handoff pointer. Invalid risk values are rejected instead of being treated as unknown.
 
 `task switch <id>` resumes a parked passport as `active` when verification is
 `unknown` or `pending`. A parked passport with `passed`, `failed`, or `accepted`
-verification resumes as `verifying`, preserving the frozen final verdict until
+verification resumes as `verifying`, preserving the frozen final verdict and
+its bound HEAD until
 verification explicitly returns to `pending`. When a different current task is
 active, blocked, or verifying, park or finalize it before switching; closed
 target tasks remain unswitchable.
@@ -225,9 +228,9 @@ MCP exposes the same start/status/list/switch path for connected agents through 
 
 `task update` patches the current passport without changing lifecycle status. It can add objective, constraints, write scope, next actions, tags, and risk after the task has already started. List fields append and deduplicate; omitted fields are preserved. `--clear-next-actions` replaces the next actions with the provided `--next` items (or empties the list) so a stale plan can be corrected before handoff or finalize. Empty or no-op updates fail, and unknown risk values are rejected.
 
-`task verify` updates the verification state. Without flags it marks verification as `pending`; with `--status`, `--evidence`, and `--summary` it links verification to recorded evidence so the audit warning can become a reviewed result. A final verdict (`passed`, `failed`, or `accepted`) moves the task lifecycle to `verifying`; recording `pending` (or `unknown`) again — verification found more work — moves it back to `active` so the gate stops treating continued edits as out of lifecycle. `task update-verification` remains available as a compatibility alias.
+`task verify` updates the verification state. Without flags it marks verification as `pending`; with `--status`, `--evidence`, and `--summary` it links verification to recorded evidence so the audit warning can become a reviewed result. Pending output makes clear that the task stays active for fixes and intermediate checks. A final verdict (`passed`, `failed`, or `accepted`) binds the reviewed HEAD, moves the task lifecycle to `verifying`, and reports the freeze consequence; only an explicit later verification update may rebind that HEAD. Recording `pending` (or `unknown`) again — verification found more work — moves it back to `active` so the gate stops treating continued edits as out of lifecycle. `task update-verification` remains available as a compatibility alias.
 
-`task finalize` is the compact end-of-task ritual. It closes the current task only after verification is already `passed`, `failed`, or `accepted`, or when that final status is passed explicitly with `--status`. It refuses to close unknown or pending verification by default. `task finalize --status accepted` also refuses to close a task with remaining next actions unless `--force` is passed; use `task park` for deferred work. `task close` remains available for explicit manual closure.
+`task finalize` is the compact end-of-task ritual. It closes the current task only after verification is already `passed`, `failed`, or `accepted`, or when that final status is passed explicitly with `--status`. It refuses to close unknown or pending verification by default. Direct finalization binds the live HEAD when verification was non-final; finalizing an already-final verdict preserves its bound HEAD. Its output reports the bound HEAD and completed/frozen consequence. `task finalize --status accepted` also refuses to close a task with remaining next actions unless `--force` is passed; use `task park` for deferred work. `task close` remains available for explicit manual closure.
 
 After closing, `task finalize` prints hygiene advisories when they apply: uncommitted changes still inside the task write scope (commit first, or park until committed), remaining next actions that will now read as historical, and no repo checkpoint recorded since the task started. Advisories never block and have no configuration: finalize is a ritual, not a gate.
 

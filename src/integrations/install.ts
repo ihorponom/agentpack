@@ -99,13 +99,13 @@ Task lifecycle gate:
 - before implementation, confirm the current Task Passport is the right active task for this phase and branch
 - declare a write scope when starting a task (\`task_start\`/\`task start --write-scope <path>\`), so the task gate can protect its boundaries; a repo-wide task can still start without one, but scope should be the default, not an afterthought
 - if the current task is verifying, blocked, closed, or has unexplained branch/head drift, stop and resolve it before editing code
-- treat review mode as a scope check, not an automatic new Task Passport: keep reviews that verify the current active/verifying task inside that task as evidence/checkpoint; park, switch, or start a separate review task only for unrelated reviews
+- treat review mode as a scope check, not an automatic new Task Passport: keep reviews that verify the current active/verifying task inside that task as evidence/checkpoint; start a separate Passport only for an unrelated objective, materially different authorization boundary, or an independent review that needs its own frozen snapshot
 - park deferred work with \`task_park\`/\`task park\`, or switch/close only when appropriate, before starting unrelated work
 - do not finalize a task just to free the current slot; finalization means verification is passed, failed, or explicitly accepted as complete
-- verification order: iterate checks with verification pending and fix freely; when no edits remain, commit the in-scope changes and confirm the commit changed nothing (clean tree, hooks silent) before recording the final verdict
+- verification order: keep verification pending throughout the active fix loop; aggregate intermediate green checks as evidence/checkpoints, then when no edits remain commit the in-scope changes and confirm the commit changed nothing (clean tree, hooks silent) before recording the final verdict
 - no external wait: end with one \`task_finalize\` call carrying the final status, evidence, and commit hash, so no verifying window opens
 - external wait (review, PR merge, re-score): record \`passed\` via \`task_update_verification\`, then \`task_park\`; switching back keeps the task verifying while that final verdict is frozen, so finalize after the external result or set verification to pending before making changes
-- a recorded final verdict moves the task to verifying and freezes code changes; to commit already-verified changes from there, set verification back to pending, commit, then re-record the verdict
+- a recorded final verdict binds the reviewed HEAD, moves the task to verifying, and freezes code changes; do not use a passed-to-pending reset for normal iteration because the final verdict belongs only after edits end
 - keep next actions current: clear or replace a stale plan (\`task update --clear-next-actions\`) before finalizing, so closed passports read as history, not as open work
 - if a task still has next actions and must pause for unrelated work, park it instead of using \`task_finalize\`/\`task finalize --status accepted\`; force accepted finalization only when the remaining next actions are intentionally historical
 - do not mutate a review task into implementation work

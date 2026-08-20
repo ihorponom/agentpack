@@ -34,6 +34,8 @@ Codex, Claude Code, Cursor, LangGraph, Temporal, OpenAI Agents SDK, and similar 
 
 A Task Passport is the handoff artifact for one coherent unit of agent work. It should capture the objective, constraints, write scope, relevant source conclusions, decisions, dead ends, evidence, verification state, checkpoints, and next actions.
 
+One Passport normally spans a coherent phase, not each iteration. Create another only for an unrelated objective, a materially different authorization boundary, or an independent review that needs a separate frozen snapshot. The five-task directional-integrity baseline had no Fail and no repeated Partial for the same signal/workflow boundary, so it supports clarifying instructions and lifecycle messages rather than redesigning the lifecycle.
+
 See [TASK-PASSPORT.md](TASK-PASSPORT.md) for the target schema and state transitions.
 
 One active Task Passport should own the work in a repo worktree by default. A repo can keep many closed or parked passports over time, but Agentpack should not turn one working directory into a backlog or a multi-task merge engine.

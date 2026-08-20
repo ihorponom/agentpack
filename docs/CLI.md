@@ -89,7 +89,7 @@ The common workflow is:
 1. `task start` declares the work.
 2. `task status` gives a quick current-task view.
 3. `task update` keeps objective, scope, risk, or next actions current. List flags append; `--clear-next-actions` replaces the next actions with the provided `--next` items (or empties the list) when the plan went stale.
-4. `task verify` records the verification result and linked evidence.
+4. Keep `task verify` pending through the active fix loop; aggregate intermediate checks as evidence/checkpoints, then record a final result and its bound HEAD only when edits end.
 5. `task handoff` prints the compact summary for another chat, client, worktree, or agent.
 6. `task finalize` closes the task after verification is final. It prints advisories when hygiene gaps remain — uncommitted changes inside the write scope, remaining next actions, or no checkpoint since the task started; advisories never block.
 
@@ -107,7 +107,7 @@ Use `agentpack task --help` for the task-focused command list.
 
 The gate fails closed where it matters: an unreadable `config.json` blocks instead of throwing a skippable hook error, an unreadable current passport is a violation (exit 2 in block mode), an unrecognized native hook payload produces `hook-input-unreadable` instead of silently skipping path checks, and an unknown `gateMode` value falls back to `warn` with an `invalid-gate-mode` finding instead of silently disabling checks. Paths outside the repository are not judged by this pack's gate but are reported with an advisory `outside-root` finding rather than skipped silently; when every checked path is outside the repository, or a `--staged` run stages nothing under this pack root, lifecycle findings are skipped too, and so are the `no-write-scope` and `branch-drift` advisories — the gate protects repo code, not the whole filesystem, and an untouched pack should not get spammed on every unrelated commit in a multi-pack repo. Invocations with no paths keep lifecycle checks and advisories (they back the MCP gate-warnings layer). In block mode, a task without a write scope gets an advisory `no-write-scope` finding, because scope enforcement is opt-in per task. Scope matching is lexical and byte-literal, the same as git paths: the gate does not resolve symlinks and does not detect case-only aliasing on case-insensitive filesystems. It is a guardrail against agent drift, not a filesystem security boundary.
 
-`task passport` prints the current `passport.json`. `task switch <id>` points the worktree at another open passport: pending or unknown verification resumes as `active`, while a final verdict resumes as `verifying` and remains frozen until verification returns to pending. `task block --reason <text>`, `task park`, and `task close` remain available for explicit lifecycle control. `task update-verification` remains available as a compatibility alias for `task verify`.
+`task passport` prints the current `passport.json`. `task switch <id>` points the worktree at another open passport: pending or unknown verification resumes as `active`, while a final verdict resumes as `verifying` and remains frozen with its bound HEAD until verification returns to pending. `task block --reason <text>`, `task park`, and `task close` remain available for explicit lifecycle control. `task update-verification` remains available as a compatibility alias for `task verify`.
 
 `task finalize --status accepted` refuses to close a task that still has next
 actions, because that usually means the task should be parked instead. Pass
@@ -115,6 +115,8 @@ actions, because that usually means the task should be parked instead. Pass
 and the task is genuinely accepted as-is.
 
 Repeated identical verification updates are treated as no-ops, so retrying the same `task verify` command does not add duplicate task events.
+
+Final `task verify` output names the bound HEAD and explains that code is frozen until finalization or an explicit return to pending. Pending output says the task remains active for fixes and intermediate checks. `task finalize` reports the bound HEAD and completed/frozen consequence; it preserves an existing final-verdict binding, while direct finalization from non-final verification binds the live HEAD.
 
 When a current passport exists, `resume` and MCP `load_context` treat its status
 and next actions as authoritative in Current State, then include the full

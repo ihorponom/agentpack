@@ -88,6 +88,22 @@ const CLOSED_STATUSES = new Set<TaskStatus>(["completed", "abandoned"]);
 const VERIFICATION_STATUSES = new Set<TaskVerification["status"]>(["unknown", "pending", "passed", "failed", "accepted"]);
 const FINAL_VERIFICATION_STATUSES = new Set<TaskVerification["status"]>(["passed", "failed", "accepted"]);
 
+export function formatVerificationUpdateMessage(passport: TaskPassport, changed: boolean): string {
+  const prefix = changed ? "Updated verification" : "Verification unchanged";
+  const status = passport.verification.status;
+  if (FINAL_VERIFICATION_STATUSES.has(status)) {
+    return `${prefix} for task ${passport.id} (${status}). Bound HEAD ${passport.currentHead || "(unknown)"}; the final verdict freezes code changes until finalization or an explicit return to pending.`;
+  }
+  const consequence = status === "pending"
+    ? "Verification remains pending: the task stays active for fixes and intermediate checks."
+    : "Verification is unknown: the task stays active until a verification result is recorded.";
+  return `${prefix} for task ${passport.id} (${status}). ${consequence}`;
+}
+
+export function formatTaskFinalizationMessage(passport: TaskPassport): string {
+  return `Finalized task ${passport.id} (${passport.verification.status}). Bound HEAD ${passport.currentHead || "(unknown)"}; the final verdict is frozen and the task is completed.`;
+}
+
 export function startTask(root: string, options: TaskStartOptions): TaskPassport {
   if (!options.title.trim()) {
     throw new Error("task start requires a title");
@@ -255,7 +271,9 @@ export function switchTask(root: string, taskId: string): TaskPassport {
           // callers must explicitly return verification to pending before
           // making further edits. Ordinary parked work resumes as active.
           status: FINAL_VERIFICATION_STATUSES.has(existing.verification.status) ? "verifying" : "active",
-          currentHead: getGitInfo(root).head,
+          // The final verdict is bound to the HEAD that was reviewed. Resuming
+          // a parked task must not silently rewrite that historical binding.
+          ...(FINAL_VERIFICATION_STATUSES.has(existing.verification.status) ? {} : { currentHead: getGitInfo(root).head }),
           updatedAt: new Date().toISOString()
         }
       : existing;
@@ -733,7 +751,12 @@ function patchCurrentTask(
     const passport: TaskPassport = {
       ...existing,
       ...resolvedPatch,
-      currentHead: git.head,
+      // A final verdict binds the reviewed code state. Routine metadata
+      // updates, parking, switching, and finalization must preserve it; an
+      // explicit verification update below is the deliberate rebinding path.
+      currentHead: FINAL_VERIFICATION_STATUSES.has(existing.verification.status)
+        ? existing.currentHead
+        : git.head,
       updatedAt: now
     };
 

@@ -27,7 +27,9 @@ import {
   formatCurrentTaskHandoff,
   formatCurrentTaskStatus,
   formatTaskAuditReport,
+  formatTaskFinalizationMessage,
   formatTaskList,
+  formatVerificationUpdateMessage,
   listTasks,
   parkCurrentTask,
   startTask,
@@ -1025,10 +1027,7 @@ function callTool(root: string, name: string, args: Record<string, unknown>): un
       summary: redactForRoot(root, text(args.summary))
     });
     const { passport } = result;
-    if (!result.changed) {
-      return toolText(`Verification unchanged for task ${passport.id} (${passport.verification.status}).`);
-    }
-    return toolText(`Updated verification for task ${passport.id} (${passport.verification.status}).`);
+    return toolText(formatVerificationUpdateMessage(passport, result.changed));
   }
 
   if (name === "task_finalize") {
@@ -1042,7 +1041,7 @@ function callTool(root: string, name: string, args: Record<string, unknown>): un
     const advisoryText = advisories.length > 0
       ? `\n\nAdvisories:\n${advisories.map((advisory) => `- ${advisory}`).join("\n")}`
       : "";
-    return toolText(`Finalized task ${passport.id} (${passport.verification.status}).${advisoryText}`);
+    return toolText(`${formatTaskFinalizationMessage(passport)}${advisoryText}`);
   }
 
   if (name === "task_update") {

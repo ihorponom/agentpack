@@ -2663,7 +2663,7 @@ test("previews and writes project-local MCP client install files", () => {
   assert.match(readFileSync(path.join(dir, ".cursor", "rules", "agentpack.mdc"), "utf8"), /Collaboration modes/);
   assert.match(readFileSync(path.join(dir, ".cursor", "rules", "agentpack.mdc"), "utf8"), /review mode: review the current diff/);
   assert.match(readFileSync(path.join(dir, ".cursor", "rules", "agentpack.mdc"), "utf8"), /Task lifecycle gate/);
-  assert.match(readFileSync(path.join(dir, ".cursor", "rules", "agentpack.mdc"), "utf8"), /separate review task only for unrelated reviews/);
+  assert.match(readFileSync(path.join(dir, ".cursor", "rules", "agentpack.mdc"), "utf8"), /independent review that needs its own frozen snapshot/);
   assert.match(readFileSync(path.join(dir, ".cursor", "rules", "agentpack.mdc"), "utf8"), /finalization means verification is passed, failed, or explicitly accepted as complete/);
   assert.match(readFileSync(path.join(dir, ".cursor", "rules", "agentpack.mdc"), "utf8"), /load_context.*preset: "quick".*focused query/);
   assert.match(readFileSync(path.join(dir, ".cursor", "rules", "agentpack.mdc"), "utf8"), /Delegation default \(builder subagent\)/);
@@ -3110,6 +3110,86 @@ test("pending verification returns lifecycle to active instead of getting stuck 
   const eventCountBeforeNoop = taskEventCount(dir, pendingPassport.id);
   assert.match(run(dir, ["task", "verify"]), /Verification unchanged for task .* \(pending\)/, "repeating the same pending verdict is a no-op");
   assert.equal(taskEventCount(dir, pendingPassport.id), eventCountBeforeNoop);
+});
+
+test("final verdict keeps its bound HEAD through metadata, parking, resuming, and finalization", () => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), "agentpack-final-head-binding-test-"));
+  runGit(dir, ["init"]);
+  runGit(dir, ["config", "user.name", "Agentpack Test"]);
+  runGit(dir, ["config", "user.email", "test@example.com"]);
+  run(dir, ["init"]);
+  writeFileSync(path.join(dir, "tracked.ts"), "export const before = true;\n", "utf8");
+  runGit(dir, ["add", "tracked.ts"]);
+  commit(dir, "Add initial source");
+  run(dir, ["task", "start", "Bound HEAD task", "--write-scope", "tracked.ts"]);
+
+  const verifyOutput = run(dir, ["task", "verify", "--status", "passed", "--summary", "Reviewed initial source"]);
+  const frozen = JSON.parse(run(dir, ["task", "passport"]));
+  assert.match(verifyOutput, new RegExp(`Bound HEAD ${frozen.currentHead}`));
+  assert.match(verifyOutput, /final verdict freezes code changes/);
+
+  writeFileSync(path.join(dir, "tracked.ts"), "export const after = true;\n", "utf8");
+  runGit(dir, ["add", "tracked.ts"]);
+  commit(dir, "Advance source after verdict");
+  const advancedHead = runGit(dir, ["rev-parse", "HEAD"]);
+  assert.notEqual(frozen.currentHead, advancedHead);
+
+  run(dir, ["task", "update", "--next", "Keep frozen review context"]);
+  assert.equal(JSON.parse(run(dir, ["task", "passport"])).currentHead, frozen.currentHead, "task update preserves a frozen HEAD");
+  run(dir, ["task", "park"]);
+  assert.equal(JSON.parse(run(dir, ["task", "passport"])).currentHead, frozen.currentHead, "task park preserves a frozen HEAD");
+  run(dir, ["task", "switch", frozen.id]);
+  assert.equal(JSON.parse(run(dir, ["task", "passport"])).currentHead, frozen.currentHead, "resuming a final verdict preserves its bound HEAD");
+
+  const finalizeOutput = run(dir, ["task", "finalize"]);
+  assert.match(finalizeOutput, new RegExp(`Bound HEAD ${frozen.currentHead}`));
+  assert.equal(JSON.parse(run(dir, ["task", "passport"])).currentHead, frozen.currentHead, "finalizing an already-final verdict preserves its bound HEAD");
+});
+
+test("remediation stays pending until one finalization without losing passport facts", () => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), "agentpack-remediation-cadence-test-"));
+  runGit(dir, ["init"]);
+  runGit(dir, ["config", "user.name", "Agentpack Test"]);
+  runGit(dir, ["config", "user.email", "test@example.com"]);
+  run(dir, ["init"]);
+  run(dir, [
+    "task", "start", "Remediate review findings", "--objective", "Resolve the independent review findings.",
+    "--constraint", "Keep authorization boundary unchanged.", "--write-scope", "src", "--next", "Fix reported finding", "--risk", "medium"
+  ]);
+  const started = JSON.parse(run(dir, ["task", "passport"]));
+
+  assert.match(run(dir, ["task", "verify", "--summary", "Fix loop remains open"]), /Verification remains pending: the task stays active for fixes and intermediate checks/);
+  mkdirSync(path.join(dir, "src"), { recursive: true });
+  writeFileSync(path.join(dir, "src", "fix.ts"), "export const fixed = true;\n", "utf8");
+  run(dir, ["checkpoint", "-m", "Focused remediation checks are green", "--status", "Fix loop active", "--next", "Commit remediation"]);
+  const pending = JSON.parse(run(dir, ["task", "passport"]));
+  assert.equal(pending.status, "active");
+  assert.equal(pending.verification.status, "pending");
+  const handoff = run(dir, ["task", "handoff"]);
+  assert.match(handoff, /Resolve the independent review findings\./);
+  assert.match(handoff, /Keep authorization boundary unchanged\./);
+  assert.match(handoff, /Write scope:\n- src/);
+  assert.match(handoff, /Verification: pending/);
+
+  runGit(dir, ["add", "src/fix.ts"]);
+  commit(dir, "Resolve review finding");
+  run(dir, ["task", "update", "--clear-next-actions"]);
+  const finalOutput = run(dir, ["task", "finalize", "--status", "passed", "--evidence", "evt_review", "--summary", "Independent review and tests passed"]);
+  const completed = JSON.parse(run(dir, ["task", "passport"]));
+  assert.match(finalOutput, new RegExp(`Bound HEAD ${completed.currentHead}`));
+  assert.equal(completed.status, "completed");
+  assert.equal(completed.verification.status, "passed");
+  assert.deepEqual(completed.verification.evidence, ["evt_review"]);
+  assert.equal(completed.objective, started.objective);
+  assert.deepEqual(completed.constraints, started.constraints);
+  assert.deepEqual(completed.writeScope, started.writeScope);
+  assert.deepEqual(completed.nextActions, [], "the stale action is cleared before finalization");
+  assert.equal(completed.constraints[0], started.constraints[0], "the authorization constraint survives the fix loop");
+  const verifyStatuses = readFileSync(path.join(dir, ".agentpack", "tasks", completed.id, "events.jsonl"), "utf8")
+    .split("\n").filter(Boolean).map((line) => JSON.parse(line))
+    .filter((event) => event.type === "task-verify" || event.type === "task-finalize")
+    .map((event) => event.verificationStatus).filter(Boolean);
+  assert.deepEqual(verifyStatuses, ["pending", "passed"], "the flow reaches completion without a passed-to-pending reset");
 });
 
 test("task verify is rejected while the current task is parked", () => {
@@ -4445,6 +4525,7 @@ test("serves MCP JSON-RPC tools over newline-delimited stdio", async () => {
     }
   });
   assert.match(taskVerify.result.content[0].text, /Updated verification for task .* \(passed\)/);
+  assert.match(taskVerify.result.content[0].text, /Bound HEAD .*final verdict freezes code changes/);
 
   const verifiedPassport = JSON.parse(run(dir, ["task", "passport"]));
   assert.equal(verifiedPassport.verification.status, "passed");
@@ -4475,6 +4556,7 @@ test("serves MCP JSON-RPC tools over newline-delimited stdio", async () => {
   assert.deepEqual(mcpUpdatedPassport.nextActions, ["Finish MCP verification", "Inspect updated passport"]);
   assert.deepEqual(mcpUpdatedPassport.tags, ["mcp-lifecycle", "mcp-task-update"]);
   assert.equal(mcpUpdatedPassport.risk, "medium");
+  assert.equal(mcpUpdatedPassport.currentHead, verifiedPassport.currentHead, "MCP task updates preserve the final verdict's bound HEAD");
 
   const eventCountBeforeMcpNoop = taskEventCount(dir, mcpUpdatedPassport.id);
   const taskVerifyNoop = await mcp.send({
@@ -4547,6 +4629,7 @@ test("serves MCP JSON-RPC tools over newline-delimited stdio", async () => {
     }
   });
   assert.match(taskFinalize.result.content[0].text, /Finalized task .* \(passed\)/);
+  assert.match(taskFinalize.result.content[0].text, /Bound HEAD .*final verdict is frozen and the task is completed/);
   assert.match(taskFinalize.result.content[0].text, /Advisories:/, "MCP finalize appends the same hygiene advisories as the CLI");
   const finalizedPassport = JSON.parse(run(dir, ["task", "passport"]));
   assert.equal(finalizedPassport.status, "completed");
