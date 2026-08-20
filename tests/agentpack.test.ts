@@ -32,6 +32,19 @@ import { startMcpServer, TOOL_DEFINITIONS } from "../src/mcp/server.js";
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const cli = path.join(repoRoot, "src", "agentpack.js");
 
+const DIRECTIONAL_SIGNALS = [
+  "objective",
+  "constraints",
+  "development_state",
+  "write_scope",
+  "decisions",
+  "open_findings",
+  "verification",
+  "authorization",
+  "next_safe_action"
+] as const;
+type DirectionalSignal = typeof DIRECTIONAL_SIGNALS[number];
+
 test("--version and --help run without an initialized pack", () => {
   const dir = mkdtempSync(path.join(os.tmpdir(), "agentpack-noinit-"));
   // repoRoot points at the compiled dist/ when tests run, so the real package.json sits one level above.
@@ -353,21 +366,101 @@ test("directional-integrity benchmark covers critical handoff boundaries", { tim
   }
 
   const signals = new Map(report.directionalIntegrity.signals.map((signal) => [signal.signal, signal]));
-  for (const signal of [
-    "objective",
-    "constraints",
-    "development_state",
-    "write_scope",
-    "decisions",
-    "open_findings",
-    "verification",
-    "authorization",
-    "next_safe_action"
-  ]) {
+  for (const signal of DIRECTIONAL_SIGNALS) {
     const result = signals.get(signal);
     assert.ok(result, `missing directional-integrity signal: ${signal}`);
     assert.equal(result.passed, result.total, `directional-integrity signal failed: ${signal}`);
   }
+});
+
+test("cross-client continuity preserves directional facts across drifted and imported handoffs", async () => {
+  const source = mkdtempSync(path.join(os.tmpdir(), "agentpack-cross-client-source-"));
+  const destination = mkdtempSync(path.join(os.tmpdir(), "agentpack-cross-client-destination-"));
+  const desktopHome = mkdtempSync(path.join(os.tmpdir(), "agentpack-cross-client-desktop-"));
+  const desktopConfig = path.join(desktopHome, "claude_desktop_config.json");
+
+  mkdirSync(path.join(source, "src"), { recursive: true });
+  writeFileSync(path.join(source, "src", "continuity.ts"), "export const continuity = 'recorded';\n", "utf8");
+  runGit(source, ["init", "-b", "main"]);
+  commitAll(source, "initial continuity fixture");
+  run(source, ["init"]);
+  run(source, [
+    "task", "start", "Cross-client continuity", "--objective", "Preserve the reviewed continuity contract across every local client surface.",
+    "--constraint", "Do not push, merge, publish, or edit global client configuration without separate authorization.",
+    "--write-scope", "src/continuity.ts", "--next", "Await independent review before another edit", "--risk", "medium"
+  ]);
+  run(source, ["source", "add", "src/continuity.ts", "--summary", "The recorded implementation preserves the continuity boundary."]);
+  run(source, ["record", "decision", "Keep lifecycle, scope, and authorization client-neutral."]);
+  const evidence = run(source, ["evidence", "add", "--kind", "test-output", "--content", "Continuity fixture verification passed."])
+    .match(/Attached evidence (evt_[^\s.]+)/)?.[1];
+  assert.ok(evidence);
+  run(source, ["task", "verify", "--status", "passed", "--evidence", evidence, "--summary", "Local verification is bound to the reviewed commit."]);
+  run(source, ["task", "park"]);
+
+  writeFileSync(path.join(source, "src", "continuity.ts"), "export const continuity = 'changed-after-review';\n", "utf8");
+  commitAll(source, "introduce fixture drift");
+  const sourceBundle = path.join(source, "continuity.agentpack-bundle.json");
+  run(source, ["bundle", "export", "--output", path.basename(sourceBundle), "--source", "src/continuity.ts"]);
+
+  const expectedSourceFacts: Record<DirectionalSignal, string> = {
+    objective: "Preserve the reviewed continuity contract across every local client surface.",
+    constraints: "Do not push, merge, publish, or edit global client configuration without separate authorization.",
+    development_state: "HEAD changed from",
+    write_scope: "src/continuity.ts",
+    decisions: "Keep lifecycle, scope, and authorization client-neutral.",
+    open_findings: "Await independent review before another edit",
+    verification: "Local verification is bound to the reviewed commit.",
+    authorization: "Do not push, merge, publish, or edit global client configuration without separate authorization.",
+    next_safe_action: "Await independent review before another edit"
+  };
+  const cliResume = run(source, ["resume", "--preset", "agent"]);
+  assertDirectionalFacts("CLI resume", cliResume, expectedSourceFacts);
+  assert.match(cliResume, /src\/continuity\.ts\n\s+- status: changed/, "changed source conclusions are visible before a handoff");
+
+  const sourceMcp = createMcpHarness(source);
+  const mcpResume = await sourceMcp.send({
+    jsonrpc: "2.0", id: 91, method: "tools/call", params: { name: "load_context", arguments: { preset: "agent" } }
+  });
+  assertDirectionalFacts("MCP load_context", mcpResume.result.content[0].text, expectedSourceFacts);
+
+  rmdirSync(destination);
+  runGit(path.dirname(destination), ["clone", source, destination]);
+  run(destination, ["init"]);
+  const imported = JSON.parse(run(destination, ["bundle", "import", sourceBundle, "--write", "--json"]));
+  const importedPassport = JSON.parse(readFileSync(path.join(destination, ".agentpack", "tasks", imported.taskId, "passport.json"), "utf8"));
+  assert.equal(importedPassport.status, "parked", "a transferred external wait remains non-editable");
+  assert.equal(importedPassport.verification.status, "unknown", "imported verification must be re-established locally");
+  assert.deepEqual(importedPassport.verification.evidence, []);
+  run(destination, ["task", "switch", imported.taskId]);
+
+  const freshResume = run(destination, ["resume", "--preset", "agent"]);
+  assert.match(freshResume, /Objective: Preserve the reviewed continuity contract across every local client surface\./);
+  assert.match(freshResume, /Write scope:\n\s+- src\/continuity\.ts/);
+  assert.match(freshResume, /Verification: unknown/);
+  assert.match(freshResume, new RegExp(`Worktree: ${escapeRegExp(realpathSync(destination))}`));
+  assert.match(freshResume, /Branch: main/);
+  assert.match(freshResume, /No inspected sources recorded yet\./, "a bundle carries selected source artifacts, not an unreviewed destination source-cache conclusion");
+
+  writeFileSync(desktopConfig, JSON.stringify({ mcpServers: { preserved: { command: "preserve" } } }), "utf8");
+  run(source, ["install", "codex", "--write"]);
+  run(source, ["install", "claude", "--write"]);
+  run(source, ["install", "cursor", "--write"]);
+  installIntegration(realpathSync(source), "claude-desktop", { dryRun: false, claudeDesktopConfigPath: desktopConfig });
+
+  const clientSurfaces: Array<[string, string, string[]]> = [
+    ["Codex", readFileSync(path.join(source, ".codex", "agents", "builder.toml"), "utf8"), ["write scope", "final verification", "commits, and release actions", 'enabled_tools = ["load_context"]']],
+    ["Claude Code", readFileSync(path.join(source, ".claude", "agents", "builder.md"), "utf8"), ["write scope", "commit or push unless", "state-changing tools"]],
+    ["Cursor", readFileSync(path.join(source, ".cursor", "agents", "builder.md"), "utf8"), ["write scope", "commit or push unless", "state-changing tools"]],
+    ["Claude Desktop", readFileSync(desktopConfig, "utf8"), ["mcpServers", "preserved"]]
+  ];
+  for (const [client, surface, required] of clientSurfaces) {
+    for (const fact of required) {
+      assert.match(surface, new RegExp(escapeRegExp(fact), "i"), `${client} must preserve its relevant client-neutral boundary: ${fact}`);
+    }
+  }
+  const cursorCli = JSON.parse(readFileSync(path.join(source, ".cursor", "cli.json"), "utf8"));
+  assert.equal(cursorCli.permissions.allow.some((entry: string) => /record_decision|task_finalize/.test(entry)), false, "Cursor only preauthorizes read-only MCP tools");
+  assert.match(readFileSync(desktopConfig, "utf8"), /"preserved"/, "the hermetic Desktop config is merged, not replaced");
 });
 
 test("keeps MCP Registry publication retryable after npm publish", () => {
@@ -4926,6 +5019,27 @@ function runGit(cwd: string, args: string[]): string {
     encoding: "utf8",
     stdio: ["ignore", "pipe", "ignore"]
   });
+}
+
+function commitAll(cwd: string, message: string): void {
+  runGit(cwd, ["add", "."]);
+  runGit(cwd, [
+    "-c", "user.name=Agentpack Test",
+    "-c", "user.email=test@example.com",
+    "-c", "commit.gpgsign=false",
+    "commit", "-m", message
+  ]);
+}
+
+function assertDirectionalFacts(
+  surface: string,
+  output: string,
+  expected: Record<DirectionalSignal, string>
+): void {
+  assert.deepEqual(Object.keys(expected).sort(), [...DIRECTIONAL_SIGNALS].sort(), `${surface} must cover every critical signal`);
+  for (const signal of DIRECTIONAL_SIGNALS) {
+    assert.match(output, new RegExp(escapeRegExp(expected[signal])), `${surface} lost ${signal}`);
+  }
 }
 
 function writeReleaseFixture(dir: string, publishWorkflow?: string): void {

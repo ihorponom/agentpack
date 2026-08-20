@@ -77,6 +77,22 @@ The representative scenarios cover:
 These fixtures are deterministic regression tests, not proof of real-world
 adoption or time savings.
 
+## Client Surface Limits
+
+Client registrations are not interchangeable presentations of one byte-identical
+handoff. CLI and MCP can expose live Task Passport, Git, and Source Cache state;
+generated Codex, Claude Code, and Cursor files instead carry the operating
+boundaries for the next session, such as lifecycle checks, write scope, final
+verification ownership, and authorization. Claude Desktop only receives an MCP
+server registration because it has no project-local instruction file.
+
+Native hooks remain defense in depth, not the client-neutral source of truth.
+In particular, Cursor does not guarantee model-visible warnings for allowed
+edits and its hooks can fail open. Its installer therefore preauthorizes only
+read-only Agentpack MCP tools; use MCP context plus the git pre-commit gate when
+an enforcement boundary must survive a client change, and enable
+`gateMode: "block"` when violations must be denied rather than warned about.
+
 ## Real-Task Dogfood Rubric
 
 Before changing lifecycle semantics or adding ceremony diagnostics, sample at
