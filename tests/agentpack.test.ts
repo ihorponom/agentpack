@@ -80,6 +80,119 @@ test("--version and --help run without an initialized pack", () => {
   assert.equal(existsSync(path.join(dir, ".agentpack")), false);
 });
 
+test("directional-integrity benchmark covers critical handoff boundaries", { timeout: 30_000 }, () => {
+  const sourceRoot = path.join(repoRoot, "..");
+  const benchmark = path.join(sourceRoot, "scripts", "benchmark-token-overhead.mjs");
+  const output = execFileSync(process.execPath, [benchmark, "--json"], {
+    cwd: sourceRoot,
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"]
+  });
+  const report = JSON.parse(output) as {
+    directionalIntegrity: { passed: number; total: number; failed: number; signals: Array<{ signal: string; passed: number; total: number }> };
+    guardrails: { passed: number; total: number; failed: number };
+    scenarios: Array<{
+      id: string;
+      checks?: Array<{ kind: string; signal: string; label: string; passed: boolean }>;
+    }>;
+  };
+
+  assert.equal(report.directionalIntegrity.failed, 0);
+  assert.equal(report.directionalIntegrity.passed, report.directionalIntegrity.total);
+  assert.ok(report.directionalIntegrity.total >= 50);
+  assert.equal(report.guardrails.failed, 0);
+  assert.equal(report.guardrails.passed, report.guardrails.total);
+
+  const scenarioContracts = new Map<string, Array<[signal: string, label: string]>>([
+    ["latest_diff_review", [
+      ["objective", "review objective"],
+      ["write_scope", "source write scope"],
+      ["write_scope", "test write scope"],
+      ["development_state", "dirty review paths"],
+      ["next_safe_action", "review next action"]
+    ]],
+    ["fresh_agent_context", [
+      ["objective", "accepted task objective"],
+      ["risk", "risk"],
+      ["next_safe_action", "next action"],
+      ["verification", "verification"],
+      ["development_state", "local upstream drift"],
+      ["development_state", "local commit subject"],
+      ["development_state", "verification HEAD drift warning"],
+      ["decisions", "release cadence decision"]
+    ]],
+    ["long_remediation_handoff", [
+      ["objective", "remediation objective"],
+      ["constraints", "rollback constraint"],
+      ["authorization", "remote authorization boundary"],
+      ["development_state", "worktree"],
+      ["development_state", "branch"],
+      ["development_state", "HEAD"],
+      ["write_scope", "implementation scope"],
+      ["decisions", "pending-verification decision"],
+      ["open_findings", "remaining lifecycle finding"],
+      ["verification", "verification remains pending"]
+    ]],
+    ["external_review_wait", [
+      ["objective", "external-review objective"],
+      ["constraints", "frozen-edit constraint"],
+      ["verification", "frozen passed verdict"],
+      ["verification", "verification evidence"],
+      ["next_safe_action", "external-review resume action"],
+      ["development_state", "parked lifecycle state"]
+    ]],
+    ["delivery_authorization", [
+      ["objective", "delivery objective"],
+      ["authorization", "allowed remote action"],
+      ["authorization", "forbidden remote actions"],
+      ["development_state", "delivery branch"],
+      ["development_state", "delivery HEAD"],
+      ["next_safe_action", "pre-push check"]
+    ]],
+    ["development_state_drift", [
+      ["objective", "drift objective"],
+      ["development_state", "current drifted HEAD"],
+      ["development_state", "branch drift"],
+      ["development_state", "HEAD drift"],
+      ["development_state", "worktree drift"],
+      ["next_safe_action", "drift remediation"]
+    ]]
+  ]);
+  const scenarios = new Map(report.scenarios.map((scenario) => [scenario.id, scenario]));
+  for (const [id, expectedChecks] of scenarioContracts) {
+    const scenario = scenarios.get(id);
+    assert.ok(scenario, `missing directional-integrity scenario: ${id}`);
+    const expectedContract = expectedChecks.map(([signal, label]) => `${signal}/${label}`).sort();
+    const actualContract = (scenario.checks || [])
+      .filter((check) => check.kind === "directional")
+      .map((check) => `${check.signal}/${check.label}`)
+      .sort();
+    assert.deepEqual(actualContract, expectedContract, `directional contract drifted: ${id}`);
+    assert.equal(
+      scenario.checks?.filter((check) => check.kind === "directional").every((check) => check.passed),
+      true,
+      `directional check failed: ${id}`
+    );
+  }
+
+  const signals = new Map(report.directionalIntegrity.signals.map((signal) => [signal.signal, signal]));
+  for (const signal of [
+    "objective",
+    "constraints",
+    "development_state",
+    "write_scope",
+    "decisions",
+    "open_findings",
+    "verification",
+    "authorization",
+    "next_safe_action"
+  ]) {
+    const result = signals.get(signal);
+    assert.ok(result, `missing directional-integrity signal: ${signal}`);
+    assert.equal(result.passed, result.total, `directional-integrity signal failed: ${signal}`);
+  }
+});
+
 test("keeps MCP Registry publication retryable after npm publish", () => {
   const sourceRoot = path.join(repoRoot, "..");
   const workflow = readFileSync(path.join(sourceRoot, ".github", "workflows", "publish.yml"), "utf8");

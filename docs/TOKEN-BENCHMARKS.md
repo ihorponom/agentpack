@@ -1,8 +1,11 @@
-# Token Benchmarks
+# Directional-Integrity and Token Benchmarks
 
-Agentpack should earn the context it asks an agent to spend. These benchmarks
-measure whether Agentpack outputs are carrying useful task state or just adding
-ritual overhead.
+Agentpack should preserve the direction of reviewed work and earn the context it
+asks an agent to spend. These benchmarks first assert critical directional
+integrity and then measure whether the output carrying it adds ritual overhead.
+
+See [DIRECTIONAL-INTEGRITY.md](DIRECTIONAL-INTEGRITY.md) for the product metric,
+critical signals, failure conditions, and real-task dogfood rubric.
 
 Token counts are diagnostic, not the product goal. A larger output can be the
 right tradeoff when it preserves must-have handoff facts such as the accepted
@@ -40,6 +43,15 @@ outputs against direct git/file inspection baselines.
 - Fresh-agent context: a budgeted resume that checks whether a new agent can
   recover the accepted task, local commits, release cadence, risk, next action,
   and verification without replaying the ledger.
+- Long remediation handoff: a security-sensitive fix loop that must retain its
+  objective, constraints, exact development state, open finding, pending
+  verification, and remote-authorization boundary.
+- External-review wait: a parked task whose commit-bound verdict remains frozen
+  while the next safe action waits on an independent result.
+- Delivery authorization: an exact normal-push/draft-PR permission that must not
+  become force-push, merge, comment, tag, or publish authority.
+- Development-state drift: branch, HEAD, and worktree mismatches that must be
+  visible before another agent continues.
 - Stale Source Cache triage: `source status --changed --missing` versus status plus diff.
 - Release-prep handoff: `task handoff` versus status, recent log, and release files.
 
@@ -59,9 +71,11 @@ The benchmark reports:
 - Section breakdown: Markdown resume outputs are split by `##` section so growth
   can be attributed to buckets such as Source Cache, Evidence, or Current Task
   Passport.
-- Context utility checks: scenario-specific must-have handoff signals. These
-  checks fail the benchmark when required context disappears, even if token
-  counts look small.
+- Directional-integrity checks: scenario-specific must-have handoff facts,
+  grouped by signal. These checks fail the benchmark when required context
+  disappears, even if token counts look small.
+- Guardrail checks: output budgets or future ceremony bounds, reported
+  separately from directional integrity.
 
 Token counts use Agentpack's existing rough estimate:
 
@@ -74,9 +88,9 @@ Use it for relative comparison, not exact model billing.
 
 ## Reading Results
 
-Good overhead is context that avoids work: task objective, risk, next action,
-local commits, release cadence, source conclusions, verification status,
-stale-source guidance, and handoff warnings.
+Good overhead is context that preserves direction: task objective, constraints,
+exact development state, write scope, decisions, open findings, verification,
+authorization, next safe action, risk, and stale-source guidance.
 
 Bad overhead is repeated ceremony: duplicated summaries, unchanged source dumps,
 large timelines, evidence previews that do not answer the scenario, or protocol
@@ -98,3 +112,8 @@ tests for priority behavior, not as a target for normal handoffs.
 Prefer one narrow improvement at a time, then rerun the benchmark and a focused
 test or smoke check. Optimize for useful context per token rather than raw token
 minimization.
+
+The synthetic fixtures are regression coverage, not an adoption study. Before
+changing lifecycle semantics, also score at least five representative real tasks
+with the rubric in `DIRECTIONAL-INTEGRITY.md` and retain the evidence for every
+Partial or Fail.

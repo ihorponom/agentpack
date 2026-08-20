@@ -5,6 +5,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  realpathSync,
   rmSync,
   unlinkSync,
   writeFileSync
@@ -34,14 +35,21 @@ try {
     resumedImplementationScenario(),
     tightBudgetContextScenario(),
     freshAgentContextScenario(),
+    longRemediationHandoffScenario(),
+    externalReviewWaitScenario(),
+    deliveryAuthorizationScenario(),
+    developmentStateDriftScenario(),
     staleSourceCacheScenario(),
     releasePrepHandoffScenario()
   ];
+  const summarizedScenarios = scenarios.map((scenario) => summarizeScenario(scenario));
   const report = {
     generatedAt: new Date().toISOString(),
     estimate: "ceil(characters / 4)",
     mcpWrapper: "modeled JSON-RPC tools/call text response",
-    scenarios: scenarios.map((scenario) => summarizeScenario(scenario))
+    directionalIntegrity: summarizeChecks(summarizedScenarios, "directional"),
+    guardrails: summarizeChecks(summarizedScenarios, "guardrail"),
+    scenarios: summarizedScenarios
   };
 
   if (jsonOutput) {
@@ -51,10 +59,10 @@ try {
   }
 
   const failedChecks = report.scenarios.flatMap((scenario) => (
-    scenario.utilityChecks || []
+    scenario.checks || []
   ).filter((check) => !check.passed).map((check) => `${scenario.id}: ${check.label}`));
   if (failedChecks.length > 0) {
-    console.error(`Context utility check(s) failed:\n${failedChecks.map((check) => `- ${check}`).join("\n")}`);
+    console.error(`Directional-integrity or guardrail check(s) failed:\n${failedChecks.map((check) => `- ${check}`).join("\n")}`);
     process.exitCode = 1;
   }
 } finally {
@@ -100,7 +108,12 @@ function tinyQuestionScenario() {
     agentpackCommand: "agentpack task status",
     agentpackOutput: runCli(dir, ["task", "status"]),
     directCommand: "git status --short --branch",
-    directOutput: runGit(dir, ["status", "--short", "--branch"])
+    directOutput: runGit(dir, ["status", "--short", "--branch"]),
+    checks: [
+      directionalMustInclude("next_safe_action", "next action", "Next: Answer the status question"),
+      directionalMustInclude("development_state", "task branch", "Branch: main"),
+      directionalMustInclude("write_scope", "write scope", "Write scope: src/index.ts")
+    ]
   };
 }
 
@@ -178,7 +191,18 @@ function latestDiffReviewScenario() {
     directOutput: [
       runGit(dir, ["status", "--short"]),
       runGit(dir, ["diff", "--", "src/search.ts", "tests/search.test.ts"])
-    ].join("\n")
+    ].join("\n"),
+    checks: [
+      directionalMustInclude("objective", "review objective", "Review the pending search-query change for behavior risk and missing tests."),
+      directionalMustInclude("write_scope", "source write scope", "src/search.ts"),
+      directionalMustInclude("write_scope", "test write scope", "tests/search.test.ts"),
+      directionalMustInclude("development_state", "dirty review paths", [
+        "- Changed files:",
+        "  -  M src/search.ts",
+        "  -  M tests/search.test.ts"
+      ].join("\n")),
+      directionalMustInclude("next_safe_action", "review next action", "Inspect changed files and call out regressions first")
+    ]
   };
 }
 
@@ -318,7 +342,13 @@ function resumedImplementationScenario() {
     directOutput: [
       runGit(dir, ["status", "--short", "--branch"]),
       readFiles(dir, ["src/cache.ts", "src/pipeline.ts", "tests/pipeline.test.ts", "docs/CACHE.md"])
-    ].join("\n")
+    ].join("\n"),
+    checks: [
+      directionalMustInclude("objective", "implementation objective", "Continue the cache-aware pipeline change from recorded source conclusions."),
+      directionalMustInclude("constraints", "API compatibility constraint", "Preserve existing pipeline API behavior."),
+      directionalMustInclude("decisions", "cache ownership decision", "Keep cache state per pipeline instance"),
+      directionalMustInclude("next_safe_action", "implementation next action", "Add cache invalidation regression coverage")
+    ]
   };
 }
 
@@ -377,7 +407,12 @@ function staleSourceCacheScenario() {
     directOutput: [
       runGit(dir, ["status", "--short"]),
       runGit(dir, ["diff", "--", "src/changed.ts"])
-    ].join("\n")
+    ].join("\n"),
+    checks: [
+      directionalMustInclude("source_state", "changed source record", "CHANGED src/changed.ts"),
+      directionalMustInclude("source_state", "missing source record", "MISSING docs/removed.md"),
+      directionalMustExclude("source_state", "unchanged source omitted", "src/active.ts")
+    ]
   };
 }
 
@@ -466,10 +501,10 @@ function tightBudgetContextScenario() {
       runGit(dir, ["status", "--short", "--branch"]),
       runGit(dir, ["log", "--oneline", "origin/main..HEAD"])
     ].join("\n"),
-    utilityChecks: [
+    checks: [
       maxEstimatedUsage(220),
-      mustInclude("local upstream drift", "Upstream: origin/main (1 ahead, 0 behind)"),
-      mustInclude("local commit subject", "local release candidate")
+      directionalMustInclude("development_state", "local upstream drift", "Upstream: origin/main (1 ahead, 0 behind)"),
+      directionalMustInclude("development_state", "local commit subject", "local release candidate")
     ]
   };
 }
@@ -543,9 +578,11 @@ function freshAgentContextScenario() {
     "--next",
     "Review local commits before release prep"
   ]);
+  const verifiedHead = runGit(dir, ["rev-parse", "--short", "HEAD"]).trim();
   writeFixtureFile(dir, "README.md", "# Local release candidate\n");
   runGit(dir, ["add", "README.md"]);
   commitFixture(dir, "local release candidate");
+  const currentHead = runGit(dir, ["rev-parse", "--short", "HEAD"]).trim();
 
   return {
     id: "fresh_agent_context",
@@ -559,15 +596,247 @@ function freshAgentContextScenario() {
       runGit(dir, ["log", "--oneline", "origin/main..HEAD"]),
       readFiles(dir, ["docs/RELEASING.md"])
     ].join("\n"),
-    utilityChecks: [
+    checks: [
       maxEstimatedUsage(900),
-      mustInclude("accepted task objective", "Help a fresh agent recover the accepted task"),
-      mustInclude("risk", "Risk: medium"),
-      mustInclude("next action", "Review local commits before release prep"),
-      mustInclude("verification", "Verification: passed - Context handoff checks passed."),
-      mustInclude("local upstream drift", "Upstream: origin/main (1 ahead, 0 behind)"),
-      mustInclude("local commit subject", "local release candidate"),
-      mustInclude("release cadence decision", "Use weekly batch release cadence; local commits remain next-release candidates until Thursday release prep")
+      directionalMustInclude("objective", "accepted task objective", "Help a fresh agent recover the accepted task"),
+      directionalMustInclude("risk", "risk", "Risk: medium"),
+      directionalMustInclude("next_safe_action", "next action", "Review local commits before release prep"),
+      directionalMustInclude("verification", "verification", "Verification: passed - Context handoff checks passed."),
+      directionalMustInclude("development_state", "local upstream drift", "Upstream: origin/main (1 ahead, 0 behind)"),
+      directionalMustInclude("development_state", "local commit subject", "local release candidate"),
+      directionalMustInclude("development_state", "verification HEAD drift warning", `Drift: HEAD changed from ${verifiedHead} to ${currentHead}. Verify task state before continuing.`),
+      directionalMustInclude("decisions", "release cadence decision", "Use weekly batch release cadence; local commits remain next-release candidates until Thursday release prep")
+    ]
+  };
+}
+
+function longRemediationHandoffScenario() {
+  const dir = createFixture("long-remediation-handoff", {
+    "src/lifecycle.ts": "export const lifecycle = \"pending\";\n",
+    "tests/lifecycle.test.ts": "export const deterministicInterleavingCovered = false;\n"
+  });
+  const head = runGit(dir, ["rev-parse", "--short", "HEAD"]).trim();
+  runCli(dir, [
+    "task",
+    "start",
+    "Fix lifecycle remediation findings",
+    "--objective",
+    "Resolve the remaining publication race without weakening rollback or capability revocation.",
+    "--constraint",
+    "Preserve the published generation on every failed replacement.",
+    "--constraint",
+    "Do not push or comment on the pull request without separate authorization.",
+    "--write-scope",
+    "src/lifecycle.ts",
+    "--write-scope",
+    "tests/lifecycle.test.ts",
+    "--next",
+    "Fix the deterministic publish-versus-revoke interleaving",
+    "--risk",
+    "high"
+  ]);
+  runCli(dir, [
+    "record",
+    "decision",
+    "Keep verification pending during the remediation loop; intermediate green checks are checkpoint evidence, not a final verdict.",
+    "--file",
+    "src/lifecycle.ts"
+  ]);
+  runCli(dir, ["task", "verify", "--status", "pending"]);
+  runCli(dir, [
+    "checkpoint",
+    "-m",
+    "Three lifecycle findings are fixed; the publish-versus-revoke interleaving remains open.",
+    "--status",
+    "Remediation continues with verification pending",
+    "--next",
+    "Fix the deterministic publish-versus-revoke interleaving"
+  ]);
+
+  return {
+    id: "long_remediation_handoff",
+    label: "Long remediation handoff",
+    question: "Can another agent continue a security-sensitive fix loop without losing its direction?",
+    agentpackCommand: "agentpack resume --preset chat --query \"lifecycle remediation publish revoke verification\"",
+    agentpackOutput: runCli(dir, ["resume", "--preset", "chat", "--query", "lifecycle remediation publish revoke verification"]),
+    directCommand: "git status --short --branch && git log -1 --format=%H && cat src/lifecycle.ts tests/lifecycle.test.ts",
+    directOutput: [
+      runGit(dir, ["status", "--short", "--branch"]),
+      runGit(dir, ["log", "-1", "--format=%H"]),
+      readFiles(dir, ["src/lifecycle.ts", "tests/lifecycle.test.ts"])
+    ].join("\n"),
+    checks: [
+      directionalMustInclude("objective", "remediation objective", "Resolve the remaining publication race without weakening rollback or capability revocation."),
+      directionalMustInclude("constraints", "rollback constraint", "Preserve the published generation on every failed replacement."),
+      directionalMustInclude("authorization", "remote authorization boundary", "Do not push or comment on the pull request without separate authorization."),
+      directionalMustInclude("development_state", "worktree", `- Worktree: ${realpathSync(dir)}`),
+      directionalMustInclude("development_state", "branch", "- Branch: main"),
+      directionalMustInclude("development_state", "HEAD", `- Commit: ${head}`),
+      directionalMustInclude("write_scope", "implementation scope", "src/lifecycle.ts"),
+      directionalMustInclude("decisions", "pending-verification decision", "Keep verification pending during the remediation loop"),
+      directionalMustInclude("open_findings", "remaining lifecycle finding", "Fix the deterministic publish-versus-revoke interleaving"),
+      directionalMustInclude("verification", "verification remains pending", "- Verification: pending")
+    ]
+  };
+}
+
+function externalReviewWaitScenario() {
+  const dir = createFixture("external-review-wait", {
+    "src/reviewed.ts": "export const reviewed = true;\n",
+    "tests/reviewed.test.ts": "export const verified = true;\n"
+  });
+  runCli(dir, [
+    "task",
+    "start",
+    "Wait for independent verification",
+    "--objective",
+    "Preserve a commit-bound local PASS while an independent reviewer evaluates the same HEAD.",
+    "--constraint",
+    "Do not edit while the external review is pending; return verification to pending before any remediation.",
+    "--write-scope",
+    "src/reviewed.ts",
+    "--write-scope",
+    "tests/reviewed.test.ts",
+    "--next",
+    "Resume after the independent review verdict",
+    "--risk",
+    "high"
+  ]);
+  const evidenceOutput = runCli(dir, [
+    "evidence",
+    "add",
+    "--kind",
+    "test-output",
+    "--content",
+    "Focused verification passed on the committed HEAD."
+  ]);
+  const evidenceId = requiredEventId(evidenceOutput);
+  runCli(dir, [
+    "task",
+    "verify",
+    "--status",
+    "passed",
+    "--evidence",
+    evidenceId,
+    "--summary",
+    "Local commit-bound verification passed; independent review remains external."
+  ]);
+  runCli(dir, ["task", "park"]);
+
+  return {
+    id: "external_review_wait",
+    label: "External-review wait",
+    question: "Does a parked external wait retain its frozen verdict and safe resume action?",
+    agentpackCommand: "agentpack task handoff",
+    agentpackOutput: runCli(dir, ["task", "handoff"]),
+    directCommand: "git status --short --branch && git log -1 --oneline",
+    directOutput: [
+      runGit(dir, ["status", "--short", "--branch"]),
+      runGit(dir, ["log", "-1", "--oneline"])
+    ].join("\n"),
+    checks: [
+      directionalMustInclude("objective", "external-review objective", "Preserve a commit-bound local PASS while an independent reviewer evaluates the same HEAD."),
+      directionalMustInclude("constraints", "frozen-edit constraint", "Do not edit while the external review is pending"),
+      directionalMustInclude("verification", "frozen passed verdict", "Verification: passed - Local commit-bound verification passed; independent review remains external."),
+      directionalMustInclude("verification", "verification evidence", `Evidence: ${evidenceId}`),
+      directionalMustInclude("next_safe_action", "external-review resume action", "Resume after the independent review verdict"),
+      directionalMustInclude("development_state", "parked lifecycle state", "Wait for independent verification [parked]")
+    ]
+  };
+}
+
+function deliveryAuthorizationScenario() {
+  const dir = createFixture("delivery-authorization", {
+    "README.md": "# Delivery fixture\n"
+  });
+  runGit(dir, ["checkout", "-b", "feature/delivery-boundary"]);
+  const head = runGit(dir, ["rev-parse", "--short", "HEAD"]).trim();
+  runCli(dir, [
+    "task",
+    "start",
+    "Deliver reviewed change",
+    "--objective",
+    "Push the reviewed commit and open a draft pull request against main.",
+    "--constraint",
+    "Authorization covers one normal push and draft pull-request creation only.",
+    "--constraint",
+    "Do not force-push, merge, approve, comment, close, retitle, tag, publish, or resolve review threads.",
+    "--next",
+    "Verify the exact branch and HEAD before the authorized push",
+    "--risk",
+    "medium"
+  ]);
+
+  return {
+    id: "delivery_authorization",
+    label: "Delivery authorization",
+    question: "Can a delivery agent distinguish an allowed push/PR action from forbidden remote mutations?",
+    agentpackCommand: "agentpack task handoff",
+    agentpackOutput: runCli(dir, ["task", "handoff"]),
+    directCommand: "git status --short --branch && git log -1 --format=%H",
+    directOutput: [
+      runGit(dir, ["status", "--short", "--branch"]),
+      runGit(dir, ["log", "-1", "--format=%H"])
+    ].join("\n"),
+    checks: [
+      directionalMustInclude("objective", "delivery objective", "Push the reviewed commit and open a draft pull request against main."),
+      directionalMustInclude("authorization", "allowed remote action", "Authorization covers one normal push and draft pull-request creation only."),
+      directionalMustInclude("authorization", "forbidden remote actions", "Do not force-push, merge, approve, comment, close, retitle, tag, publish, or resolve review threads."),
+      directionalMustInclude("development_state", "delivery branch", "Branch: feature/delivery-boundary"),
+      directionalMustInclude("development_state", "delivery HEAD", `HEAD: ${head}`),
+      directionalMustInclude("next_safe_action", "pre-push check", "Verify the exact branch and HEAD before the authorized push")
+    ]
+  };
+}
+
+function developmentStateDriftScenario() {
+  const dir = createFixture("development-state-drift", {
+    "src/state.ts": "export const state = \"baseline\";\n"
+  });
+  runCli(dir, [
+    "task",
+    "start",
+    "Detect development-state drift",
+    "--objective",
+    "Stop a handoff when the branch, HEAD, or worktree no longer matches the accepted Task Passport.",
+    "--write-scope",
+    "src/state.ts",
+    "--next",
+    "Resolve every drift warning before editing",
+    "--risk",
+    "high"
+  ]);
+  const passport = JSON.parse(runCli(dir, ["task", "passport"]));
+  const expectedHead = passport.currentHead;
+  writeFixtureFile(dir, "src/state.ts", "export const state = \"drifted\";\n");
+  runGit(dir, ["add", "src/state.ts"]);
+  commitFixture(dir, "unexpected state drift");
+  const actualHead = runGit(dir, ["rev-parse", "--short", "HEAD"]).trim();
+  runGit(dir, ["checkout", "-b", "unexpected/review"]);
+  const passportPath = path.join(dir, ".agentpack", "tasks", passport.id, "passport.json");
+  writeFileSync(passportPath, `${JSON.stringify({
+    ...passport,
+    worktree: path.join(dir, "other-worktree")
+  }, null, 2)}\n`, "utf8");
+
+  return {
+    id: "development_state_drift",
+    label: "Development-state drift",
+    question: "Does handoff fail visibly when branch, HEAD, and worktree identity drift?",
+    agentpackCommand: "agentpack task handoff",
+    agentpackOutput: runCli(dir, ["task", "handoff"]),
+    directCommand: "git status --short --branch && git log -1 --format=%H",
+    directOutput: [
+      runGit(dir, ["status", "--short", "--branch"]),
+      runGit(dir, ["log", "-1", "--format=%H"])
+    ].join("\n"),
+    checks: [
+      directionalMustInclude("objective", "drift objective", "Stop a handoff when the branch, HEAD, or worktree no longer matches the accepted Task Passport."),
+      directionalMustInclude("development_state", "current drifted HEAD", `HEAD: ${actualHead}`),
+      directionalMustInclude("development_state", "branch drift", "Branch drift: passport branch is main, current branch is unexpected/review."),
+      directionalMustInclude("development_state", "HEAD drift", `HEAD drift: passport head is ${expectedHead}, current head is ${actualHead}.`),
+      directionalMustInclude("development_state", "worktree drift", "Worktree path differs from the current pack root; verify this passport belongs to this workspace."),
+      directionalMustInclude("next_safe_action", "drift remediation", "Resolve every drift warning before editing")
     ]
   };
 }
@@ -663,7 +932,13 @@ function releasePrepHandoffScenario() {
       runGit(dir, ["status", "--short", "--branch"]),
       runGit(dir, ["log", "--oneline", "-5"]),
       readFiles(dir, ["docs/RELEASING.md", ".github/workflows/publish.yml"])
-    ].join("\n")
+    ].join("\n"),
+    checks: [
+      directionalMustInclude("objective", "release objective", "Summarize release readiness, remaining checks, and rollout constraints."),
+      directionalMustInclude("authorization", "release authorization boundary", "Do not push, tag, publish, or create GitHub Releases from benchmark fixtures."),
+      directionalMustInclude("write_scope", "release docs scope", "docs/RELEASING.md"),
+      directionalMustInclude("next_safe_action", "release next action", "Run release preflight in the real repo")
+    ]
   };
 }
 
@@ -730,7 +1005,9 @@ function summarizeScenario(scenario) {
     direct,
     sectionBreakdown
   };
-  const utilityChecks = (scenario.utilityChecks || []).map((check) => ({
+  const checks = (scenario.checks || []).map((check) => ({
+    kind: check.kind,
+    signal: check.signal,
     label: check.label,
     passed: Boolean(check.check(scenario.agentpackOutput, summary))
   }));
@@ -753,25 +1030,69 @@ function summarizeScenario(scenario) {
       mcpTokens: mcp.estimatedTokens - direct.estimatedTokens
     },
     ...(sectionBreakdown.length > 0 ? { sectionBreakdown } : {}),
-    ...(utilityChecks.length > 0 ? { utilityChecks } : {})
+    ...(checks.length > 0 ? { checks } : {})
   };
 }
 
-function mustInclude(label, text) {
+function summarizeChecks(scenarios, kind) {
+  const checks = scenarios.flatMap((scenario) => (
+    scenario.checks || []
+  ).filter((check) => check.kind === kind).map((check) => ({
+    scenario: scenario.id,
+    ...check
+  })));
+  const signalMap = new Map();
+  for (const check of checks) {
+    const current = signalMap.get(check.signal) || { signal: check.signal, passed: 0, total: 0 };
+    current.total += 1;
+    current.passed += check.passed ? 1 : 0;
+    signalMap.set(check.signal, current);
+  }
+  const passed = checks.filter((check) => check.passed).length;
   return {
+    passed,
+    total: checks.length,
+    failed: checks.length - passed,
+    signals: [...signalMap.values()]
+  };
+}
+
+function directionalMustInclude(signal, label, text) {
+  return {
+    kind: "directional",
+    signal,
     label,
     check: (output) => output.includes(text)
   };
 }
 
+function directionalMustExclude(signal, label, text) {
+  return {
+    kind: "directional",
+    signal,
+    label,
+    check: (output) => !output.includes(text)
+  };
+}
+
 function maxEstimatedUsage(maxTokens) {
   return {
+    kind: "guardrail",
+    signal: "token_budget",
     label: `estimated usage <= ${maxTokens}`,
     check: (output) => {
       const tokens = estimatedUsageFromOutput(output);
       return tokens !== null && tokens <= maxTokens;
     }
   };
+}
+
+function requiredEventId(output) {
+  const eventId = String(output || "").match(/evt_[A-Za-z0-9_-]+/u)?.[0];
+  if (!eventId) {
+    throw new Error(`Expected an evidence event id, got: ${String(output || "").trim()}`);
+  }
+  return eventId;
 }
 
 function estimatedUsageFromOutput(output) {
@@ -842,8 +1163,18 @@ function wrapMcpText(text) {
 }
 
 function runCli(cwd, cliArgs) {
+  const home = path.join(fixturesRoot, "_homes", path.basename(cwd));
+  mkdirSync(home, { recursive: true });
   return execFileSync(process.execPath, [cliPath, ...cliArgs], {
     cwd,
+    env: {
+      ...process.env,
+      HOME: home,
+      USERPROFILE: home,
+      XDG_CONFIG_HOME: path.join(home, ".config"),
+      APPDATA: path.join(home, "AppData", "Roaming"),
+      LOCALAPPDATA: path.join(home, "AppData", "Local")
+    },
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"]
   });
@@ -874,10 +1205,12 @@ function printReport(report) {
     String(section.characters)
   ]));
   const lines = [
-    "Agentpack token overhead benchmark",
+    "Agentpack directional-integrity benchmark",
     `Generated: ${report.generatedAt}`,
     `Estimate: ${report.estimate}`,
     `MCP wrapper: ${report.mcpWrapper}`,
+    `Directional integrity: ${report.directionalIntegrity.passed}/${report.directionalIntegrity.total} checks passed`,
+    `Guardrails: ${report.guardrails.passed}/${report.guardrails.total} checks passed`,
     "",
     table([
       [
@@ -913,20 +1246,22 @@ function printReport(report) {
     );
   }
 
-  const utilityRows = report.scenarios.flatMap((scenario) => (
-    scenario.utilityChecks || []
+  const checkRows = report.scenarios.flatMap((scenario) => (
+    scenario.checks || []
   ).map((check) => [
     scenario.id,
+    check.kind,
+    check.signal,
     check.label,
     check.passed ? "pass" : "fail"
   ]));
 
-  if (utilityRows.length > 0) {
+  if (checkRows.length > 0) {
     lines.push(
-      "Context utility checks:",
+      "Directional-integrity and guardrail checks:",
       table([
-        ["Scenario", "Check", "Status"],
-        ...utilityRows
+        ["Scenario", "Kind", "Signal", "Check", "Status"],
+        ...checkRows
       ]),
       ""
     );
@@ -941,7 +1276,8 @@ function printReport(report) {
     "",
     "Notes:",
     "- Token counts use Agentpack's rough local estimate, not a model tokenizer.",
-    "- Utility checks assert must-have handoff signals; token counts diagnose cost, not value by themselves.",
+    "- Directional checks assert must-have handoff facts; any failure is a continuity regression.",
+    "- Guardrails diagnose ceremony and output cost without redefining the product goal.",
     "- Direct baselines show the likely git/file reads an agent would do without Agentpack context.",
     "- Positive deltas are overhead; negative deltas mean Agentpack output was shorter than the direct baseline.",
     "- Section breakdown attributes Markdown resume growth to buckets such as Source Cache, Evidence, and Current Task Passport."

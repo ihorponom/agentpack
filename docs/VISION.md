@@ -8,6 +8,8 @@ Git stores code state. Agentpack stores reviewed task state.
 
 It is a neutral task passport for coding-agent workspaces: a compact, portable record of decisions, source conclusions, evidence, dead ends, checkpoints, and next actions that survives chat compaction, client switches, worktree handoffs, machines, and branches.
 
+Success is [directional integrity](DIRECTIONAL-INTEGRITY.md): a fresh agent can recover the reviewed objective, constraints, exact development state, decisions, open findings, verification and authorization boundaries, and next safe action without reconstructing chat history.
+
 ## Product Bet
 
 As agent UIs evolve from chat boxes into execution workspaces, handoffs will become common: chat to worktree, IDE to background agent, local repo to cloud sandbox, Claude to Codex, Cursor to CI.
