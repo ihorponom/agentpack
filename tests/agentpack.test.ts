@@ -24,7 +24,7 @@ import { getGitInfo } from "../src/core/git.js";
 import { sha256 } from "../src/core/hash.js";
 import { buildResume } from "../src/core/resume.js";
 import { writePackTransaction } from "../src/core/store.js";
-import { formatClientGateCommand } from "../src/integrations/install.js";
+import { formatClientGateCommand, installIntegration, mergeClaudeDesktopConfig } from "../src/integrations/install.js";
 import { startMcpServer, TOOL_DEFINITIONS } from "../src/mcp/server.js";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -2396,6 +2396,102 @@ test("serializes concurrent source record writes", async () => {
   assert.equal(existsSync(path.join(dir, ".agentpack", ".lock")), false);
 });
 
+test("init stays ledger-only and Claude Desktop CLI merge stays explicit", () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), "agentpack-init-only-root-"));
+  const home = mkdtempSync(path.join(os.tmpdir(), "agentpack-init-only-home-"));
+  const configPath = path.join(home, "Library", "Application Support", "Claude", "claude_desktop_config.json");
+  const original = "{\n  \"mcpServers\": {}\n}\n";
+  mkdirSync(path.dirname(configPath), { recursive: true });
+  writeFileSync(configPath, original, "utf8");
+
+  const commandOptions = {
+    cwd: root,
+    env: { ...process.env, HOME: home },
+    encoding: "utf8" as const,
+    stdio: "pipe" as const
+  };
+  execFileSync(process.execPath, [cli, "init"], commandOptions);
+  assert.equal(readFileSync(configPath, "utf8"), original);
+  assert.equal(existsSync(`${configPath}.agentpack-backup`), false);
+
+  const preview = execFileSync(process.execPath, [cli, "install", "claude-desktop"], commandOptions);
+  assert.match(preview, /dry run/i);
+  assert.equal(readFileSync(configPath, "utf8"), original);
+  assert.equal(existsSync(path.join(root, ".agentpack", "instructions", "claude-desktop-mcp.example.json")), false);
+
+  const installed = execFileSync(process.execPath, [cli, "install", "claude-desktop", "--write"], commandOptions);
+  assert.equal(existsSync(path.join(root, ".agentpack", "instructions", "claude-desktop-mcp.example.json")), true);
+  if (process.platform === "darwin") {
+    assert.match(installed, /Claude Desktop config: updated/);
+    assert.ok(JSON.parse(readFileSync(configPath, "utf8")).mcpServers[expectedMcpServerName(root)]);
+    assert.equal(readFileSync(`${configPath}.agentpack-backup`, "utf8"), original);
+  } else {
+    assert.match(installed, /skipped automatic merge/);
+    assert.equal(readFileSync(configPath, "utf8"), original);
+  }
+});
+
+test("Claude Desktop config merge fails closed on unsafe inputs", () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), "agentpack-desktop-root-"));
+  const configDir = mkdtempSync(path.join(os.tmpdir(), "agentpack-desktop-config-"));
+  const configPath = path.join(configDir, "claude_desktop_config.json");
+  const serverName = expectedMcpServerName(root);
+
+  const malformed = "{ invalid json\n";
+  writeFileSync(configPath, malformed, "utf8");
+  assert.throws(() => mergeClaudeDesktopConfig(root, configPath), /invalid Claude Desktop config/);
+  assert.equal(readFileSync(configPath, "utf8"), malformed);
+
+  const collision = `${JSON.stringify({
+    preserved: true,
+    mcpServers: { [serverName]: { command: "/usr/bin/custom", args: ["serve"] } }
+  }, null, 2)}\n`;
+  writeFileSync(configPath, collision, "utf8");
+  assert.throws(() => mergeClaudeDesktopConfig(root, configPath), /entry Agentpack does not own/);
+  assert.equal(readFileSync(configPath, "utf8"), collision);
+
+  const valid = `${JSON.stringify({ preserved: true, mcpServers: {} }, null, 2)}\n`;
+  writeFileSync(configPath, valid, "utf8");
+  const external = "{\n  \"external\": true,\n  \"mcpServers\": {}\n}\n";
+  assert.throws(
+    () => mergeClaudeDesktopConfig(root, configPath, () => writeFileSync(configPath, external, "utf8")),
+    /config changed concurrently/
+  );
+  assert.equal(readFileSync(configPath, "utf8"), external);
+  assert.equal(readFileSync(`${configPath}.agentpack-backup`, "utf8"), valid);
+  unlinkSync(`${configPath}.agentpack-backup`);
+  writeFileSync(configPath, valid, "utf8");
+
+  writeFileSync(`${configPath}.agentpack.lock`, "busy\n", "utf8");
+  assert.throws(() => mergeClaudeDesktopConfig(root, configPath), /registration lock already exists/);
+  assert.equal(readFileSync(configPath, "utf8"), valid);
+  unlinkSync(`${configPath}.agentpack.lock`);
+
+  symlinkSync(path.join(configDir, "missing-backup"), `${configPath}.agentpack-backup`);
+  assert.throws(() => mergeClaudeDesktopConfig(root, configPath), /backup must be an ordinary file, not a symlink/);
+  assert.equal(readFileSync(configPath, "utf8"), valid);
+  unlinkSync(`${configPath}.agentpack-backup`);
+
+  const outside = path.join(configDir, "outside.json");
+  writeFileSync(outside, "{\"outside\":true}\n", "utf8");
+  unlinkSync(configPath);
+  symlinkSync(outside, configPath);
+  assert.throws(() => mergeClaudeDesktopConfig(root, configPath), /config must be an ordinary file, not a symlink/);
+  assert.equal(readFileSync(outside, "utf8"), "{\"outside\":true}\n");
+
+  const partialRoot = mkdtempSync(path.join(os.tmpdir(), "agentpack-desktop-partial-root-"));
+  run(partialRoot, ["init"]);
+  const malformedPartial = "{ still invalid\n";
+  unlinkSync(configPath);
+  writeFileSync(configPath, malformedPartial, "utf8");
+  assert.throws(
+    () => installIntegration(partialRoot, "claude-desktop", { dryRun: false, claudeDesktopConfigPath: configPath }),
+    /recovery files were installed, but global config merge failed/
+  );
+  assert.equal(existsSync(path.join(partialRoot, ".agentpack", "instructions", "claude-desktop-mcp.example.json")), true);
+  assert.equal(readFileSync(configPath, "utf8"), malformedPartial);
+});
+
 test("previews and writes project-local MCP client install files", () => {
   const dir = mkdtempSync(path.join(os.tmpdir(), "agentpack-install-test-"));
   const serverName = expectedMcpServerName(dir);
@@ -2474,12 +2570,26 @@ test("previews and writes project-local MCP client install files", () => {
 
   const claudeDesktopPreview = run(dir, ["install", "claude-desktop"]);
   assert.match(claudeDesktopPreview, /claude-desktop install plan/);
-  assert.match(claudeDesktopPreview, /No Claude Desktop global config is modified/);
+  assert.match(claudeDesktopPreview, /Dry-run changes nothing/);
   assert.equal(existsSync(path.join(dir, ".agentpack", "instructions", "claude-desktop-mcp.example.json")), false);
 
-  const claudeDesktopInstall = run(dir, ["install", "claude-desktop", "--write"]);
+  const desktopConfigDir = mkdtempSync(path.join(os.tmpdir(), "agentpack-desktop-config-"));
+  const desktopConfigPath = path.join(desktopConfigDir, "claude_desktop_config.json");
+  const originalDesktopConfig = `${JSON.stringify({
+    theme: "dark",
+    mcpServers: { existing: { command: "/usr/bin/existing" } }
+  }, null, 2)}\n`;
+  writeFileSync(desktopConfigPath, originalDesktopConfig, "utf8");
+  const claudeDesktopInstall = installIntegration(realpathSync(dir), "claude-desktop", {
+    dryRun: false,
+    claudeDesktopConfigPath: desktopConfigPath
+  });
   assert.match(claudeDesktopInstall, /Installed Agentpack claude-desktop integration/);
-  assert.match(claudeDesktopInstall, /claude_desktop_config\.json/);
+  assert.match(claudeDesktopInstall, /Claude Desktop config: updated/);
+  const mergedDesktopConfig = JSON.parse(readFileSync(desktopConfigPath, "utf8"));
+  assert.equal(mergedDesktopConfig.theme, "dark");
+  assert.deepEqual(mergedDesktopConfig.mcpServers.existing, { command: "/usr/bin/existing" });
+  assert.equal(readFileSync(`${desktopConfigPath}.agentpack-backup`, "utf8"), originalDesktopConfig);
   const claudeDesktopSnippet = JSON.parse(readFileSync(
     path.join(dir, ".agentpack", "instructions", "claude-desktop-mcp.example.json"),
     "utf8"
@@ -2492,6 +2602,21 @@ test("previews and writes project-local MCP client install files", () => {
   assert.deepEqual(claudeDesktopSnippet.mcpServers[serverName].env, {
     AGENTPACK_ROOT: realpathSync(dir)
   });
+  assert.deepEqual(mergedDesktopConfig.mcpServers[serverName], claudeDesktopSnippet.mcpServers[serverName]);
+  const repeatedDesktopInstall = installIntegration(realpathSync(dir), "claude-desktop", {
+    dryRun: false,
+    claudeDesktopConfigPath: desktopConfigPath
+  });
+  assert.match(repeatedDesktopInstall, /already up to date/);
+  assert.equal(readFileSync(`${desktopConfigPath}.agentpack-backup`, "utf8"), originalDesktopConfig);
+  mergedDesktopConfig.mcpServers[serverName].command = "/opt/node";
+  mergedDesktopConfig.mcpServers[serverName].args[0] = "/opt/agentpack.js";
+  const staleDesktopConfig = `${JSON.stringify(mergedDesktopConfig, null, 2)}\n`;
+  writeFileSync(desktopConfigPath, staleDesktopConfig, "utf8");
+  const refreshedDesktopInstall = mergeClaudeDesktopConfig(realpathSync(dir), desktopConfigPath);
+  assert.match(refreshedDesktopInstall, /updated/);
+  assert.equal(JSON.parse(readFileSync(desktopConfigPath, "utf8")).mcpServers[serverName].command, process.execPath);
+  assert.equal(readFileSync(`${desktopConfigPath}.agentpack-backup`, "utf8"), staleDesktopConfig);
   assert.notDeepEqual(claudeDesktopSnippet.mcpServers[serverName], {
     command: "agentpack",
     args: ["mcp", "--root", realpathSync(dir)],

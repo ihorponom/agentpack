@@ -207,7 +207,8 @@ agentpack install claude-desktop --write
 agentpack install cursor --write
 ```
 
-See [INTEGRATIONS.md](INTEGRATIONS.md) for target-specific files and manual global config steps.
+See [INTEGRATIONS.md](INTEGRATIONS.md) for target-specific files and the explicit
+macOS global merge performed by `install claude-desktop --write`.
 
 After changing Agentpack itself and running `npm run build`, reconnect or restart any already-running MCP client. Stdio MCP clients keep the server process alive, so they do not automatically load the newly built `dist/` files.
 

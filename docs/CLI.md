@@ -6,6 +6,15 @@ Use the CLI directly when you want to inspect state yourself, debug an MCP setup
 
 Use `agentpack <command> --help` for command-specific help. These help screens do not require an initialized `.agentpack/` directory and do not execute the command.
 
+`agentpack init` only initializes the repo-local ledger. Client integration
+remains explicit through `agentpack install <target>`. In particular,
+`agentpack install claude-desktop --write` writes its local recovery files and
+merges the repo-specific server entry into the existing macOS Claude Desktop
+config. Agentpack installers serialize through a lock and check external drift
+immediately before atomic replacement; this is optimistic conflict detection,
+not a lock on actively rewriting third-party processes. The dry-run form does
+not change either local or global files.
+
 ## Inspect State
 
 ```bash

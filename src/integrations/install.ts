@@ -1,4 +1,5 @@
-import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, rmdirSync, unlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, renameSync, rmdirSync, unlinkSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { getGitHooksPath, getGitRepoBounds } from "../core/git.js";
@@ -175,6 +176,8 @@ type InstallTarget = typeof INSTALL_TARGETS[number];
 
 interface InstallOptions {
   dryRun?: boolean;
+  claudeDesktopConfigPath?: string;
+  beforeClaudeDesktopConfigWrite?: () => void;
 }
 
 interface InstallFile {
@@ -195,6 +198,12 @@ interface McpConfig {
   [key: string]: unknown;
 }
 
+interface DesktopConfigSnapshot {
+  content: string | null;
+  identity?: readonly [bigint, bigint, bigint, bigint, bigint];
+  mode: number;
+}
+
 export function installIntegration(root: string, targetValue: string, options: InstallOptions = {}): string {
   const target = parseTarget(targetValue);
   const dryRun = options.dryRun !== false;
@@ -205,11 +214,24 @@ export function installIntegration(root: string, targetValue: string, options: I
     status: fileStatus(file.filePath, file.content)
   }));
 
+  let desktopResult: string | undefined;
   if (!dryRun) {
     applyPlan(root, plan);
+    if (target === "claude-desktop") {
+      try {
+        desktopResult = mergeClaudeDesktopConfig(
+          root,
+          options.claudeDesktopConfigPath,
+          options.beforeClaudeDesktopConfigWrite
+        );
+      } catch (error) {
+        throw new Error(`Claude Desktop recovery files were installed, but global config merge failed: ${String(error)}`);
+      }
+    }
   }
 
-  return formatInstallResult(root, plan, statuses, dryRun);
+  const localResult = formatInstallResult(root, plan, statuses, dryRun);
+  return desktopResult ? `${localResult}\n\n${desktopResult}` : localResult;
 }
 
 function buildInstallPlan(root: string, target: InstallTarget): InstallPlan {
@@ -322,10 +344,10 @@ function buildInstallPlan(root: string, target: InstallTarget): InstallPlan {
         )
       ],
       notes: [
-        "No Claude Desktop global config is modified.",
+        "Dry-run changes nothing; --write also merges this repo's entry into the macOS Claude Desktop config when its directory exists.",
         "Claude Desktop does not read project .mcp.json or CLAUDE.md.",
         `The generated Claude Desktop server key for this repo is ${serverName}.`,
-        `To enable local MCP in Claude Desktop manually, review ${relativePath(root, desktopSnippetPath)} and merge it into ~/Library/Application Support/Claude/claude_desktop_config.json on macOS.`
+        `The generated snippet at ${relativePath(root, desktopSnippetPath)} remains the recovery fallback.`
       ]
     };
   }
@@ -906,6 +928,218 @@ function claudeDesktopMcpServer(root: string): Record<string, unknown> {
   };
 }
 
+export function mergeClaudeDesktopConfig(root: string, configPath?: string, beforeWrite?: () => void): string {
+  const home = process.env.HOME && path.isAbsolute(process.env.HOME) ? process.env.HOME : homedir();
+  const targetPath = configPath ? path.resolve(configPath) : (process.platform === "darwin"
+    ? path.join(home, "Library", "Application Support", "Claude", "claude_desktop_config.json")
+    : undefined);
+  if (!targetPath) {
+    return `Claude Desktop config: skipped automatic merge on ${process.platform}; use the generated recovery snippet.`;
+  }
+
+  const directory = path.dirname(targetPath);
+  const directoryStat = lstatIfPresent(directory);
+  if (!directoryStat) {
+    return `Claude Desktop config: skipped because ${directory} does not exist; start Claude Desktop once and rerun the installer.`;
+  }
+  if (directoryStat.isSymbolicLink() || !directoryStat.isDirectory()) {
+    throw new Error(`config directory must be an ordinary directory: ${directory}`);
+  }
+  assertSafeDesktopPath(targetPath, "config");
+  assertSafeDesktopPath(`${targetPath}.agentpack-backup`, "backup");
+  assertSafeDesktopPath(`${targetPath}.agentpack.lock`, "lock");
+
+  const lockPath = `${targetPath}.agentpack.lock`;
+  const lockToken = `${JSON.stringify({ pid: process.pid, createdAt: new Date().toISOString() })}\n`;
+  try {
+    writeFileSync(lockPath, lockToken, { encoding: "utf8", flag: "wx", mode: 0o600 });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "EEXIST") {
+      throw new Error(`registration lock already exists at ${lockPath}; confirm no installer is running, then inspect and remove that exact lock manually`);
+    }
+    throw error;
+  }
+  const lockStat = lstatSync(lockPath);
+
+  let result: string | undefined;
+  let mergeError: unknown;
+  try {
+    result = mergeClaudeDesktopConfigLocked(realpathSync(root), targetPath, beforeWrite);
+  } catch (error) {
+    mergeError = error;
+  }
+
+  let cleanupError: unknown;
+  try {
+    const currentLockStat = lstatSync(lockPath);
+    if (readFileSync(lockPath, "utf8") !== lockToken
+      || currentLockStat.dev !== lockStat.dev
+      || currentLockStat.ino !== lockStat.ino) {
+      throw new Error("lock ownership changed; replacement lock was left untouched");
+    }
+    unlinkSync(lockPath);
+  } catch (error) {
+    cleanupError = error;
+  }
+
+  if (mergeError !== undefined) {
+    throw new Error(`${String(mergeError)}${cleanupError === undefined ? "" : `; lock cleanup also failed: ${String(cleanupError)}`}`);
+  }
+  if (!result) {
+    throw new Error("Claude Desktop config merge ended without a result");
+  }
+  return cleanupError === undefined
+    ? result
+    : `${result}\nWARNING: config merge completed, but lock cleanup failed at ${lockPath}: ${String(cleanupError)}`;
+}
+
+function mergeClaudeDesktopConfigLocked(root: string, configPath: string, beforeWrite?: () => void): string {
+  const snapshot = readDesktopConfigSnapshot(configPath);
+  const existing = snapshot.content;
+  const parsed = existing === null ? {} : parseDesktopConfig(existing, configPath);
+  const servers = parsed.mcpServers === undefined
+    ? {}
+    : requireJsonObject(parsed.mcpServers, `${configPath} mcpServers`);
+  const serverName = mcpServerName(root);
+  const current = servers[serverName];
+  const desired = claudeDesktopMcpServer(root);
+
+  if (current !== undefined && JSON.stringify(current) !== JSON.stringify(desired) && !isGeneratedDesktopEntry(current, root)) {
+    throw new Error(`server key ${serverName} already contains an entry Agentpack does not own; config was not changed`);
+  }
+  if (current !== undefined && JSON.stringify(current) === JSON.stringify(desired)) {
+    return `Claude Desktop config: ${serverName} is already up to date in ${configPath}.`;
+  }
+
+  const next = `${JSON.stringify({
+    ...parsed,
+    mcpServers: { ...servers, [serverName]: desired }
+  }, null, 2)}\n`;
+  if (existing !== null) {
+    writeAtomic(`${configPath}.agentpack-backup`, existing, 0o600);
+  }
+
+  writeAtomic(configPath, next, snapshot.mode || 0o600, () => {
+    beforeWrite?.();
+    assertDesktopConfigUnchanged(configPath, snapshot);
+  });
+  return existing === null
+    ? `Claude Desktop config: added ${serverName} to ${configPath}. Restart Claude Desktop to load it.`
+    : `Claude Desktop config: updated ${serverName} in ${configPath}; backup: ${configPath}.agentpack-backup. Restart Claude Desktop to load it.`;
+}
+
+function parseDesktopConfig(content: string, configPath: string): Record<string, unknown> {
+  try {
+    return requireJsonObject(JSON.parse(content), `Claude Desktop config at ${configPath}`);
+  } catch (error) {
+    throw new Error(`invalid Claude Desktop config; config was not changed: ${String(error)}`);
+  }
+}
+
+function requireJsonObject(value: unknown, label: string): Record<string, unknown> {
+  if (!isRecord(value)) {
+    throw new Error(`${label} must be a JSON object`);
+  }
+  return value;
+}
+
+function isGeneratedDesktopEntry(value: unknown, root: string): boolean {
+  if (!isRecord(value) || Object.keys(value).sort().join(",") !== "args,command,env") {
+    return false;
+  }
+  const args = Array.isArray(value.args) && value.args.every((item) => typeof item === "string") ? value.args : [];
+  const env = isRecord(value.env) ? value.env : {};
+  return typeof value.command === "string"
+    && path.isAbsolute(value.command)
+    && path.basename(value.command).toLowerCase() === path.basename(process.execPath).toLowerCase()
+    && args.length === 4
+    && path.isAbsolute(args[0] || "")
+    && path.basename(args[0] || "") === "agentpack.js"
+    && args[1] === "mcp"
+    && args[2] === "--root"
+    && Object.keys(env).join(",") === "AGENTPACK_ROOT"
+    && typeof env.AGENTPACK_ROOT === "string"
+    && sameRealPath(args[3] || "", root)
+    && sameRealPath(env.AGENTPACK_ROOT, root);
+}
+
+function sameRealPath(candidate: string, root: string): boolean {
+  try {
+    return realpathSync(candidate) === root;
+  } catch {
+    return false;
+  }
+}
+
+function assertSafeDesktopPath(filePath: string, label: string): void {
+  const stat = lstatIfPresent(filePath);
+  if (stat?.isSymbolicLink() || (label === "config" && stat && !stat.isFile())) {
+    throw new Error(`Claude Desktop ${label} must be an ordinary file, not a symlink: ${filePath}`);
+  }
+}
+
+function lstatIfPresent(filePath: string): ReturnType<typeof lstatSync> | undefined {
+  try {
+    return lstatSync(filePath);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      return undefined;
+    }
+    throw error;
+  }
+}
+
+function readDesktopConfigSnapshot(configPath: string): DesktopConfigSnapshot {
+  assertSafeDesktopPath(configPath, "config");
+  if (!lstatIfPresent(configPath)) {
+    return { content: null, mode: 0o600 };
+  }
+  const before = lstatSync(configPath, { bigint: true });
+  const content = readFileSync(configPath, "utf8");
+  const after = lstatSync(configPath, { bigint: true });
+  const identity = (stat: typeof before) => [
+    stat.dev, stat.ino, stat.size, stat.mtimeNs, stat.ctimeNs
+  ] as const;
+  const afterIdentity = identity(after);
+  if (!sameDesktopIdentity(identity(before), afterIdentity)) {
+    throw new Error(`config changed while being read at ${configPath}; config was not changed`);
+  }
+  return { content, identity: afterIdentity, mode: Number(after.mode & 0o777n) };
+}
+
+function assertDesktopConfigUnchanged(configPath: string, snapshot: DesktopConfigSnapshot): void {
+  const current = readDesktopConfigSnapshot(configPath);
+  if (current.content !== snapshot.content
+    || !sameDesktopIdentity(current.identity, snapshot.identity)) {
+    throw new Error(`config changed concurrently at ${configPath}; config was not replaced`);
+  }
+}
+
+function sameDesktopIdentity(left: DesktopConfigSnapshot["identity"], right: DesktopConfigSnapshot["identity"]): boolean {
+  return left === undefined || right === undefined
+    ? left === right
+    : left.every((value, index) => value === right[index]);
+}
+
+function writeAtomic(filePath: string, content: string, mode: number, beforeRename?: () => void): void {
+  const tempPath = path.join(
+    path.dirname(filePath),
+    `.${path.basename(filePath)}.${process.pid}.${Date.now()}.${Math.random().toString(16).slice(2)}.tmp`
+  );
+  let tempCreated = false;
+  try {
+    writeFileSync(tempPath, content, { encoding: "utf8", flag: "wx", mode });
+    tempCreated = true;
+    beforeRename?.();
+    renameSync(tempPath, filePath);
+  } catch (error) {
+    if (tempCreated) {
+      try { unlinkSync(tempPath); } catch { /* best-effort cleanup */ }
+    }
+    throw error;
+  }
+}
+
 function claudeDesktopJsonSnippet(root: string, serverName: string): string {
   return JSON.stringify({
     mcpServers: {
@@ -924,9 +1158,9 @@ function claudeDesktopInstructions(root: string, snippetPath: string, serverName
     `Generated server key for this repo: \`${serverName}\`.`,
     "If Claude Desktop has several Agentpack servers, use the server/tool group with this repo-specific key for this repo.",
     "",
-    "For Claude Desktop local MCP, prefer Desktop Extensions/MCP bundles when Agentpack ships one.",
-    "Until then, review the generated JSON snippet and merge it into your Claude Desktop config manually.",
-    "Do not copy the generated snippet over the Desktop config file; that can delete existing MCP servers.",
+    "On macOS, `agentpack install claude-desktop --write` atomically merges this entry into the existing Desktop config.",
+    "Agentpack uses a lock plus optimistic conflict detection; unrelated processes actively rewriting the config are not locked.",
+    "The generated JSON remains the dry-run and recovery fallback. Do not copy the generated snippet over the Desktop config file.",
     "",
     "macOS config path:",
     "",
@@ -940,22 +1174,20 @@ function claudeDesktopInstructions(root: string, snippetPath: string, serverName
     relativePath(root, snippetPath),
     "```",
     "",
-    "Safe manual flow:",
+    "Install and verify:",
     "",
     "```bash",
     "agentpack install claude-desktop --write",
     "cat .agentpack/instructions/claude-desktop-mcp.example.json",
-    "mkdir -p \"$HOME/Library/Application Support/Claude\"",
-    "open -e \"$HOME/Library/Application Support/Claude/claude_desktop_config.json\"",
     "```",
     "",
-    "If the config file does not exist yet, create it with the generated snippet content.",
-    `If it already exists, merge only the generated \`mcpServers.${serverName}\` entry into the existing JSON.`,
+    "The installer preserves existing settings and servers, writes a sibling backup before replacement, and fails closed on malformed JSON, symlinks, collisions, or a concurrent Agentpack install.",
+    "If the Claude application directory is missing, start Desktop once and rerun. Non-macOS installs keep the snippet as the reported fallback.",
     "",
     "After editing the Claude Desktop config, restart Claude Desktop.",
     "",
     "The generated snippet launches Agentpack through the current Node executable and Agentpack entrypoint, rather than relying on `agentpack` being available in Claude Desktop's GUI `PATH`.",
-    "If Claude Desktop reports that the MCP server disconnected or cannot start, rerun `agentpack install claude-desktop --write`, merge the refreshed snippet, then restart Claude Desktop.",
+    "If Claude Desktop reports that the MCP server disconnected or cannot start, rerun `agentpack install claude-desktop --write`, inspect the result, then restart Claude Desktop.",
     "Keep both the `--root` argument and `AGENTPACK_ROOT` env value pointed at the project whose `.agentpack/` state you want Claude Desktop to use.",
     `When switching this Claude Desktop server to another repo, update both \`mcpServers.${serverName}.args\` \`--root\` and \`mcpServers.${serverName}.env.AGENTPACK_ROOT\`, then restart Claude Desktop.`
   ].join("\n");

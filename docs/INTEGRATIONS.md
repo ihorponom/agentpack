@@ -8,7 +8,7 @@ Agentpack integrates through local project files, CLI, and MCP. It does not writ
 | --- | --- | --- | --- | --- |
 | Codex | `AGENTS.md` plus `.codex/agents/builder.toml` | Project-local `.codex/config.toml`, plus a generated `.agentpack/instructions/codex-mcp.example.toml` review snippet | `.codex/hooks.json` `PreToolUse` | Tested |
 | Claude Code | `CLAUDE.md` | Project-local `.mcp.json` in the repo root | `.claude/settings.json` `PreToolUse` | Tested |
-| Claude Desktop | None automatically read from the repo | User-local Claude Desktop config, copied from generated `.agentpack/instructions/claude-desktop-mcp.example.json` | None | Tested |
+| Claude Desktop | None automatically read from the repo | User-local macOS config, merged by `agentpack install claude-desktop --write`; generated snippet is the recovery fallback | None | Tested |
 | Cursor | `.cursor/rules/agentpack.mdc` | Project-local `.cursor/mcp.json` | `.cursor/hooks.json` `preToolUse` | Tested |
 | Git (any client) | Pre-commit gate hook | None; installs `.git/hooks/pre-commit` via `agentpack install git-hooks --write` | `.git/hooks/pre-commit` | Tested |
 | Web chats | Markdown handoff | No local stdio MCP support; use `agentpack export` | None | Manual fallback |
@@ -67,7 +67,10 @@ Force preview explicitly:
 agentpack install claude --dry-run
 ```
 
-Agentpack only writes project-local files and `.agentpack/instructions/*`. These files are intended to stay ignored/local. Agentpack does not silently edit global files such as `~/.codex/config.toml`, `~/.claude.json`, `~/Library/Application Support/Claude/claude_desktop_config.json`, or `~/.cursor/mcp.json`.
+Agentpack normally writes project-local files and `.agentpack/instructions/*`.
+The explicit exception is `agentpack install claude-desktop --write`, which
+reports and merges one repo-specific entry into the macOS user config.
+Other installers do not edit global client configuration.
 
 Generated MCP server names are repo-specific to avoid collisions when several repos are open in the same client. The Agentpack repo itself keeps the short name `agentpack`; other repos use `agentpack-<repo-name>`, such as `agentpack-example-app`.
 
@@ -146,37 +149,30 @@ This writes:
 
 - `.agentpack/instructions/claude-desktop.md`
 - `.agentpack/instructions/claude-desktop-mcp.example.json`
+- one repo-specific entry in the existing macOS
+  `~/Library/Application Support/Claude/claude_desktop_config.json`, when its
+  parent directory exists
 
-Claude Desktop does not read this repo's `.mcp.json` or `CLAUDE.md`. To enable Agentpack manually in Claude Desktop on macOS, review `.agentpack/instructions/claude-desktop-mcp.example.json` and merge the generated Agentpack server entry into:
+Claude Desktop does not read this repo's `.mcp.json` or `CLAUDE.md`. The
+installer preserves all existing top-level settings and MCP servers, backs up
+an existing config to `claude_desktop_config.json.agentpack-backup`, and refuses
+malformed JSON, symlinks, conflicting server ownership, or an existing install
+lock. It never restarts Claude Desktop.
 
-```text
-~/Library/Application Support/Claude/claude_desktop_config.json
-```
+Agentpack installers serialize through that lock and check content plus file
+identity immediately before atomic replacement. This is optimistic conflict
+detection: it does not serialize an unrelated process that actively rewrites
+the config, so avoid running the installer during such a rewrite.
 
-Do not copy the generated snippet over the Desktop config file. That can delete existing Claude Desktop MCP servers. Merge only the generated `mcpServers.<server-name>` entry.
+The generated snippet is still useful for dry-run review and recovery. Do not
+copy it over the complete Desktop config; that would delete unrelated settings.
+If the Claude application directory does not exist yet, start Desktop once and
+rerun the installer. On non-macOS platforms this release leaves the global
+config untouched and reports that the snippet is the fallback.
 
-Safe manual flow:
-
-```bash
-agentpack install claude-desktop --write
-cat .agentpack/instructions/claude-desktop-mcp.example.json
-mkdir -p "$HOME/Library/Application Support/Claude"
-open -e "$HOME/Library/Application Support/Claude/claude_desktop_config.json"
-```
-
-If the config file does not exist yet, create it with the generated snippet content. If it already exists, add only this entry under its existing `mcpServers` object:
-
-```json
-"agentpack-example-app": {
-  "command": "/absolute/path/to/node",
-  "args": ["/absolute/path/to/agentpack.js", "mcp", "--root", "/absolute/path/to/your/project"],
-  "env": {
-    "AGENTPACK_ROOT": "/absolute/path/to/your/project"
-  }
-}
-```
-
-Then restart Claude Desktop. The generated snippet launches Agentpack through the current Node executable and Agentpack entrypoint, rather than relying on `agentpack` being available in Claude Desktop's GUI `PATH`. If Claude Desktop reports that the MCP server disconnected or cannot start, rerun `agentpack install claude-desktop --write`, merge the refreshed snippet, then restart Claude Desktop. Keep both the `--root` argument and the `AGENTPACK_ROOT` env value pointed at the project whose `.agentpack/` state you want Claude Desktop to use.
+After a successful merge, restart Claude Desktop. The entry uses the current
+Node executable and absolute Agentpack entrypoint instead of relying on GUI
+`PATH`. Re-run the installer after switching Node or package locations.
 
 Claude Desktop has no project-local repo config. If it lists several Agentpack servers, use the repo-specific server key from the generated snippet for the repo you are working in. If you switch one Claude Desktop server from one repo to another, update both that server's `--root` value and `AGENTPACK_ROOT`, then restart Claude Desktop.
 

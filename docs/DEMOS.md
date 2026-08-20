@@ -39,7 +39,7 @@ Scenario: a long coding session gets compacted, disconnected, or restarted.
 1. During the first session, record only durable state manually or let the connected agent do it through MCP:
 
 ```bash
-agentpack record decision "Keep the installer local-only; do not edit global client config automatically."
+agentpack record decision "Keep global client writes explicit; only claude-desktop --write may update the Desktop user config."
 agentpack record dead-end "Relying on GUI apps to inherit shell PATH is unreliable for MCP launchers."
 agentpack checkpoint -m "Installer behavior decided" --status "Need Desktop docs and tests" --next "Update Claude Desktop snippet"
 ```
@@ -164,7 +164,9 @@ agentpack install cursor --write
 agentpack install claude-desktop --write
 ```
 
-3. For Claude Desktop, merge only the generated `mcpServers.<server-name>` entry from `.agentpack/instructions/claude-desktop-mcp.example.json` into the user-local Claude Desktop config, then restart Claude Desktop.
+3. On macOS, the Claude Desktop installer reports and merges the repo-specific
+   entry automatically. Review the generated snippet only as a recovery
+   fallback, then restart Claude Desktop.
 4. Verify the setup:
 
 ```bash

@@ -356,7 +356,9 @@ Initialize .agentpack/ in the current repository and add local Agentpack files t
 
 Generate MCP client configuration and project instructions for one client surface.
 git-hooks installs a pre-commit hook that runs \`agentpack task gate --staged\`.
-Defaults to dry-run; pass --write to apply generated files.`;
+Defaults to dry-run; pass --write to apply generated files.
+On macOS, claude-desktop --write also reports and atomically merges the repo entry into the user-local Desktop config.
+This uses optimistic conflict detection; unrelated active writers are not locked.`;
   }
 
   if (command === "mcp") {
