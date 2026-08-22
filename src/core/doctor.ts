@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, realpathSync, statSync } from "node:fs";
+import { accessSync, constants, existsSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -342,16 +342,18 @@ function checkCodexGate(root: string): DoctorCheck {
   const groups = Array.isArray(hooks?.PreToolUse) ? hooks.PreToolUse : [];
   const handlers = groups.flatMap((group) => isRecord(group) && Array.isArray(group.hooks) ? group.hooks : []);
   const handler = handlers.find((candidate) => isRecord(candidate) && commandValue(candidate).includes("task gate --client codex"));
-  const issues = validateGateHandler(handler, "codex");
+  const validation = validateGateHandler(handler, "codex");
   if (isRecord(handler)) {
     const windowsCommand = commandValue(handler, "commandWindows");
     if (!windowsCommand.includes("task gate --client codex")) {
-      issues.push("Windows command override is missing");
-    } else if (!isCurrentGateCommand(windowsCommand)) {
-      issues.push("Windows launcher is stale; rerun `agentpack install codex --write`");
+      validation.issues.push("Windows command override is missing");
+    } else {
+      const windowsValidation = validateGateCommand(windowsCommand, "codex", "Windows ");
+      validation.issues.push(...windowsValidation.issues);
+      validation.alternate ||= windowsValidation.alternate;
     }
   }
-  return gateDoctorCheck("Codex", issues);
+  return gateDoctorCheck("Codex", validation);
 }
 
 function checkCursorGate(root: string): DoctorCheck {
@@ -368,14 +370,14 @@ function checkCursorGate(root: string): DoctorCheck {
   const hooks = getRecord(parsed.value, "hooks");
   const handlers = Array.isArray(hooks?.preToolUse) ? hooks.preToolUse : [];
   const handler = handlers.find((candidate) => isRecord(candidate) && commandValue(candidate).includes("task gate --client cursor"));
-  const issues = validateGateHandler(handler, "cursor");
+  const validation = validateGateHandler(handler, "cursor");
   if (isRecord(handler)) {
     const matcher = typeof handler.matcher === "string" ? handler.matcher : "";
     if (!matcher.includes("Write") || !matcher.includes("Delete")) {
-      issues.push("matcher should cover Write and Delete");
+      validation.issues.push("matcher should cover Write and Delete");
     }
   }
-  return gateDoctorCheck("Cursor", issues);
+  return gateDoctorCheck("Cursor", validation);
 }
 
 function missingGateCheck(client: "Codex" | "Cursor", installSignalPath: string): DoctorCheck {
@@ -389,27 +391,178 @@ function missingGateCheck(client: "Codex" | "Cursor", installSignalPath: string)
   };
 }
 
-function validateGateHandler(handler: unknown, client: "codex" | "cursor"): string[] {
+interface GateLauncherValidation {
+  issues: string[];
+  alternate: boolean;
+}
+
+const MAX_LAUNCHER_MANIFEST_BYTES = 64 * 1024;
+
+function validateGateHandler(handler: unknown, client: "codex" | "cursor"): GateLauncherValidation {
   if (!isRecord(handler)) {
-    return [`Agentpack ${client} gate entry is missing; rerun \`agentpack install ${client} --write\``];
+    return {
+      issues: [`Agentpack ${client} gate entry is missing; rerun \`agentpack install ${client} --write\``],
+      alternate: false
+    };
   }
-  const command = commandValue(handler);
-  const issues: string[] = [];
-  if (!isCurrentGateCommand(command)) {
-    issues.push(`launcher is stale; rerun \`agentpack install ${client} --write\``);
-  }
-  return issues;
+  return validateGateCommand(commandValue(handler), client);
 }
 
-function isCurrentGateCommand(command: string): boolean {
-  return command.includes(process.execPath) && command.includes(agentpackEntrypoint());
+function validateGateCommand(
+  command: string,
+  client: "codex" | "cursor",
+  label = ""
+): GateLauncherValidation {
+  const reinstall = `rerun \`agentpack install ${client} --write\``;
+  const parsed = parseGeneratedGateCommand(command, client);
+  if (!parsed) {
+    return { issues: [`${label}launcher command is malformed; ${reinstall}`], alternate: false };
+  }
+
+  const [execPath, entrypoint] = parsed;
+  if (!path.isAbsolute(execPath)) {
+    return { issues: [`${label}launcher does not use an absolute Node.js executable; ${reinstall}`], alternate: false };
+  }
+  if (!isUsableNodeExecutable(execPath)) {
+    return { issues: [`${label}launcher Node.js executable does not exist or is not executable; ${reinstall}`], alternate: false };
+  }
+  if (!path.isAbsolute(entrypoint) || !isUsableEntrypoint(entrypoint)) {
+    return { issues: [`${label}Agentpack entrypoint does not exist, is unreadable, or is empty; ${reinstall}`], alternate: false };
+  }
+
+  if (samePath(execPath, process.execPath) && samePath(entrypoint, agentpackEntrypoint())) {
+    return { issues: [], alternate: false };
+  }
+  if (!isCompatibleAgentpackEntrypoint(entrypoint)) {
+    return { issues: [`${label}launcher does not point at a compatible agentpack-cli installation; ${reinstall}`], alternate: false };
+  }
+  return { issues: [], alternate: true };
 }
 
-function gateDoctorCheck(client: "Codex" | "Cursor", issues: string[]): DoctorCheck {
+function parseGeneratedGateCommand(command: string, client: "codex" | "cursor"): [string, string] | undefined {
+  const executable = parseQuotedCommandArgument(command, 0);
+  if (!executable || command[executable.next] !== " ") {
+    return undefined;
+  }
+  const entrypoint = parseQuotedCommandArgument(command, executable.next + 1);
+  if (!entrypoint || command.slice(entrypoint.next) !== ` task gate --client ${client}`) {
+    return undefined;
+  }
+  return [executable.value, entrypoint.value];
+}
+
+function parseQuotedCommandArgument(command: string, start: number): { value: string; next: number } | undefined {
+  const quote = command[start];
+  if (quote !== "'" && quote !== '"') {
+    return undefined;
+  }
+
+  let value = "";
+  for (let index = start + 1; index < command.length; index += 1) {
+    if (quote === "'" && command.startsWith(`'"'"'`, index)) {
+      value += "'";
+      index += 4;
+      continue;
+    }
+    if (quote === '"' && command[index] === "\\" && command[index + 1] === '"') {
+      value += '"';
+      index += 1;
+      continue;
+    }
+    if (command[index] === quote) {
+      return { value, next: index + 1 };
+    }
+    if (command[index] === "\n" || command[index] === "\r" || command[index] === "\0") {
+      return undefined;
+    }
+    value += command[index];
+  }
+  return undefined;
+}
+
+function isRegularFile(filePath: string): boolean {
+  try {
+    return statSync(filePath).isFile();
+  } catch {
+    return false;
+  }
+}
+
+function isUsableNodeExecutable(filePath: string): boolean {
+  try {
+    const stat = statSync(filePath);
+    if (!stat.isFile() || stat.size === 0) {
+      return false;
+    }
+    accessSync(filePath, constants.R_OK | constants.X_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function isUsableEntrypoint(filePath: string): boolean {
+  try {
+    const stat = statSync(filePath);
+    if (!stat.isFile() || stat.size === 0) {
+      return false;
+    }
+    accessSync(filePath, constants.R_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function isCompatibleAgentpackEntrypoint(entrypoint: string): boolean {
+  const packageRoot = path.resolve(path.dirname(entrypoint), "..", "..");
+  const manifestPath = path.join(packageRoot, "package.json");
+  try {
+    const manifestStat = statSync(manifestPath);
+    if (!manifestStat.isFile() || manifestStat.size > MAX_LAUNCHER_MANIFEST_BYTES) {
+      return false;
+    }
+  } catch {
+    return false;
+  }
+
+  const parsed = readJson(manifestPath);
+  if (!parsed.ok || !isRecord(parsed.value) || parsed.value.name !== "agentpack-cli") {
+    return false;
+  }
+  const bin = getRecord(parsed.value, "bin");
+  const binPath = typeof bin?.agentpack === "string" ? bin.agentpack : "";
+  if (!binPath || path.isAbsolute(binPath)) {
+    return false;
+  }
+  const declaredEntrypoint = path.resolve(packageRoot, binPath);
+  const relativeEntrypoint = path.relative(packageRoot, declaredEntrypoint);
+  if (relativeEntrypoint.startsWith(`..${path.sep}`) || relativeEntrypoint === ".." || !samePath(declaredEntrypoint, entrypoint)) {
+    return false;
+  }
+
+  return isCompatibleGateVersion(typeof parsed.value.version === "string" ? parsed.value.version : "");
+}
+
+function isCompatibleGateVersion(version: string): boolean {
+  const match = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/.exec(version);
+  if (!match) {
+    return false;
+  }
+  const major = Number(match[1]);
+  const minor = Number(match[2]);
+  return major === 1 && minor >= 2;
+}
+
+function gateDoctorCheck(client: "Codex" | "Cursor", validation: GateLauncherValidation): DoctorCheck {
   return {
-    status: issues.length ? "warn" : "ok",
+    status: validation.issues.length ? "warn" : "ok",
     name: `${client} gate`,
-    detail: issues.length ? issues.join("; ") : "native task gate configured"
+    detail: validation.issues.length
+      ? validation.issues.join("; ")
+      : validation.alternate
+        ? "native task gate launcher is structurally compatible with another Agentpack installation; runtime not probed"
+        : "native task gate configured"
   };
 }
 

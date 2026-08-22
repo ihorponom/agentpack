@@ -18,7 +18,7 @@ import os from "node:os";
 import path from "node:path";
 import { PassThrough } from "node:stream";
 import test from "node:test";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { resolveMcpStartDir } from "../src/cli/index.js";
 import { buildDoctorReport } from "../src/core/doctor.js";
 import { findCeremonyDiagnostics } from "../src/core/ledger.js";
@@ -4138,6 +4138,126 @@ test("codex and cursor installs merge native task-gate hooks idempotently", () =
   unlinkSync(path.join(dir, ".cursor", "hooks.json"));
   const missingCursorGate = buildDoctorReport(dir).text;
   assert.match(missingCursorGate, /\[warn\] Cursor gate: native task gate is missing/);
+});
+
+test("doctor distinguishes compatible alternate gate launchers from broken launchers", () => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), "agentpack-gate-doctor-test-"));
+  run(dir, ["init"]);
+  run(dir, ["install", "codex", "--write"]);
+  run(dir, ["install", "cursor", "--write"]);
+
+  const currentDoctor = buildDoctorReport(dir).text;
+  assert.match(currentDoctor, /\[ok\] Codex gate: native task gate configured/);
+  assert.match(currentDoctor, /\[ok\] Cursor gate: native task gate configured/);
+
+  const alternateRoot = path.join(dir, "alternate Agent's pack");
+  const alternateNode = process.platform === "win32" ? process.execPath : path.join(alternateRoot, "bin", "nodejs");
+  const alternateEntrypoint = path.join(alternateRoot, "dist", "src", "agentpack.js");
+  if (process.platform !== "win32") {
+    mkdirSync(path.dirname(alternateNode), { recursive: true });
+    symlinkSync(process.execPath, alternateNode);
+  }
+  mkdirSync(path.dirname(alternateEntrypoint), { recursive: true });
+  const alternateEntrypointContent = `#!/usr/bin/env node\nimport ${JSON.stringify(pathToFileURL(cli).href)};\n`;
+  writeFileSync(alternateEntrypoint, alternateEntrypointContent, "utf8");
+  writeFileSync(path.join(alternateRoot, "package.json"), JSON.stringify({
+    name: "agentpack-cli",
+    version: "1.6.1",
+    type: "module",
+    bin: { agentpack: "dist/src/agentpack.js" }
+  }), "utf8");
+
+  const codexHooksPath = path.join(dir, ".codex", "hooks.json");
+  const cursorHooksPath = path.join(dir, ".cursor", "hooks.json");
+  const codexHooks = JSON.parse(readFileSync(codexHooksPath, "utf8"));
+  const cursorHooks = JSON.parse(readFileSync(cursorHooksPath, "utf8"));
+  const codexHandler = codexHooks.hooks.PreToolUse[0].hooks[0];
+  const cursorHandler = cursorHooks.hooks.preToolUse[0];
+  const alternateCodexCommand = formatClientGateCommand(alternateNode, alternateEntrypoint, "codex", "posix");
+  const alternateCursorCommand = formatClientGateCommand(
+    alternateNode,
+    alternateEntrypoint,
+    "cursor",
+    process.platform === "win32" ? "win32" : "posix"
+  );
+  codexHandler.command = alternateCodexCommand;
+  codexHandler.commandWindows = formatClientGateCommand(alternateNode, alternateEntrypoint, "codex", "win32");
+  cursorHandler.command = alternateCursorCommand;
+  writeFileSync(codexHooksPath, JSON.stringify(codexHooks, null, 2), "utf8");
+  writeFileSync(cursorHooksPath, JSON.stringify(cursorHooks, null, 2), "utf8");
+
+  const alternateDoctor = buildDoctorReport(dir).text;
+  assert.match(execFileSync(alternateNode, [alternateEntrypoint, "--help"], { encoding: "utf8" }), /Agentpack/);
+  assert.match(alternateDoctor, /\[ok\] Codex gate: native task gate launcher is structurally compatible with another Agentpack installation; runtime not probed/);
+  assert.match(alternateDoctor, /\[ok\] Cursor gate: native task gate launcher is structurally compatible with another Agentpack installation; runtime not probed/);
+
+  const missingNode = path.join(alternateRoot, "missing", process.platform === "win32" ? "node.exe" : "node");
+  codexHandler.command = formatClientGateCommand(missingNode, alternateEntrypoint, "codex", "posix");
+  codexHandler.commandWindows = formatClientGateCommand(missingNode, alternateEntrypoint, "codex", "win32");
+  cursorHandler.command = formatClientGateCommand(
+    missingNode,
+    alternateEntrypoint,
+    "cursor",
+    process.platform === "win32" ? "win32" : "posix"
+  );
+  writeFileSync(codexHooksPath, JSON.stringify(codexHooks, null, 2), "utf8");
+  writeFileSync(cursorHooksPath, JSON.stringify(cursorHooks, null, 2), "utf8");
+  const missingNodeDoctor = buildDoctorReport(dir).text;
+  assert.match(missingNodeDoctor, /\[warn\] Codex gate: launcher Node\.js executable does not exist or is not executable/);
+  assert.match(missingNodeDoctor, /\[warn\] Cursor gate: launcher Node\.js executable does not exist or is not executable/);
+
+  codexHandler.command = alternateCodexCommand;
+  codexHandler.commandWindows = formatClientGateCommand(alternateNode, alternateEntrypoint, "codex", "win32");
+  cursorHandler.command = alternateCursorCommand;
+  writeFileSync(codexHooksPath, JSON.stringify(codexHooks, null, 2), "utf8");
+  writeFileSync(cursorHooksPath, JSON.stringify(cursorHooks, null, 2), "utf8");
+
+  unlinkSync(alternateEntrypoint);
+  const missingEntrypointDoctor = buildDoctorReport(dir).text;
+  assert.match(missingEntrypointDoctor, /\[warn\] Codex gate: Agentpack entrypoint does not exist, is unreadable, or is empty/);
+  assert.match(missingEntrypointDoctor, /\[warn\] Cursor gate: Agentpack entrypoint does not exist, is unreadable, or is empty/);
+  writeFileSync(alternateEntrypoint, "", "utf8");
+  const emptyEntrypointDoctor = buildDoctorReport(dir).text;
+  assert.match(emptyEntrypointDoctor, /\[warn\] Codex gate: Agentpack entrypoint does not exist, is unreadable, or is empty/);
+  assert.match(emptyEntrypointDoctor, /\[warn\] Cursor gate: Agentpack entrypoint does not exist, is unreadable, or is empty/);
+  writeFileSync(alternateEntrypoint, alternateEntrypointContent, "utf8");
+
+  cursorHandler.command = `${alternateCursorCommand} --unexpected`;
+  writeFileSync(cursorHooksPath, JSON.stringify(cursorHooks, null, 2), "utf8");
+  const malformedDoctor = buildDoctorReport(dir).text;
+  assert.match(malformedDoctor, /\[warn\] Cursor gate: launcher command is malformed/);
+
+  cursorHandler.command = alternateCursorCommand;
+  writeFileSync(cursorHooksPath, JSON.stringify(cursorHooks, null, 2), "utf8");
+  writeFileSync(path.join(alternateRoot, "package.json"), JSON.stringify({
+    name: "agentpack-cli",
+    version: "1.2.0-alpha.1",
+    type: "module",
+    bin: { agentpack: "dist/src/agentpack.js" }
+  }), "utf8");
+  const prereleaseDoctor = buildDoctorReport(dir).text;
+  assert.match(prereleaseDoctor, /\[warn\] Codex gate: launcher does not point at a compatible agentpack-cli installation/);
+  assert.match(prereleaseDoctor, /\[warn\] Cursor gate: launcher does not point at a compatible agentpack-cli installation/);
+
+  writeFileSync(path.join(alternateRoot, "package.json"), JSON.stringify({
+    name: "agentpack-cli",
+    version: "2.0.0",
+    type: "module",
+    bin: { agentpack: "dist/src/agentpack.js" }
+  }), "utf8");
+  const nextMajorDoctor = buildDoctorReport(dir).text;
+  assert.match(nextMajorDoctor, /\[warn\] Codex gate: launcher does not point at a compatible agentpack-cli installation/);
+  assert.match(nextMajorDoctor, /\[warn\] Cursor gate: launcher does not point at a compatible agentpack-cli installation/);
+
+  writeFileSync(path.join(alternateRoot, "package.json"), JSON.stringify({
+    name: "agentpack-cli",
+    version: "01.2.0+invalid..metadata",
+    type: "module",
+    bin: { agentpack: "dist/src/agentpack.js" }
+  }), "utf8");
+  const malformedVersionDoctor = buildDoctorReport(dir).text;
+  assert.match(malformedVersionDoctor, /\[warn\] Codex gate: launcher does not point at a compatible agentpack-cli installation/);
+  assert.match(malformedVersionDoctor, /\[warn\] Cursor gate: launcher does not point at a compatible agentpack-cli installation/);
 });
 
 test("formats native gate commands for POSIX and Windows shells", () => {
