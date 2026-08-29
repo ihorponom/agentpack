@@ -200,7 +200,7 @@ export function addEvidence(root: string, options: EvidenceOptions = {}): Agentp
 
   return appendEvent(root, "evidence", {
     kind,
-    path: evidencePath,
+    path: normalizePath(evidencePath),
     command: redactForRoot(root, options.command || ""),
     exitCode: Number.isFinite(exitCode) ? exitCode : null
   });
