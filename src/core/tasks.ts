@@ -105,6 +105,26 @@ const REQUIRED_ADVERSARIAL_LABELS = [
   "Unresolved findings",
   "Residual risk"
 ] as const;
+const ADVERSARIAL_PLACEHOLDER_VALUES = new Set([
+  "<specific claim or assumption under challenge>",
+  "<specific negative, differential, operational, or rollback check>",
+  "<specific result observed from that check>",
+  "none identified after <specific check performed>",
+  "<specific remaining risk after the check>",
+  "negative <specific check type>",
+  "<passport-bound sha>"
+]);
+
+type AdversarialEvidence = { id: string; kind: string; content: string };
+
+interface AdversarialEvidenceAssessment {
+  id: string;
+  relevanceFailures: number;
+  position: number;
+  missing: string[];
+  malformed: string[];
+  satisfied: boolean;
+}
 
 export function formatVerificationUpdateMessage(passport: TaskPassport, changed: boolean): string {
   const prefix = changed ? "Updated verification" : "Verification unchanged";
@@ -618,8 +638,8 @@ function adversarialVerificationAdvisory(root: string, passport: TaskPassport): 
   if (passport.verification.status === "failed") return null;
   const risk = passport.risk || "unknown";
   const requirement = risk === "medium" || risk === "high"
-    ? "a referenced review-like evidence record with `Review mode: independent read-only` and `Adversarial check type:` naming negative, differential, operational, or rollback"
-    : "a referenced evidence record with the compact adversarial self-challenge template";
+    ? "referenced review-like evidence satisfying `Review mode: independent read-only`, `Adversarial check type:` naming negative, differential, operational, or rollback, and the adversarial evidence template"
+    : "referenced evidence satisfying the compact adversarial self-challenge template";
   const prefix = passport.verification.status === "passed" || passport.verification.status === "accepted"
     ? "Success completion lacks"
     : "Before a successful final verdict, provide";
@@ -629,16 +649,23 @@ function adversarialVerificationAdvisory(root: string, passport: TaskPassport): 
   }
 
   const evidence = referencedAdversarialEvidence(root, passport);
-  if (evidence.some((item) => satisfiesAdversarialContract(item, passport, risk))) return null;
+  const assessments = evidence.map((item, position) => assessAdversarialEvidence(item, passport, risk, position));
+  if (assessments.some((assessment) => assessment.satisfied)) return null;
   const headRequirement = hasCodeScope(passport)
     ? /^[0-9a-f]{7,40}$/i.test(passport.currentHead || "")
       ? ` and Reviewed HEAD matching ${passport.currentHead}`
       : " and a valid Reviewed HEAD bound to the code state"
     : "";
-  return `${prefix} ${requirement}${headRequirement}. Generic statements such as risks considered or tests passed do not satisfy it. Advisory only; this does not judge semantic correctness.`;
+  const bestAssessment = assessments.sort((left, right) => left.relevanceFailures - right.relevanceFailures
+    || (left.missing.length + left.malformed.length) - (right.missing.length + right.malformed.length)
+    || left.position - right.position)[0];
+  const diagnostic = bestAssessment
+    ? formatAdversarialEvidenceDiagnostic(bestAssessment)
+    : "No readable referenced evidence candidate was available for preflight.";
+  return `${prefix} ${requirement}${headRequirement}. ${diagnostic}\n${adversarialEvidenceTemplate(passport, risk)}\nAdvisory only; this does not judge semantic correctness.`;
 }
 
-function referencedAdversarialEvidence(root: string, passport: TaskPassport): Array<{ kind: string; content: string }> {
+function referencedAdversarialEvidence(root: string, passport: TaskPassport): AdversarialEvidence[] {
   const ids = new Set(passport.verification.evidence
     .filter((id) => typeof id === "string" && id.length > 0)
     .slice(-MAX_ADVERSARIAL_EVIDENCE_RECORDS)
@@ -646,7 +673,7 @@ function referencedAdversarialEvidence(root: string, passport: TaskPassport): Ar
   if (!ids.size) return [];
   const events = readRecentAdversarialEvidenceEvents(root, ids);
   const byId = new Map(events.filter((event) => event.type === "evidence" && ids.has(event.id)).map((event) => [event.id, event]));
-  const evidence: Array<{ kind: string; content: string }> = [];
+  const evidence: AdversarialEvidence[] = [];
   let totalBytes = 0;
   for (const id of ids) {
     const event = byId.get(id);
@@ -655,7 +682,7 @@ function referencedAdversarialEvidence(root: string, passport: TaskPassport): Ar
     if (content === null) continue;
     totalBytes += Buffer.byteLength(content);
     if (totalBytes > MAX_ADVERSARIAL_TOTAL_EVIDENCE_BYTES) break;
-    evidence.push({ kind: typeof event.kind === "string" ? event.kind.trim().toLowerCase() : "", content });
+    evidence.push({ id, kind: typeof event.kind === "string" ? event.kind.trim().toLowerCase() : "", content });
   }
   return evidence;
 }
@@ -716,18 +743,75 @@ function safeAdversarialEvidenceContent(root: string, eventPath: string): string
   }
 }
 
-function satisfiesAdversarialContract(evidence: { kind: string; content: string }, passport: TaskPassport, risk: TaskRisk): boolean {
+function assessAdversarialEvidence(evidence: AdversarialEvidence, passport: TaskPassport, risk: TaskRisk, position: number): AdversarialEvidenceAssessment {
   const values = labeledValues(evidence.content);
-  if (!REQUIRED_ADVERSARIAL_LABELS.every((label) => validAdversarialValue(values.get(label) || "", label === "Unresolved findings"))) return false;
-  if (hasCodeScope(passport)) {
-    if (!/^[0-9a-f]{7,40}$/i.test(passport.currentHead || "")) return false;
-    if (values.get("Reviewed HEAD") !== passport.currentHead) return false;
+  const missing: string[] = [];
+  const malformed: string[] = [];
+  let relevanceFailures = 0;
+  for (const label of REQUIRED_ADVERSARIAL_LABELS) {
+    const value = values.get(label);
+    if (value === undefined) missing.push(label);
+    else if (!validAdversarialValue(value, label === "Unresolved findings")) malformed.push(label);
   }
-  if (risk !== "medium" && risk !== "high") return true;
-  if (!ADVERSARIAL_REVIEW_KINDS.has(evidence.kind)) return false;
-  if (values.get("Review mode")?.toLowerCase() !== "independent read-only") return false;
-  const checkType = values.get("Adversarial check type")?.toLowerCase() || "";
-  return /\b(negative|differential|operational|rollback)\b/.test(checkType);
+  if (hasCodeScope(passport)) {
+    if (!/^[0-9a-f]{7,40}$/i.test(passport.currentHead || "")) malformed.push("Passport-bound Reviewed HEAD");
+    else if (values.get("Reviewed HEAD") === undefined) missing.push("Reviewed HEAD");
+    else if (values.get("Reviewed HEAD") !== passport.currentHead) malformed.push("Reviewed HEAD (must exactly match the Passport-bound SHA)");
+  }
+  if (risk === "medium" || risk === "high") {
+    if (!ADVERSARIAL_REVIEW_KINDS.has(evidence.kind)) {
+      malformed.push("review-like evidence kind (use review, adversarial-review, or challenge)");
+      relevanceFailures += 1;
+    }
+    const reviewMode = values.get("Review mode");
+    if (reviewMode === undefined) {
+      missing.push("Review mode");
+      relevanceFailures += 1;
+    } else if (reviewMode.toLowerCase() !== "independent read-only") {
+      malformed.push("Review mode (must be independent read-only)");
+      relevanceFailures += 1;
+    }
+    const checkType = values.get("Adversarial check type");
+    if (checkType === undefined) {
+      missing.push("Adversarial check type");
+      relevanceFailures += 1;
+    } else if (hasAdversarialPlaceholder(checkType) || !/\b(negative|differential|operational|rollback)\b/.test(checkType.toLowerCase())) {
+      malformed.push("Adversarial check type (must name negative, differential, operational, or rollback)");
+      relevanceFailures += 1;
+    }
+    if (hasCodeScope(passport) && (!/^[0-9a-f]{7,40}$/i.test(passport.currentHead || "") || values.get("Reviewed HEAD") !== passport.currentHead)) relevanceFailures += 1;
+  }
+  return { id: evidence.id, relevanceFailures, position, missing, malformed, satisfied: missing.length === 0 && malformed.length === 0 };
+}
+
+function formatAdversarialEvidenceDiagnostic(assessment: AdversarialEvidenceAssessment): string {
+  const details = [
+    assessment.missing.length ? `missing labels/requirements: ${assessment.missing.map((item) => `\`${item}\``).join(", ")}` : "",
+    assessment.malformed.length ? `malformed labels/requirements: ${assessment.malformed.map((item) => `\`${item}\``).join(", ")}` : ""
+  ].filter(Boolean);
+  const identifier = /^[A-Za-z0-9._-]{1,120}$/.test(assessment.id)
+    ? ` \`${assessment.id}\``
+    : " (unsafe identifier omitted)";
+  return `Best referenced evidence candidate${identifier} has ${details.join("; ")}.`;
+}
+
+function adversarialEvidenceTemplate(passport: TaskPassport, risk: TaskRisk): string {
+  const lines = [
+    "Copy-ready evidence template (replace placeholders with specific six-word, 32-character values):",
+    "Claim or assumption attacked: <specific claim or assumption under challenge>",
+    "Counterexample or disconfirming check: <specific negative, differential, operational, or rollback check>",
+    "Observed result: <specific result observed from that check>",
+    "Unresolved findings: none identified after <specific check performed>",
+    "Residual risk: <specific remaining risk after the check>"
+  ];
+  if (hasCodeScope(passport)) {
+    const reviewedHead = /^[0-9a-f]{7,40}$/i.test(passport.currentHead || "")
+      ? passport.currentHead
+      : "<Passport-bound SHA>";
+    lines.push(`Reviewed HEAD: ${reviewedHead}`);
+  }
+  if (risk === "medium" || risk === "high") lines.push("Review mode: independent read-only", "Adversarial check type: negative <specific check type>");
+  return lines.join("\n");
 }
 
 function labeledValues(content: string): Map<string, string> {
@@ -741,10 +825,15 @@ function labeledValues(content: string): Map<string, string> {
 
 function validAdversarialValue(value: string, allowsSpecificNone: boolean): boolean {
   const normalized = value.trim().toLowerCase();
+  if (hasAdversarialPlaceholder(value)) return false;
   if (/^none identified after\s+.{12,}$/i.test(value)) return allowsSpecificNone;
   if (!normalized || GENERIC_ADVERSARIAL_VALUE.test(normalized) || GENERIC_ADVERSARIAL_PREFIX.test(normalized)) return false;
   const words = normalized.match(/[\p{L}\p{N}_-]+/gu) || [];
   return normalized.length >= MIN_ADVERSARIAL_VALUE_LENGTH && words.length >= MIN_ADVERSARIAL_VALUE_WORDS;
+}
+
+function hasAdversarialPlaceholder(value: string): boolean {
+  return ADVERSARIAL_PLACEHOLDER_VALUES.has(value.trim().toLowerCase());
 }
 
 function hasCodeScope(passport: TaskPassport): boolean {

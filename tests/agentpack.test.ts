@@ -2426,7 +2426,7 @@ test("adversarial verification is referenced-evidence-only and advisory", () => 
   assert.doesNotMatch(run(dir, ["task", "audit"]), /Success completion lacks/);
 
   run(dir, ["task", "update", "--risk", "medium"]);
-  assert.match(run(dir, ["task", "audit"]), /review-like evidence record/);
+  assert.match(run(dir, ["task", "audit"]), /review-like evidence satisfying/);
   const paraphrase = addEvidenceFixture(dir, "review", `Claim or assumption attacked: Everything was reviewed\nCounterexample or disconfirming check: All checks succeeded\nObserved result: Everything is fine here\nUnresolved findings: No problems were detected\nResidual risk: No meaningful risk remains\nReviewed HEAD: ${passport.currentHead}\nReview mode: independent read-only\nAdversarial check type: negative`);
   run(dir, ["task", "verify", "--status", "passed", "--evidence", paraphrase]);
   assert.match(run(dir, ["task", "audit"]), /Success completion lacks/);
@@ -2453,11 +2453,67 @@ test("adversarial verification requires a valid bound HEAD for code and exempts 
   const passport = JSON.parse(run(dir, ["task", "passport"]));
   const passportPath = path.join(dir, ".agentpack", "tasks", passport.id, "passport.json");
   writeFileSync(passportPath, `${JSON.stringify({ ...passport, currentHead: "malformed-head" }, null, 2)}\n`, "utf8");
-  assert.match(run(dir, ["task", "audit"]), /valid Reviewed HEAD bound to the code state/);
+  const malformedHeadAudit = run(dir, ["task", "audit"]);
+  assert.match(malformedHeadAudit, /valid Reviewed HEAD bound to the code state/);
+  assert.match(malformedHeadAudit, /Reviewed HEAD: <Passport-bound SHA>/);
+  assert.doesNotMatch(malformedHeadAudit, /Reviewed HEAD: malformed-head/);
 
   run(dir, ["task", "verify", "--status", "failed"]);
   const failedAudit = run(dir, ["task", "audit"]);
-  assert.doesNotMatch(failedAudit, /adversarial self-challenge|review-like evidence record|Reviewed HEAD/);
+  assert.doesNotMatch(failedAudit, /adversarial self-challenge|review-like evidence satisfying|Reviewed HEAD/);
+});
+
+test("adversarial preflight distinguishes missing and malformed evidence labels", () => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), "agentpack-adversarial-preflight-test-"));
+  mkdirSync(path.join(dir, "src"));
+  writeFileSync(path.join(dir, "src", "index.ts"), "export const value = 1;\n", "utf8");
+  runGit(dir, ["init"]);
+  runGit(dir, ["add", "src/index.ts"]);
+  runGit(dir, ["-c", "user.name=Agentpack Test", "-c", "user.email=test@example.com", "-c", "commit.gpgsign=false", "commit", "-m", "initial"]);
+  run(dir, ["init"]);
+  run(dir, ["task", "start", "TUI review fixture", "--write-scope", "src/index.ts", "--risk", "medium"]);
+  const passport = JSON.parse(run(dir, ["task", "passport"]));
+  const tuiPass = addEvidenceFixture(dir, "review", `PASS: review completed without findings.\nReview mode: independent read-only\nAdversarial check type: negative TUI review\nReviewed HEAD: ${passport.currentHead}`);
+  run(dir, ["task", "verify", "--status", "passed", "--evidence", tuiPass]);
+  const missing = run(dir, ["task", "audit"]);
+  assert.match(missing, /Success completion lacks referenced review-like evidence satisfying/);
+  assert.doesNotMatch(missing, /lacks a referenced review-like evidence record/);
+  assert.match(missing, /Best referenced evidence candidate.*has missing labels\/requirements: `Claim or assumption attacked`, `Counterexample or disconfirming check`, `Observed result`, `Unresolved findings`, `Residual risk`/);
+  assert.match(missing, /Copy-ready evidence template/);
+
+  const malformed = addEvidenceFixture(dir, "review", `Claim or assumption attacked: checked\nCounterexample or disconfirming check: verified\nObserved result: looks good\nUnresolved findings: none\nResidual risk: low\nReview mode: independent read-only\nAdversarial check type: negative TUI review\nReviewed HEAD: ${passport.currentHead}`);
+  run(dir, ["task", "verify", "--status", "passed", "--evidence", malformed]);
+  const malformedAudit = run(dir, ["task", "audit"]);
+  assert.match(malformedAudit, /malformed labels\/requirements: `Claim or assumption attacked`, `Counterexample or disconfirming check`, `Observed result`, `Unresolved findings`, `Residual risk`/);
+  assert.doesNotMatch(malformedAudit, /missing labels\/requirements: `Claim or assumption attacked`/);
+});
+
+test("adversarial preflight rejects verbatim templates and prioritizes relevant review evidence", () => {
+  const templateDir = mkdtempSync(path.join(os.tmpdir(), "agentpack-adversarial-template-test-"));
+  run(templateDir, ["init"]);
+  run(templateDir, ["task", "start", "Template fixture", "--write-scope", "docs", "--risk", "low"]);
+  const verbatimTemplate = addEvidenceFixture(templateDir, "note", "Claim or assumption attacked: <specific claim or assumption under challenge>\nCounterexample or disconfirming check: <specific negative, differential, operational, or rollback check>\nObserved result: <specific result observed from that check>\nUnresolved findings: none identified after <specific check performed>\nResidual risk: <specific remaining risk after the check>");
+  run(templateDir, ["task", "verify", "--status", "passed", "--evidence", verbatimTemplate]);
+  assert.match(run(templateDir, ["task", "audit"]), /malformed labels\/requirements: `Claim or assumption attacked`, `Counterexample or disconfirming check`, `Observed result`, `Unresolved findings`, `Residual risk`/);
+  const specificEvidence = addEvidenceFixture(templateDir, "note", "Claim or assumption attacked: Template placeholders might satisfy lexical validation unchanged.\nCounterexample or disconfirming check: Attach the copied template before replacing every placeholder.\nObserved result: The copied placeholder-bearing evidence remains advisory-unsatisfied after review.\nUnresolved findings: none identified after placeholder rejection regression\nResidual risk: Generic Map<T> syntax and literal <specific check> text remain valid.");
+  run(templateDir, ["task", "verify", "--status", "passed", "--evidence", specificEvidence]);
+  assert.doesNotMatch(run(templateDir, ["task", "audit"]), /Success completion lacks/);
+
+  const rankingDir = mkdtempSync(path.join(os.tmpdir(), "agentpack-adversarial-ranking-test-"));
+  mkdirSync(path.join(rankingDir, "src"));
+  writeFileSync(path.join(rankingDir, "src", "index.ts"), "export const value = 1;\n", "utf8");
+  runGit(rankingDir, ["init"]);
+  runGit(rankingDir, ["add", "src/index.ts"]);
+  runGit(rankingDir, ["-c", "user.name=Agentpack Test", "-c", "user.email=test@example.com", "-c", "commit.gpgsign=false", "commit", "-m", "initial"]);
+  run(rankingDir, ["init"]);
+  run(rankingDir, ["task", "start", "Review ranking fixture", "--write-scope", "src/index.ts", "--risk", "medium"]);
+  const passport = JSON.parse(run(rankingDir, ["task", "passport"]));
+  const genericOlder = addEvidenceFixture(rankingDir, "note", `Claim or assumption attacked: The generic note has every base label but no review context.\nCounterexample or disconfirming check: Compare base-label count against review evidence relevance.\nObserved result: This note is structurally complete only for low-risk work.\nUnresolved findings: none identified after base-label ranking comparison\nResidual risk: Generic notes can distract from actual review candidates.\nReviewed HEAD: ${passport.currentHead}`);
+  const tuiReview = addEvidenceFixture(rankingDir, "review", `PASS: review completed without findings.\nReview mode: independent read-only\nAdversarial check type: negative TUI review\nReviewed HEAD: ${passport.currentHead}`);
+  run(rankingDir, ["task", "verify", "--status", "passed", "--evidence", genericOlder, "--evidence", tuiReview]);
+  const rankedAudit = run(rankingDir, ["task", "audit"]);
+  assert.ok(rankedAudit.includes(`Best referenced evidence candidate \`${tuiReview}\` has missing labels/requirements: \`Claim or assumption attacked\``));
+  assert.ok(!rankedAudit.includes(`Best referenced evidence candidate \`${genericOlder}\``));
 });
 
 test("adversarial verification accepts bounded compatible review kinds and degrades unsafe evidence", () => {
@@ -2523,23 +2579,24 @@ test("CLI and MCP expose the same adversarial audit and finalize advisory", asyn
     const dir = mkdtempSync(path.join(os.tmpdir(), "agentpack-adversarial-parity-"));
     run(dir, ["init"]);
     run(dir, ["task", "start", "Parity task", "--write-scope", "docs", "--risk", "medium"]);
-    run(dir, ["task", "verify", "--status", "passed"]);
+    const tuiPass = addEvidenceFixture(dir, "review", "PASS: independent review completed without findings.\nReview mode: independent read-only\nAdversarial check type: negative TUI review");
+    run(dir, ["task", "verify", "--status", "passed", "--evidence", tuiPass]);
     return dir;
   };
 
   const cliDir = createFixture();
   const cliAudit = run(cliDir, ["task", "audit"]);
   const cliFinalize = run(cliDir, ["task", "finalize"]);
-  assert.match(cliAudit, /Success completion lacks a referenced review-like evidence record/);
-  assert.match(cliFinalize, /Success completion lacks a referenced review-like evidence record/);
+  assert.match(cliAudit, /missing labels\/requirements: `Claim or assumption attacked`/);
+  assert.match(cliFinalize, /Copy-ready evidence template/);
 
   const mcpDir = createFixture();
   const mcp = createMcpHarness(mcpDir);
   const auditResponse = await mcp.send({ jsonrpc: "2.0", id: 801, method: "tools/call", params: { name: "task_audit", arguments: { json: true } } });
   const mcpAudit = JSON.parse(auditResponse.result.content[0].text);
-  assert.match(JSON.stringify(mcpAudit), /Success completion lacks a referenced review-like evidence record/);
+  assert.match(JSON.stringify(mcpAudit), /missing labels\/requirements: `Claim or assumption attacked`/);
   const finalizeResponse = await mcp.send({ jsonrpc: "2.0", id: 802, method: "tools/call", params: { name: "task_finalize", arguments: {} } });
-  assert.match(finalizeResponse.result.content[0].text, /Success completion lacks a referenced review-like evidence record/);
+  assert.match(finalizeResponse.result.content[0].text, /Copy-ready evidence template/);
 });
 
 test("manages a current task passport", () => {
