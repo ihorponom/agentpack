@@ -16,6 +16,7 @@ import {
 } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
 import test from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -25,6 +26,7 @@ import { findCeremonyDiagnostics } from "../src/core/ledger.js";
 import { getGitInfo } from "../src/core/git.js";
 import { sha256 } from "../src/core/hash.js";
 import { buildResume } from "../src/core/resume.js";
+import { buildTuiModel, loadTuiTaskDetails, reduceTuiNavigation, renderTuiSnapshot, runTuiSession, sanitizeTerminalText } from "../src/core/tui.js";
 import { writePackTransaction } from "../src/core/store.js";
 import { formatClientGateCommand, installIntegration, mergeClaudeDesktopConfig } from "../src/integrations/install.js";
 import { startMcpServer, TOOL_DEFINITIONS } from "../src/mcp/server.js";
@@ -93,6 +95,220 @@ test("--version and --help run without an initialized pack", () => {
   assert.match(initHelp, /agentpack init/);
   assert.match(initHelp, /Initialize \.agentpack\//);
   assert.equal(existsSync(path.join(dir, ".agentpack")), false);
+});
+
+test("TUI read model inspects historical tasks and evidence without mutating the pack", () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), "agentpack-tui-test-"));
+  run(root, ["init"]);
+  const first = run(root, ["task", "start", "first", "--objective", "first objective"]);
+  const firstId = first.match(/Started task (task_[^\s]+)/)?.[1] || "";
+  run(root, ["task", "park"]);
+  run(root, ["task", "start", "second", "--objective", "second objective"]);
+  const evidenceId = addEvidenceFixture(root, "test-output", "safe \u001b[31msecret=top\u001b[0m\npreview");
+  run(root, ["task", "verify", "--status", "passed", "--evidence", evidenceId, "--summary", "checked"]);
+  const beforePack = packTreeSnapshot(path.join(root, ".agentpack"));
+  const beforeCurrent = readFileSync(path.join(root, ".agentpack", "tasks", "current"), "utf8");
+  const beforeEvents = readFileSync(path.join(root, ".agentpack", "events.jsonl"), "utf8");
+  const model = buildTuiModel(root);
+  assert.ok(model.tasks.some((task) => task.passport.id === firstId));
+  const firstTask = model.tasks.find((task) => task.passport.id === firstId);
+  assert.ok(firstTask);
+  assert.ok(loadTuiTaskDetails(model, firstTask).timeline.some((event) => event.type === "task-start"));
+  const secondTask = model.tasks.find((task) => task.passport.title === "second");
+  assert.ok(secondTask);
+  const secondEvidence = loadTuiTaskDetails(model, secondTask).evidence[0];
+  assert.match(secondEvidence?.preview || "", /secret=\[REDACTED\]|secret=top/);
+  assert.doesNotMatch(secondEvidence?.preview || "", /\x1b/);
+  assert.match(secondEvidence?.path || "", /^evidence\//);
+  assert.equal(secondEvidence?.exitCode, null);
+  assert.match(renderTuiSnapshot(model, "first"), /first/);
+  assert.match(run(root, ["tui"]), /Agentpack Inspector \(read-only\)/);
+  assert.equal(readFileSync(path.join(root, ".agentpack", "tasks", "current"), "utf8"), beforeCurrent);
+  assert.equal(readFileSync(path.join(root, ".agentpack", "events.jsonl"), "utf8"), beforeEvents);
+  assert.deepEqual(packTreeSnapshot(path.join(root, ".agentpack")), beforePack, "inspection must not alter any ledger file");
+  assert.equal(sanitizeTerminalText("x\u001b[2J\u0007y\nz"), "xy\nz");
+  let navigation = reduceTuiNavigation({ selected: 0, view: 0, offset: 0, query: "", searching: false }, "j", 3);
+  assert.equal(navigation.selected, 1);
+  navigation = reduceTuiNavigation(navigation, "\t", 3);
+  assert.equal(navigation.view, 1);
+  navigation = reduceTuiNavigation(navigation, "/", 3);
+  navigation = reduceTuiNavigation(navigation, "a", 3);
+  assert.equal(navigation.query, "a");
+  navigation = reduceTuiNavigation(navigation, "\u001b", 3);
+  assert.equal(navigation.query, "");
+  navigation = { selected: 1, view: 2, offset: 0, query: "", searching: false };
+  assert.equal(reduceTuiNavigation(navigation, "\u001b[B", 3).selected, 1, "detail arrow scroll does not switch task");
+  assert.equal(reduceTuiNavigation(navigation, "\u001b[B", 3).offset, 1);
+  assert.equal(reduceTuiNavigation(navigation, "\r", 3).view, 3);
+  assert.equal(reduceTuiNavigation(navigation, "\u001b", 3).view, 1);
+  navigation = { selected: 23, view: 0, offset: 0, query: "", searching: false };
+  navigation = reduceTuiNavigation(navigation, "j", 30);
+  assert.deepEqual({ selected: navigation.selected, offset: navigation.offset }, { selected: 24, offset: 1 }, "task selection remains visible after the first page");
+  navigation = reduceTuiNavigation(navigation, "k", 30);
+  assert.deepEqual({ selected: navigation.selected, offset: navigation.offset }, { selected: 23, offset: 1 });
+
+  writeFileSync(path.join(root, ".agentpack", "events.jsonl"), `${beforeEvents}{not json}\n`, "utf8");
+  const malformed = buildTuiModel(root);
+  assert.ok(malformed.warnings.some((warning) => warning.includes("malformed global events")));
+
+  const external = mkdtempSync(path.join(os.tmpdir(), "agentpack-tui-evidence-outside-"));
+  const linked = path.join(root, ".agentpack", "evidence", "linked");
+  symlinkSync(external, linked);
+  const evidenceEvents = beforeEvents.split("\n").filter(Boolean).map((line) => JSON.parse(line));
+  const evidenceEvent = evidenceEvents.find((event) => event.id === evidenceId);
+  writeFileSync(path.join(root, ".agentpack", "events.jsonl"), `${beforeEvents}${JSON.stringify(evidenceEvent)}\n`, "utf8");
+  const duplicate = buildTuiModel(root);
+  assert.ok(duplicate.warnings.some((warning) => warning.includes(`Duplicate evidence event id ${evidenceId}`)));
+  const duplicateTask = duplicate.tasks.find((task) => task.passport.title === "second");
+  assert.ok(duplicateTask);
+  assert.match(loadTuiTaskDetails(duplicate, duplicateTask).evidence[0]?.warning || "", /ambiguous/);
+
+  evidenceEvent.path = "evidence/linked/escape.txt";
+  writeFileSync(path.join(root, ".agentpack", "events.jsonl"), `${evidenceEvents.map((event) => JSON.stringify(event)).join("\n")}\n`, "utf8");
+  const unsafeModel = buildTuiModel(root);
+  const unsafeTask = unsafeModel.tasks.find((task) => task.passport.title === "second");
+  assert.ok(unsafeTask);
+  const unsafe = loadTuiTaskDetails(unsafeModel, unsafeTask).evidence[0];
+  assert.match(unsafe?.warning || "", /Unsafe/);
+});
+
+test("TUI terminal session restores raw mode and alternate screen", () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), "agentpack-tui-session-"));
+  run(root, ["init"]);
+  run(root, ["task", "start", "session"]);
+  const model = buildTuiModel(root);
+
+  const input = new PassThrough() as PassThrough & { isTTY: boolean; setRawMode: (enabled: boolean) => PassThrough };
+  const output = new PassThrough() as PassThrough & { isTTY: boolean };
+  const signals = new EventEmitter();
+  const rawModes: boolean[] = [];
+  let outputText = "";
+  input.isTTY = true;
+  input.setRawMode = (enabled: boolean) => { rawModes.push(enabled); return input; };
+  output.isTTY = true;
+  output.on("data", (chunk) => { outputText += chunk.toString(); });
+
+  const restore = runTuiSession(model, { stdin: input as any, stdout: output as any, signals: signals as any });
+  input.write("/sess\r");
+  assert.match(outputText, /Filter: sess/, "coalesced raw input is parsed as individual keys");
+  input.write("q");
+  assert.deepEqual(rawModes, [true, false]);
+  assert.match(outputText, /\x1b\[\?1049h/);
+  assert.match(outputText, /\x1b\[\?1049l/);
+  const outputAfterQuit = outputText;
+  restore();
+  assert.equal(outputText, outputAfterQuit, "cleanup is idempotent");
+
+  const failingInput = new PassThrough() as PassThrough & { isTTY: boolean; setRawMode: (enabled: boolean) => PassThrough };
+  const failingOutput = new EventEmitter() as EventEmitter & { isTTY: boolean; write: (value: string) => boolean };
+  const failingSignals = new EventEmitter();
+  const failingRawModes: boolean[] = [];
+  const failingWrites: string[] = [];
+  failingInput.isTTY = true;
+  failingInput.setRawMode = (enabled: boolean) => { failingRawModes.push(enabled); return failingInput; };
+  failingOutput.isTTY = true;
+  failingOutput.write = (value: string) => {
+    failingWrites.push(value);
+    if (value.startsWith("\x1b[H")) throw new Error("injected draw failure");
+    return true;
+  };
+
+  assert.throws(
+    () => runTuiSession(model, { stdin: failingInput as any, stdout: failingOutput as any, signals: failingSignals as any }),
+    /injected draw failure/
+  );
+  assert.deepEqual(failingRawModes, [true, false]);
+  assert.ok(failingWrites.includes("\x1b[?25h\x1b[?1049l"), "draw failure restores the alternate screen");
+});
+
+test("TUI bounds retained content and loads task details lazily", () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), "agentpack-tui-bounds-"));
+  run(root, ["init"]);
+  const started = run(root, ["task", "start", "bounded", "--tag", "review"]);
+  const taskId = started.match(/Started task (task_[^\s]+)/)?.[1] || "";
+  const passportPath = path.join(root, ".agentpack", "tasks", taskId, "passport.json");
+  const passport = JSON.parse(readFileSync(passportPath, "utf8"));
+  passport.title = `line one\nFAKE HEADER ${"x".repeat(1_000)}`;
+  writeFileSync(passportPath, `${JSON.stringify(passport, null, 2)}\n`, "utf8");
+
+  const oversizedId = "task_oversized_fixture";
+  const oversizedDir = path.join(root, ".agentpack", "tasks", oversizedId);
+  mkdirSync(oversizedDir);
+  writeFileSync(path.join(oversizedDir, "passport.json"), `${JSON.stringify({ ...passport, id: oversizedId, objective: "x".repeat(130_000) })}\n`, "utf8");
+  writeFileSync(path.join(oversizedDir, "events.jsonl"), "", "utf8");
+  const dottedId = "task_imported.valid";
+  const dottedDir = path.join(root, ".agentpack", "tasks", dottedId);
+  mkdirSync(dottedDir);
+  writeFileSync(path.join(dottedDir, "passport.json"), `${JSON.stringify({ ...passport, id: dottedId, title: "imported valid" })}\n`, "utf8");
+  writeFileSync(path.join(dottedDir, "events.jsonl"), "", "utf8");
+
+  const model = buildTuiModel(root);
+  assert.ok(model.warnings.some((warning) => warning.includes(`Skipped oversized passport ${oversizedId}`)));
+  assert.ok(model.tasks.some((item) => item.passport.id === dottedId), "canonical imported task IDs containing a dot remain visible");
+  const snapshot = renderTuiSnapshot(model);
+  assert.doesNotMatch(snapshot, /line one\nFAKE HEADER/, "retained newlines cannot inject snapshot rows");
+  assert.ok(snapshot.split("\n").every((line) => line.length <= 320), "snapshot rows are clipped");
+  assert.match(snapshot, new RegExp(taskId), "static task rows include stable task IDs");
+
+  const task = model.tasks.find((item) => item.passport.id === taskId);
+  assert.ok(task);
+  writeFileSync(path.join(root, ".agentpack", "tasks", taskId, "events.jsonl"), "x".repeat(2_000_001), "utf8");
+  const details = loadTuiTaskDetails(model, task);
+  assert.deepEqual(details.timeline, []);
+  assert.ok(details.warnings.some((warning) => warning.includes("exceeds 2000000 byte read limit")));
+
+  task.passport.verification.evidence = Array.from({ length: 33 }, (_, index) => `evt_fixture_${index}`);
+  const capped = loadTuiTaskDetails(model, task);
+  assert.equal(capped.evidence.length, 32);
+  assert.ok(capped.warnings.some((warning) => warning.includes("capped at 32 of 33")));
+
+  const duplicateId = addEvidenceFixture(root, "boundary", "bounded duplicate");
+  const globalEventsPath = path.join(root, ".agentpack", "events.jsonl");
+  const originalEvidenceEvent = readFileSync(globalEventsPath, "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line)).find((event) => event.id === duplicateId);
+  const filler = Array.from({ length: 50_000 }, (_, index) => JSON.stringify({ id: `evt_fill_${index}`, ts: "2026-01-01T00:00:00.000Z", type: "noop" }));
+  writeFileSync(globalEventsPath, `${JSON.stringify(originalEvidenceEvent)}\n${filler.join("\n")}\n${JSON.stringify(originalEvidenceEvent)}\n`, "utf8");
+  task.passport.verification.evidence = [duplicateId];
+  writeFileSync(passportPath, `${JSON.stringify(task.passport, null, 2)}\n`, "utf8");
+  const duplicateModel = buildTuiModel(root);
+  const duplicateTask = duplicateModel.tasks.find((item) => item.passport.id === taskId);
+  assert.ok(duplicateTask);
+  assert.ok(duplicateModel.warnings.some((warning) => warning.includes(`Duplicate evidence event id ${duplicateId}`)));
+  assert.match(loadTuiTaskDetails(duplicateModel, duplicateTask).evidence[0]?.warning || "", /ambiguous/, "duplicates split across the retained-event cap fail closed");
+
+  const returned = reduceTuiNavigation({ selected: 30, view: 1, offset: 0, query: "", searching: false }, "\u001b", 40);
+  assert.deepEqual({ view: returned.view, offset: returned.offset }, { view: 0, offset: 7 }, "returning to Tasks keeps the selection visible");
+});
+
+test("TUI global views remain reachable without a matching task and Passport shows task context", () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), "agentpack-tui-global-"));
+  run(root, ["init"]);
+  run(root, ["task", "start", "context", "--tag", "review"]);
+  run(root, ["task", "block", "--reason", "Waiting for review"]);
+  const model = buildTuiModel(root);
+  model.tasks[0]!.passport.constraints = Array.from({ length: 40 }, (_, index) => `constraint ${index}`);
+
+  const input = new PassThrough() as PassThrough & { isTTY: boolean; setRawMode: (enabled: boolean) => PassThrough };
+  const output = new PassThrough() as PassThrough & { isTTY: boolean };
+  const signals = new EventEmitter();
+  let outputText = "";
+  input.isTTY = true;
+  input.setRawMode = () => input;
+  output.isTTY = true;
+  output.on("data", (chunk) => { outputText += chunk.toString(); });
+  runTuiSession(model, { stdin: input as any, stdout: output as any, signals: signals as any });
+
+  input.write("\r");
+  assert.match(outputText, /Task: current/);
+  assert.match(outputText, /Blocked reason: Waiting for review/);
+  assert.match(outputText, /Tags: review/);
+  outputText = "";
+  input.write("j".repeat(100));
+  assert.match(outputText, /Next actions:/, "detail scrolling clamps at the final non-empty page");
+  input.write("\u001b/does-not-exist\r\t\t\t\t");
+  assert.match(outputText, /Global repository checkpoints/);
+  input.write("\t");
+  assert.match(outputText, /Bounded TUI inventory/);
+  input.write("q");
 });
 
 test("ceremony diagnostics stay conservative and bounded", () => {
@@ -5465,6 +5681,14 @@ function expectedMcpServerName(root: string): string {
 
 function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function packTreeSnapshot(directory: string): string[] {
+  return readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
+    const target = path.join(directory, entry.name);
+    if (entry.isDirectory()) return packTreeSnapshot(target).map((child) => `${entry.name}/${child}`);
+    return [`${entry.name}:${entry.isSymbolicLink() ? "symlink" : readFileSync(target, "utf8")}`];
+  }).sort();
 }
 
 // Mirrors bundles.ts's canonical stringify so tests can recompute a bundle

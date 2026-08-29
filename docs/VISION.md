@@ -27,6 +27,7 @@ Codex, Claude Code, Cursor, LangGraph, Temporal, OpenAI Agents SDK, and similar 
 - dead-end memory
 - evidence-linked handoffs
 - MCP-first access
+- a narrow read-only terminal inspection surface for human ledger review
 - portable bundles between worktrees, machines, and clients
 - integration recipes after the local workflow is stable
 
@@ -57,6 +58,7 @@ Multi-role agents can collaborate around one Task Passport without the core trac
 
 - Keep the core artifact focused on reviewed task state.
 - Keep backlog, issue tracking, and code merge conflict resolution in the tools that already own them.
+- Keep the terminal inspector read-only; it is navigation over canonical task state, not a second task-management workflow.
 - Keep execution loops, retries, approvals, tool calls, and durable runs in execution engines.
 - Keep the core workflow local-first; hosted sync can remain optional future work.
 - Keep deterministic file, hash, and source summaries as the default before adding embeddings or network calls.

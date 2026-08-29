@@ -110,7 +110,7 @@ For each task, score every critical signal:
 | N/A | The signal genuinely does not apply; explain why. |
 
 Record the command or surface used (`load_context`, `resume`, `task handoff`,
-CLI, or MCP), the expected fact, the observed fact, and the evidence used to
+CLI, MCP, or the read-only `tui` inspector), the expected fact, the observed fact, and the evidence used to
 judge it. Do not infer counterfactual claims such as "defects prevented" or
 "time saved" from a PASS.
 
@@ -129,3 +129,8 @@ review agent, workflow engine, backlog manager, role registry, autonomous
 approval system, or hosted execution platform. Those systems may consume or
 contribute reviewed task state, but the repo-native Task Passport remains the
 shared continuity artifact.
+
+The inspector is navigation only: it may expose existing passports, task events,
+linked evidence, global checkpoints, and hygiene advisories, but it must not
+change the current task, infer missing task-to-checkpoint links, or create a
+second ledger index.

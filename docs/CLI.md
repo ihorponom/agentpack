@@ -23,6 +23,7 @@ agentpack source status
 agentpack source status --changed
 agentpack source status --missing
 agentpack ledger status
+agentpack tui
 agentpack ledger compact [--write]
 agentpack doctor
 agentpack replay
@@ -50,6 +51,13 @@ agentpack source remove docs/old-file.md
 `source prune --missing` only removes records whose files no longer exist. `source remove <file>` removes one explicit source record.
 
 `ledger status [--json]` prints a read-only hygiene inventory: task counts, event/evidence/checkpoint/export sizes, referenced evidence counts, and source-cache status counts. It does not delete, compact, archive, or refresh anything. When conservative observable patterns merit human attention, its additive `ceremonyDiagnostics` output lists bounded review candidates; malformed retained event lines are skipped individually and reported in `warnings`.
+
+`tui` opens the dependency-free read-only Inspector for Tasks, Passport,
+task-scoped Timeline, linked Evidence, global Checkpoints, and ledger Health. It does
+not switch the current task or change ledger files. In a non-TTY it prints a
+static snapshot and exits. Its initial inventory is bounded, and task Timeline
+and Evidence are loaded lazily. Health is an Inspector summary; use `ledger status`
+for exhaustive hygiene. See [TUI.md](TUI.md) for controls and safety bounds.
 
 `ledger compact [--write] [--purge] [--keep-checkpoints <n>] [--evidence-age-days <n>]` keeps the ledger from growing unbounded. It slims checkpoints beyond the newest 30 (their `diff.patch`, `git-status.txt`, and `resume.md` move out; `checkpoint.json` always stays, so the timeline and replay are unaffected), moves superseded source-cache events out of `events.jsonl` (the current conclusion per live path stays; `sources.json` remains authoritative), and moves unreferenced evidence files older than 30 days. Decisions, dead ends, referenced evidence, and checkpoint metadata are never touched — that is the durable memory. Dry-run by default; `--write` moves data into `.agentpack/archive/` where it stays inspectable; `--purge` deletes instead of archiving. Applied compaction is transactional: if staging or an archive move fails, Agentpack restores the original event log and files. Archive paths must remain ordinary directories inside `.agentpack/`; symlinked archive destinations are rejected. The `events.jsonl` format does not change, and each successful compaction is itself recorded as a `ledger-compact` event. `doctor` suggests compaction when `events.jsonl` or the checkpoint count grows large.
 

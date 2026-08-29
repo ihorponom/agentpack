@@ -78,6 +78,7 @@ import type { SourceStatusKind } from "../operations.js";
 import { installIntegration } from "../integrations/install.js";
 import { evaluateGate, formatGateReport, type GateOptions, type GateReport } from "../core/gate.js";
 import { startMcpServer } from "../mcp/server.js";
+import { startTui } from "../core/tui.js";
 
 export type ArgValue = string | boolean | string[];
 
@@ -165,6 +166,11 @@ export async function runCli(argv: string[], cwd: string): Promise<void> {
   if (command === "status") {
     const state = readState(root);
     process.stdout.write(`${JSON.stringify(state, null, 2)}\n`);
+    return;
+  }
+
+  if (command === "tui") {
+    startTui(root);
     return;
   }
 
@@ -305,6 +311,7 @@ Task Passport:
   agentpack task --help
 
 Inspect and export:
+  agentpack tui
   agentpack resume --preset agent [--query <text>]
   agentpack source status [--json] [--changed] [--missing]
   agentpack ledger status
@@ -389,6 +396,14 @@ Print a read-only release-prep report and checklist. It does not push, tag, publ
 
 Print a compact markdown handoff for the current repository.
 Budget presets: ${formatBudgetPresets()}`;
+  }
+
+  if (command === "tui") {
+    return `agentpack tui
+
+Open the dependency-free, keyboard-driven read-only ledger inspector. In a non-terminal
+environment it prints a deterministic static task snapshot and exits. It never changes
+the current task or any .agentpack file.`;
   }
 
   if (command === "source") {
