@@ -122,6 +122,8 @@ proof of waste.
 
 ## Product Boundary
 
+Risk-based adversarial verification is advisory evidence hygiene, not an architecture or correctness verdict: low risk records one concrete self-challenge; medium/high uses independent read-only review plus a named negative, differential, operational, or rollback check. Generic confirmatory prose is insufficient. There is no enforcement knob until dogfood justifies its false-positive and ceremony cost.
+
 Directional integrity does not expand Agentpack into an architecture adviser,
 review agent, workflow engine, backlog manager, role registry, autonomous
 approval system, or hosted execution platform. Those systems may consume or

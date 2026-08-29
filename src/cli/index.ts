@@ -515,6 +515,7 @@ Notes:
   task handoff is the compact summary for another chat, client, worktree, or agent.
   task finalize refuses unknown or pending verification by default.
   task finalize --status accepted refuses tasks with remaining next actions unless --force is passed.
+  task audit and finalize print advisory-only adversarial-verification guidance: low risk needs a concrete self-challenge; medium/high needs independent read-only review plus a named disconfirming check. Generic risks-considered or tests-passed prose is not enough.
   task finalize prints advisories (uncommitted in-scope changes, remaining next actions, missing checkpoint); they never block.
   task gate checks the current passport lifecycle, write scope, and branch before edits or commits.
   task gate --client adapts native Claude, Codex, or Cursor pre-tool hook JSON on stdin.

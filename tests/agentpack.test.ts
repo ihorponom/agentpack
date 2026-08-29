@@ -2189,6 +2189,143 @@ test("tolerates a legacy roles field in passport.json without migrating it", () 
   assert.equal(rewrittenPassport.roles, undefined);
 });
 
+test("adversarial verification is referenced-evidence-only and advisory", () => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), "agentpack-adversarial-test-"));
+  mkdirSync(path.join(dir, "src"));
+  writeFileSync(path.join(dir, "src", "index.ts"), "export const value = 1;\n", "utf8");
+  runGit(dir, ["init"]);
+  runGit(dir, ["add", "src/index.ts"]);
+  runGit(dir, ["-c", "user.name=Agentpack Test", "-c", "user.email=test@example.com", "-c", "commit.gpgsign=false", "commit", "-m", "initial"]);
+  run(dir, ["init"]);
+  run(dir, ["task", "start", "Adversarial fixture", "--write-scope", "src/index.ts", "--risk", "low"]);
+  const passport = JSON.parse(run(dir, ["task", "passport"]));
+  const generic = run(dir, ["evidence", "add", "--kind", "note", "--content", "Claim or assumption attacked: risks considered for this implementation\nCounterexample or disconfirming check: tests passed with the full suite\nObserved result: successful after verification\nUnresolved findings: no issues found during review\nResidual risk: low after the review\nReviewed HEAD: stale"])
+    .match(/Attached evidence (evt_[^\s.]+)/)?.[1] || "";
+  run(dir, ["task", "verify", "--status", "passed", "--evidence", generic]);
+  assert.match(run(dir, ["task", "audit"]), /Success completion lacks/);
+
+  const valid = run(dir, ["evidence", "add", "--kind", "note", "--content", `Claim or assumption attacked: The parser accepts malformed task evidence.\nCounterexample or disconfirming check: Read a missing referenced evidence id and an unsafe path.\nObserved result: Both records were ignored without changing lifecycle.\nUnresolved findings: none identified after malformed-path audit\nResidual risk: Low probability of a filesystem race remains during concurrent evidence replacement.\nReviewed HEAD: ${passport.currentHead}`])
+    .match(/Attached evidence (evt_[^\s.]+)/)?.[1] || "";
+  run(dir, ["task", "verify", "--status", "passed", "--evidence", valid]);
+  assert.doesNotMatch(run(dir, ["task", "audit"]), /Success completion lacks/);
+
+  run(dir, ["task", "update", "--risk", "medium"]);
+  assert.match(run(dir, ["task", "audit"]), /review-like evidence record/);
+  const paraphrase = addEvidenceFixture(dir, "review", `Claim or assumption attacked: Everything was reviewed\nCounterexample or disconfirming check: All checks succeeded\nObserved result: Everything is fine here\nUnresolved findings: No problems were detected\nResidual risk: No meaningful risk remains\nReviewed HEAD: ${passport.currentHead}\nReview mode: independent read-only\nAdversarial check type: negative`);
+  run(dir, ["task", "verify", "--status", "passed", "--evidence", paraphrase]);
+  assert.match(run(dir, ["task", "audit"]), /Success completion lacks/);
+  const stale = run(dir, ["evidence", "add", "--kind", "review", "--content", `Claim or assumption attacked: A stale reviewed HEAD is accepted by the parser.\nCounterexample or disconfirming check: Compare a deliberately stale evidence SHA to the passport SHA.\nObserved result: The deliberately stale SHA remained different from the passport SHA.\nUnresolved findings: none identified after deliberate stale SHA comparison\nResidual risk: The lexical check cannot prove the review conclusion.\nReviewed HEAD: 0000000000000000000000000000000000000000\nReview mode: independent read-only\nAdversarial check type: negative stale-head check`])
+    .match(/Attached evidence (evt_[^\s.]+)/)?.[1] || "";
+  run(dir, ["task", "verify", "--status", "passed", "--evidence", stale]);
+  assert.match(run(dir, ["task", "audit"]), new RegExp(`Reviewed HEAD matching ${passport.currentHead}`));
+  const review = run(dir, ["evidence", "add", "--kind", "challenge", "--content", `Claim or assumption attacked: A stale reviewed HEAD is accepted.\nCounterexample or disconfirming check: Compare the evidence SHA to the passport SHA.\nObserved result: The exact matching Passport SHA was required before the advisory cleared.\nUnresolved findings: none identified after SHA comparison\nResidual risk: This remains a lexical review check.\nReviewed HEAD: ${passport.currentHead}\nReview mode: independent read-only\nAdversarial check type: negative stale-head check`])
+    .match(/Attached evidence (evt_[^\s.]+)/)?.[1] || "";
+  run(dir, ["task", "verify", "--status", "passed", "--evidence", review]);
+  assert.doesNotMatch(run(dir, ["task", "audit"]), /Success completion lacks/);
+});
+
+test("adversarial verification requires a valid bound HEAD for code and exempts failed verdicts", () => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), "agentpack-adversarial-headless-test-"));
+  mkdirSync(path.join(dir, "src"));
+  writeFileSync(path.join(dir, "src", "index.ts"), "export const value = 1;\n", "utf8");
+  run(dir, ["init"]);
+  run(dir, ["task", "start", "Headless code task", "--write-scope", "src/index.ts", "--risk", "high"]);
+  const review = addEvidenceFixture(dir, "review", "Claim or assumption attacked: Code evidence can omit its reviewed commit.\nCounterexample or disconfirming check: Run the advisory without a git repository or bound commit.\nObserved result: The task has no full commit SHA that can anchor the review.\nUnresolved findings: none identified after the missing commit probe\nResidual risk: The task cannot establish commit-bound code review.\nReview mode: independent read-only\nAdversarial check type: negative missing-head probe");
+  run(dir, ["task", "verify", "--status", "passed", "--evidence", review]);
+  assert.match(run(dir, ["task", "audit"]), /valid Reviewed HEAD bound to the code state/);
+
+  const passport = JSON.parse(run(dir, ["task", "passport"]));
+  const passportPath = path.join(dir, ".agentpack", "tasks", passport.id, "passport.json");
+  writeFileSync(passportPath, `${JSON.stringify({ ...passport, currentHead: "malformed-head" }, null, 2)}\n`, "utf8");
+  assert.match(run(dir, ["task", "audit"]), /valid Reviewed HEAD bound to the code state/);
+
+  run(dir, ["task", "verify", "--status", "failed"]);
+  const failedAudit = run(dir, ["task", "audit"]);
+  assert.doesNotMatch(failedAudit, /adversarial self-challenge|review-like evidence record|Reviewed HEAD/);
+});
+
+test("adversarial verification accepts bounded compatible review kinds and degrades unsafe evidence", () => {
+  for (const kind of ["review", "adversarial-review", "challenge"]) {
+    const dir = mkdtempSync(path.join(os.tmpdir(), `agentpack-adversarial-${kind}-`));
+    mkdirSync(path.join(dir, "docs"));
+    writeFileSync(path.join(dir, "docs", "contract.md"), "contract\n", "utf8");
+    runGit(dir, ["init"]);
+    runGit(dir, ["add", "docs/contract.md"]);
+    runGit(dir, ["-c", "user.name=Agentpack Test", "-c", "user.email=test@example.com", "-c", "commit.gpgsign=false", "commit", "-m", "initial"]);
+    run(dir, ["init"]);
+    run(dir, ["task", "start", `Review kind ${kind}`, "--write-scope", "docs/contract.md", "--risk", "high"]);
+    const review = addEvidenceFixture(dir, kind, "Claim or assumption attacked: The compatibility kind is ignored by high-risk review.\nCounterexample or disconfirming check: Exercise the documented compatibility kind in a high-risk task.\nObserved result: The bounded review-kind alias was recognized by the advisory.\nUnresolved findings: none identified after compatibility-kind probe\nResidual risk: Lexical evidence still cannot prove the technical conclusion.\nReview mode: independent read-only\nAdversarial check type: differential review-kind probe");
+    run(dir, ["task", "verify", "--status", "passed", "--evidence", review]);
+    assert.doesNotMatch(run(dir, ["task", "audit"]), /Success completion lacks/);
+  }
+
+  const unsafeDir = mkdtempSync(path.join(os.tmpdir(), "agentpack-adversarial-unsafe-"));
+  run(unsafeDir, ["init"]);
+  run(unsafeDir, ["task", "start", "Unsafe evidence", "--write-scope", "docs", "--risk", "low"]);
+  const eventsPath = path.join(unsafeDir, ".agentpack", "events.jsonl");
+  writeFileSync(eventsPath, "{not json\n", { encoding: "utf8", flag: "a" });
+  writeFileSync(eventsPath, `${JSON.stringify({ id: "evt_unsafe", ts: new Date().toISOString(), type: "evidence", kind: "note", path: "evidence/../tasks/current" })}\n`, { encoding: "utf8", flag: "a" });
+  run(unsafeDir, ["task", "verify", "--status", "passed", "--evidence", "evt_missing", "--evidence", "evt_unsafe"]);
+  assert.match(run(unsafeDir, ["task", "audit"]), /Success completion lacks/);
+
+  const malformedDir = mkdtempSync(path.join(os.tmpdir(), "agentpack-adversarial-malformed-"));
+  run(malformedDir, ["init"]);
+  run(malformedDir, ["task", "start", "Malformed retained line", "--write-scope", "docs", "--risk", "low"]);
+  writeFileSync(path.join(malformedDir, ".agentpack", "events.jsonl"), "{not json\n", { encoding: "utf8", flag: "a" });
+  const afterMalformed = addEvidenceFixture(malformedDir, "note", "Claim or assumption attacked: A malformed retained line poisons later evidence parsing.\nCounterexample or disconfirming check: Append malformed JSON before a valid referenced evidence event.\nObserved result: The malformed line was skipped and the later evidence remained readable.\nUnresolved findings: none identified after malformed-line probe\nResidual risk: Bounded tail parsing can omit evidence outside the retained window.");
+  run(malformedDir, ["task", "verify", "--status", "passed", "--evidence", afterMalformed]);
+  assert.doesNotMatch(run(malformedDir, ["task", "audit"]), /Success completion lacks/);
+
+  const oversizedDir = mkdtempSync(path.join(os.tmpdir(), "agentpack-adversarial-oversized-"));
+  run(oversizedDir, ["init"]);
+  run(oversizedDir, ["task", "start", "Oversized evidence", "--write-scope", "docs", "--risk", "low"]);
+  const oversizedPath = path.join(oversizedDir, ".agentpack", "evidence", "oversized.txt");
+  writeFileSync(oversizedPath, "x".repeat(64 * 1024 + 1), "utf8");
+  writeFileSync(path.join(oversizedDir, ".agentpack", "events.jsonl"), `${JSON.stringify({ id: "evt_oversized", ts: new Date().toISOString(), type: "evidence", kind: "note", path: "evidence/oversized.txt" })}\n`, { encoding: "utf8", flag: "a" });
+  run(oversizedDir, ["task", "verify", "--status", "passed", "--evidence", "evt_oversized"]);
+  assert.match(run(oversizedDir, ["task", "audit"]), /Success completion lacks/);
+
+  const boundedDir = mkdtempSync(path.join(os.tmpdir(), "agentpack-adversarial-bounded-"));
+  run(boundedDir, ["init"]);
+  run(boundedDir, ["task", "start", "Bound referenced evidence", "--write-scope", "docs", "--risk", "low"]);
+  const oldValid = addEvidenceFixture(boundedDir, "note", "Claim or assumption attacked: Old evidence remains eligible after unbounded references accumulate.\nCounterexample or disconfirming check: Put one valid record before twelve newer unrelated evidence records.\nObserved result: The valid record fell outside the documented latest-twelve window.\nUnresolved findings: none identified after reference-window probe\nResidual risk: Users must link current challenge evidence near the final verdict.");
+  const newer = Array.from({ length: 12 }, (_, index) => addEvidenceFixture(boundedDir, "note", `unrelated evidence ${index}`));
+  run(boundedDir, ["task", "verify", "--status", "passed", "--evidence", oldValid, ...newer.flatMap((id) => ["--evidence", id])]);
+  assert.match(run(boundedDir, ["task", "audit"]), /Success completion lacks/);
+
+  const priorityDir = mkdtempSync(path.join(os.tmpdir(), "agentpack-adversarial-priority-"));
+  run(priorityDir, ["init"]);
+  run(priorityDir, ["task", "start", "Prioritize newest evidence", "--write-scope", "docs", "--risk", "low"]);
+  const largeEarlier = Array.from({ length: 4 }, (_, index) => addEvidenceFixture(priorityDir, "note", `${index}${"x".repeat(64 * 1024 - 1)}`));
+  const newestValid = addEvidenceFixture(priorityDir, "note", "Claim or assumption attacked: Earlier large evidence can starve the newest current challenge record.\nCounterexample or disconfirming check: Attach four maximum-size notes before one current valid challenge.\nObserved result: Newest-first evaluation accepted the current challenge before reaching the byte cap.\nUnresolved findings: none identified after newest-evidence priority probe\nResidual risk: Older valid evidence outside bounded windows can still be omitted.");
+  run(priorityDir, ["task", "verify", "--status", "passed", ...largeEarlier.flatMap((id) => ["--evidence", id]), "--evidence", newestValid]);
+  assert.doesNotMatch(run(priorityDir, ["task", "audit"]), /Success completion lacks/);
+});
+
+test("CLI and MCP expose the same adversarial audit and finalize advisory", async () => {
+  const createFixture = (): string => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), "agentpack-adversarial-parity-"));
+    run(dir, ["init"]);
+    run(dir, ["task", "start", "Parity task", "--write-scope", "docs", "--risk", "medium"]);
+    run(dir, ["task", "verify", "--status", "passed"]);
+    return dir;
+  };
+
+  const cliDir = createFixture();
+  const cliAudit = run(cliDir, ["task", "audit"]);
+  const cliFinalize = run(cliDir, ["task", "finalize"]);
+  assert.match(cliAudit, /Success completion lacks a referenced review-like evidence record/);
+  assert.match(cliFinalize, /Success completion lacks a referenced review-like evidence record/);
+
+  const mcpDir = createFixture();
+  const mcp = createMcpHarness(mcpDir);
+  const auditResponse = await mcp.send({ jsonrpc: "2.0", id: 801, method: "tools/call", params: { name: "task_audit", arguments: { json: true } } });
+  const mcpAudit = JSON.parse(auditResponse.result.content[0].text);
+  assert.match(JSON.stringify(mcpAudit), /Success completion lacks a referenced review-like evidence record/);
+  const finalizeResponse = await mcp.send({ jsonrpc: "2.0", id: 802, method: "tools/call", params: { name: "task_finalize", arguments: {} } });
+  assert.match(finalizeResponse.result.content[0].text, /Success completion lacks a referenced review-like evidence record/);
+});
+
 test("manages a current task passport", () => {
   const dir = mkdtempSync(path.join(os.tmpdir(), "agentpack-task-test-"));
   mkdirSync(path.join(dir, "src"));
@@ -3000,6 +3137,9 @@ test("previews and writes project-local MCP client install files", () => {
   assert.match(readFileSync(path.join(dir, "AGENTS.md"), "utf8"), /Task lifecycle gate/);
   assert.match(readFileSync(path.join(dir, "AGENTS.md"), "utf8"), /declare a write scope when starting a task/);
   assert.match(readFileSync(path.join(dir, "AGENTS.md"), "utf8"), /commit the in-scope changes and confirm the commit changed nothing/);
+  assert.match(readFileSync(path.join(dir, "AGENTS.md"), "utf8"), /adversarial verification is advisory, not a semantic judgment/);
+  assert.match(readFileSync(path.join(dir, "AGENTS.md"), "utf8"), /classify contract-changing work as medium\/high risk/);
+  assert.match(readFileSync(path.join(dir, "AGENTS.md"), "utf8"), /Review mode: independent read-only/);
   assert.match(readFileSync(path.join(dir, "AGENTS.md"), "utf8"), /one `task_finalize` call carrying the final status, evidence, and commit hash/);
   assert.match(readFileSync(path.join(dir, "AGENTS.md"), "utf8"), /record `passed` via `task_update_verification`, then `task_park`/);
   assert.match(readFileSync(path.join(dir, "AGENTS.md"), "utf8"), /keep next actions current: clear or replace a stale plan/);
@@ -3483,7 +3623,7 @@ test("task verify is rejected while the current task is parked", () => {
   assert.equal(stillParked.status, "parked", "a rejected verify must not re-activate the parked task");
 });
 
-test("task finalize prints hygiene advisories and stays silent when clean", () => {
+test("task finalize prints hygiene advisories and calibrates unknown risk", () => {
   const dir = mkdtempSync(path.join(os.tmpdir(), "agentpack-finalize-advisories-test-"));
   runGit(dir, ["init"]);
   runGit(dir, ["config", "user.name", "Agentpack Test"]);
@@ -3509,7 +3649,8 @@ test("task finalize prints hygiene advisories and stays silent when clean", () =
   run(dir, ["task", "verify", "--status", "passed"]);
   const clean = run(dir, ["task", "finalize"]);
   assert.match(clean, /Finalized task .* \(passed\)/);
-  assert.doesNotMatch(clean, /Advisories:/, "a committed, planless, checkpointed task closes without advisory noise");
+  assert.match(clean, /Advisories:/);
+  assert.match(clean, /risk calibration/, "an otherwise clean successful task with unknown risk gets an advisory only");
 
   run(dir, ["task", "start", "Stale plan task", "--write-scope", "src", "--next", "Old step"]);
   run(dir, ["task", "update", "--clear-next-actions"]);
@@ -5245,6 +5386,11 @@ function commit(dir: string, message: string): void {
 function taskEventCount(root: string, taskId: string): number {
   const eventsPath = path.join(root, ".agentpack", "tasks", taskId, "events.jsonl");
   return readFileSync(eventsPath, "utf8").split("\n").filter(Boolean).length;
+}
+
+function addEvidenceFixture(root: string, kind: string, content: string): string {
+  return run(root, ["evidence", "add", "--kind", kind, "--content", content])
+    .match(/Attached evidence (evt_[^\s.]+)/)?.[1] || "";
 }
 
 interface McpMessage {

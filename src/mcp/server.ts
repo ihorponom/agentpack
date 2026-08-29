@@ -258,7 +258,7 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
   {
     name: "task_audit",
     annotations: READ_ONLY_TOOL_ANNOTATIONS,
-    description: "Audit the current Task Passport for continuity risks: stale or missing sources, branch/head drift, worktree mismatch, missing next actions or write scope, and open verification. Call before finalizing, after a long gap, or when drift is suspected; skip when a recent audit already answered it. Read-only.",
+    description: "Audit the current Task Passport for continuity risks and advisory-only risk-proportional adversarial-verification evidence (a concrete self-challenge at low risk; independent read-only review and a named disconfirming check at medium/high risk). It does not judge semantic correctness or block lifecycle actions. Call before finalizing, after a long gap, or when drift is suspected; skip when a recent audit already answered it. Read-only.",
     inputSchema: {
       type: "object",
       properties: {
@@ -502,7 +502,7 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
   {
     name: "task_finalize",
     annotations: UPDATING_TOOL_ANNOTATIONS,
-    description: "Close the current Task Passport. Requires verification to already be passed, failed, or accepted, or that final status passed explicitly via status. Use task_park for deferred work instead of closing it; accepted finalization with remaining next actions requires force. Returns non-blocking hygiene advisories (uncommitted in-scope changes, remaining next actions, missing checkpoint).",
+    description: "Close the current Task Passport. Requires verification to already be passed, failed, or accepted, or that final status passed explicitly via status. Use task_park for deferred work instead of closing it; accepted finalization with remaining next actions requires force. Returns non-blocking hygiene and adversarial-verification advisories only; it never judges semantic correctness or blocks completion.",
     inputSchema: {
       type: "object",
       properties: {

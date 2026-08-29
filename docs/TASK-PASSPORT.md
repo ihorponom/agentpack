@@ -426,3 +426,17 @@ When task support is introduced, Agentpack can create an initial passport from t
 - `sources.json` stays repo-level
 
 This avoids breaking existing users while moving new work into passport-scoped ledgers.
+
+## Advisory adversarial verification
+
+Successful `passed` or `accepted` completion is advised to reference evidence containing:
+
+```text
+Claim or assumption attacked: <specific claim>
+Counterexample or disconfirming check: <specific check>
+Observed result: <what happened>
+Unresolved findings: none identified after <specific check>
+Residual risk: <remaining risk>
+```
+
+Classify contract-changing work as medium/high risk. For medium/high risk, use `review`, `adversarial-review`, or compatible historical `challenge` evidence, plus `Review mode: independent read-only` and an `Adversarial check type:` naming negative, differential, operational, or rollback. Code scopes also record `Reviewed HEAD:` exactly as bound in the Passport; a missing or malformed bound HEAD leaves the advisory unsatisfied. Bare or padded generic values such as `none`, `checked`, `verified`, `risks considered`, `tests passed`, and `looks good` are not enough. Except for the explicit `none identified after <specific check>` form, each required value needs at least 32 characters and six words; this structural threshold reduces checkbox prose without interpreting technical meaning. The advisory examines newest evidence first, at most the latest 12 referenced evidence IDs, a 4 MiB tail of the event log, 64 KiB per evidence file, and 256 KiB total evidence content. This is lexical hygiene, not a semantic-correctness judgment. There is no blocking switch or config knob in this iteration: dogfood has not justified enforcement.

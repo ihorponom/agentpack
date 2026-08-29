@@ -1,4 +1,4 @@
-import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, readdirSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, readSync, realpathSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { getGitInfo, listDirtyFiles } from "./git.js";
 import { normalizePath, resolveRegularFileWithin } from "./hash.js";
@@ -77,7 +77,7 @@ export interface TaskAuditSourceStatus {
 export interface TaskAuditIssue {
   level: "ok" | "warn";
   message: string;
-  category?: "task" | "metadata";
+  category?: "task" | "metadata" | "adversarial-verification";
 }
 
 export interface TaskAuditReport {
@@ -89,6 +89,22 @@ export interface TaskAuditReport {
 const CLOSED_STATUSES = new Set<TaskStatus>(["completed", "abandoned"]);
 const VERIFICATION_STATUSES = new Set<TaskVerification["status"]>(["unknown", "pending", "passed", "failed", "accepted"]);
 const FINAL_VERIFICATION_STATUSES = new Set<TaskVerification["status"]>(["passed", "failed", "accepted"]);
+const ADVERSARIAL_REVIEW_KINDS = new Set(["review", "adversarial-review", "challenge"]);
+const MAX_ADVERSARIAL_EVENT_BYTES = 4 * 1024 * 1024;
+const MAX_ADVERSARIAL_EVIDENCE_BYTES = 64 * 1024;
+const MAX_ADVERSARIAL_EVIDENCE_RECORDS = 12;
+const MAX_ADVERSARIAL_TOTAL_EVIDENCE_BYTES = 256 * 1024;
+const MIN_ADVERSARIAL_VALUE_LENGTH = 32;
+const MIN_ADVERSARIAL_VALUE_WORDS = 6;
+const GENERIC_ADVERSARIAL_VALUE = /^(?:n\/?a|none|ok(?:ay)?|low|minimal|checked|verified|successful|looks? good|no issues?(?: found)?)\s*[.!]?$/i;
+const GENERIC_ADVERSARIAL_PREFIX = /^(?:risks? considered|tests? passed|looks? good|no issues?(?: found)?)(?:[.!]|\s)/i;
+const REQUIRED_ADVERSARIAL_LABELS = [
+  "Claim or assumption attacked",
+  "Counterexample or disconfirming check",
+  "Observed result",
+  "Unresolved findings",
+  "Residual risk"
+] as const;
 
 export function formatVerificationUpdateMessage(passport: TaskPassport, changed: boolean): string {
   const prefix = changed ? "Updated verification" : "Verification unchanged";
@@ -462,6 +478,9 @@ export function finalizeCurrentTask(root: string, options: TaskFinalizeOptions =
 export function finalizeAdvisories(root: string, passport: TaskPassport): string[] {
   const advisories: string[] = [];
 
+  const adversarialAdvisory = adversarialVerificationAdvisory(root, passport);
+  if (adversarialAdvisory) advisories.push(adversarialAdvisory);
+
   if (passport.writeScope.length > 0) {
     const dirtyInScope = listDirtyFiles(root)
       .map((file) => normalizePath(file))
@@ -530,6 +549,11 @@ export function auditCurrentTask(root: string, sourceStatuses: TaskAuditSourceSt
     issues.push({ level: "warn", message: `Verification is ${passport.verification.status}. Attach evidence or close the loop before handoff.` });
   }
 
+  const adversarialAdvisory = adversarialVerificationAdvisory(root, passport);
+  if (adversarialAdvisory) {
+    issues.push({ level: "warn", category: "adversarial-verification", message: adversarialAdvisory });
+  }
+
   if (!passport.writeScope.length) {
     issues.push({ level: "warn", message: "Task has no write scope; future agents may not know the intended blast radius." });
   }
@@ -586,6 +610,150 @@ export function formatTaskAuditReport(report: TaskAuditReport): string {
         ])]
       : [])
   ].join("\n");
+}
+
+// This is deliberately lexical: it checks that an attempt at falsification was
+// recorded, not whether the claim, review, or technical conclusion is correct.
+function adversarialVerificationAdvisory(root: string, passport: TaskPassport): string | null {
+  if (passport.verification.status === "failed") return null;
+  const risk = passport.risk || "unknown";
+  const requirement = risk === "medium" || risk === "high"
+    ? "a referenced review-like evidence record with `Review mode: independent read-only` and `Adversarial check type:` naming negative, differential, operational, or rollback"
+    : "a referenced evidence record with the compact adversarial self-challenge template";
+  const prefix = passport.verification.status === "passed" || passport.verification.status === "accepted"
+    ? "Success completion lacks"
+    : "Before a successful final verdict, provide";
+
+  if (risk === "unknown") {
+    return `${prefix} risk calibration and ${requirement}; set task risk to low, medium, or high. Advisory only; this does not judge semantic correctness.`;
+  }
+
+  const evidence = referencedAdversarialEvidence(root, passport);
+  if (evidence.some((item) => satisfiesAdversarialContract(item, passport, risk))) return null;
+  const headRequirement = hasCodeScope(passport)
+    ? /^[0-9a-f]{7,40}$/i.test(passport.currentHead || "")
+      ? ` and Reviewed HEAD matching ${passport.currentHead}`
+      : " and a valid Reviewed HEAD bound to the code state"
+    : "";
+  return `${prefix} ${requirement}${headRequirement}. Generic statements such as risks considered or tests passed do not satisfy it. Advisory only; this does not judge semantic correctness.`;
+}
+
+function referencedAdversarialEvidence(root: string, passport: TaskPassport): Array<{ kind: string; content: string }> {
+  const ids = new Set(passport.verification.evidence
+    .filter((id) => typeof id === "string" && id.length > 0)
+    .slice(-MAX_ADVERSARIAL_EVIDENCE_RECORDS)
+    .reverse());
+  if (!ids.size) return [];
+  const events = readRecentAdversarialEvidenceEvents(root, ids);
+  const byId = new Map(events.filter((event) => event.type === "evidence" && ids.has(event.id)).map((event) => [event.id, event]));
+  const evidence: Array<{ kind: string; content: string }> = [];
+  let totalBytes = 0;
+  for (const id of ids) {
+    const event = byId.get(id);
+    if (!event || typeof event.path !== "string") continue;
+    const content = safeAdversarialEvidenceContent(root, event.path);
+    if (content === null) continue;
+    totalBytes += Buffer.byteLength(content);
+    if (totalBytes > MAX_ADVERSARIAL_TOTAL_EVIDENCE_BYTES) break;
+    evidence.push({ kind: typeof event.kind === "string" ? event.kind.trim().toLowerCase() : "", content });
+  }
+  return evidence;
+}
+
+function readRecentAdversarialEvidenceEvents(root: string, ids: Set<string>): AgentpackEvent[] {
+  const eventsPath = getPackPath(root, "events.jsonl");
+  let descriptor: number | null = null;
+  try {
+    descriptor = openSync(eventsPath, "r");
+    const size = fstatSync(descriptor).size;
+    const length = Math.min(size, MAX_ADVERSARIAL_EVENT_BYTES);
+    const offset = size - length;
+    const buffer = Buffer.alloc(length);
+    let bytesRead = 0;
+    while (bytesRead < length) {
+      const read = readSync(descriptor, buffer, bytesRead, length - bytesRead, offset + bytesRead);
+      if (read === 0) break;
+      bytesRead += read;
+    }
+    const text = buffer.subarray(0, bytesRead).toString("utf8");
+    const lines = text.split("\n");
+    if (offset > 0) lines.shift();
+    const events: AgentpackEvent[] = [];
+    for (const line of lines) {
+      if (!line) continue;
+      try {
+        const event = JSON.parse(line) as AgentpackEvent;
+        if (event.type === "evidence" && ids.has(event.id)) events.push(event);
+      } catch {
+        // Malformed retained lines degrade to a missing-evidence advisory.
+      }
+    }
+    return events;
+  } catch {
+    return [];
+  } finally {
+    if (descriptor !== null) closeSync(descriptor);
+  }
+}
+
+function safeAdversarialEvidenceContent(root: string, eventPath: string): string | null {
+  if (!eventPath.startsWith("evidence/") || eventPath.includes("\0")) return null;
+  try {
+    const file = resolveRegularFileWithin(getPackPath(root), eventPath, "adversarial evidence path");
+    if (!file.startsWith(`${getPackPath(root, "evidence")}${path.sep}`)) return null;
+    const size = statSync(file).size;
+    if (size > MAX_ADVERSARIAL_EVIDENCE_BYTES) return null;
+    const descriptor = openSync(file, "r");
+    try {
+      const buffer = Buffer.alloc(size);
+      readSync(descriptor, buffer, 0, buffer.length, 0);
+      return buffer.toString("utf8");
+    } finally {
+      closeSync(descriptor);
+    }
+  } catch {
+    return null;
+  }
+}
+
+function satisfiesAdversarialContract(evidence: { kind: string; content: string }, passport: TaskPassport, risk: TaskRisk): boolean {
+  const values = labeledValues(evidence.content);
+  if (!REQUIRED_ADVERSARIAL_LABELS.every((label) => validAdversarialValue(values.get(label) || "", label === "Unresolved findings"))) return false;
+  if (hasCodeScope(passport)) {
+    if (!/^[0-9a-f]{7,40}$/i.test(passport.currentHead || "")) return false;
+    if (values.get("Reviewed HEAD") !== passport.currentHead) return false;
+  }
+  if (risk !== "medium" && risk !== "high") return true;
+  if (!ADVERSARIAL_REVIEW_KINDS.has(evidence.kind)) return false;
+  if (values.get("Review mode")?.toLowerCase() !== "independent read-only") return false;
+  const checkType = values.get("Adversarial check type")?.toLowerCase() || "";
+  return /\b(negative|differential|operational|rollback)\b/.test(checkType);
+}
+
+function labeledValues(content: string): Map<string, string> {
+  const values = new Map<string, string>();
+  for (const line of content.split(/\r?\n/)) {
+    const match = /^([^:\n]{1,80}):\s*(.+?)\s*$/.exec(line);
+    if (match?.[1] && match[2]) values.set(match[1], match[2]);
+  }
+  return values;
+}
+
+function validAdversarialValue(value: string, allowsSpecificNone: boolean): boolean {
+  const normalized = value.trim().toLowerCase();
+  if (/^none identified after\s+.{12,}$/i.test(value)) return allowsSpecificNone;
+  if (!normalized || GENERIC_ADVERSARIAL_VALUE.test(normalized) || GENERIC_ADVERSARIAL_PREFIX.test(normalized)) return false;
+  const words = normalized.match(/[\p{L}\p{N}_-]+/gu) || [];
+  return normalized.length >= MIN_ADVERSARIAL_VALUE_LENGTH && words.length >= MIN_ADVERSARIAL_VALUE_WORDS;
+}
+
+function hasCodeScope(passport: TaskPassport): boolean {
+  return passport.writeScope.some((scope) => !isDocumentationScope(scope));
+}
+
+function isDocumentationScope(scope: string): boolean {
+  const normalized = normalizePath(scope).replace(/^\.\/?/, "").toLowerCase();
+  return normalized === "docs" || normalized.startsWith("docs/") || /\.(md|mdx|rst|txt)$/i.test(normalized);
 }
 
 export function formatCurrentTaskStatus(root: string): string {
