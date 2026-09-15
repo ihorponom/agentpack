@@ -555,7 +555,7 @@ function recordCommand(root: string, rest: string[]): void {
     throw new Error("record type must be decision, dead-end, or note");
   }
 
-  if (!text) {
+  if (!text.trim()) {
     throw new Error("record requires text");
   }
 

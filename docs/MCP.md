@@ -16,6 +16,23 @@ The stdio server accepts both MCP protocol eras on the same process:
 
 This is protocol-level statelessness, not application-level amnesia: every tool call remains self-contained at the MCP layer, while durable task state stays in the repo's `.agentpack/` files. Agentpack does not map Task Passports to the MCP Tasks extension. MCP Apps, Tasks, remote HTTP, OAuth/OIDC, tunnels, and hosted sync remain separate product decisions rather than requirements for the local stdio server.
 
+## Invalid Input
+
+Malformed JSON receives a `-32700` parse error. Invalid request envelopes,
+including a top-level `null`, receive `-32600`. The process stays available for
+the next message. When present, `params` and tool `arguments` must be objects;
+invalid containers receive `-32602` before a tool runs. Tools that take no
+arguments still accept an omitted `arguments` field.
+
+`record_decision` and `record_dead_end` require a string containing more than
+whitespace. Missing, non-string, empty, or whitespace-only `text` returns a tool
+result with `isError: true` and leaves the ledger unchanged. Valid text is
+preserved, subject to the existing secret redaction. CLI `record` commands also
+reject blank text.
+
+The distinction follows [JSON-RPC errors](https://www.jsonrpc.org/specification#error_object)
+and [MCP tool errors](https://modelcontextprotocol.io/specification/2025-11-25/server/tools#error-handling).
+
 ## Default Client Loop
 
 Generated Codex, Claude Code, and Cursor instructions tell connected agents to use the MCP tools as a small hybrid continuity loop:

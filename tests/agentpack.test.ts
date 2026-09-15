@@ -5793,6 +5793,116 @@ function addEvidenceFixture(root: string, kind: string, content: string): string
     .match(/Attached evidence (evt_[^\s.]+)/)?.[1] || "";
 }
 
+test("MCP rejects malformed messages and keeps serving subsequent requests", () => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), "agentpack-mcp-invalid-"));
+  run(dir, ["init"]);
+  const before = packTreeSnapshot(path.join(dir, ".agentpack"));
+  const invalidRequests = [
+    null, [], true, 42, "request", {},
+    { jsonrpc: "2.0", id: 1, method: 42 },
+    { jsonrpc: "1.0", id: 1, method: "tools/list" },
+    { jsonrpc: "2.0", id: {}, method: "tools/list" }
+  ];
+  const requests = [
+    ...invalidRequests.map((request) => JSON.stringify(request)),
+    "{broken",
+    ...[null, [], 42, "params"].map((params, index) => JSON.stringify({
+      jsonrpc: "2.0", id: index + 10, method: "tools/call", params
+    })),
+    JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" }),
+    JSON.stringify({ jsonrpc: "2.0", method: "tools/list" }),
+    JSON.stringify({ jsonrpc: "2.0", method: "tools/call",
+      params: { name: "record_decision", arguments: null } }),
+    JSON.stringify({ jsonrpc: "2.0", id: 0, method: "tools/list" })
+  ];
+  const child = spawnSync(process.execPath, [cli, "mcp"], {
+    cwd: dir, encoding: "utf8", input: `${requests.join("\n")}\n`, timeout: 5000
+  });
+  assert.equal(child.status, 0, child.stderr);
+  assert.equal(child.stderr, "");
+  const messages = child.stdout.trim().split("\n").map((line) => JSON.parse(line));
+  assert.equal(messages.length, invalidRequests.length + 6, "notifications must not receive responses");
+  for (const message of messages.slice(0, invalidRequests.length)) {
+    assert.equal(message.error.code, -32600);
+    assert.equal(message.id, null);
+  }
+  assert.equal(messages[invalidRequests.length].error.code, -32700);
+  for (const [index, message] of messages.slice(invalidRequests.length + 1, -1).entries()) {
+    assert.equal(message.error.code, -32602);
+    assert.equal(message.id, index + 10);
+  }
+  assert.equal(messages.at(-1).id, 0, "zero is a request id, not a notification");
+  assert.ok(messages.at(-1).result.tools.length > 0);
+  assert.deepEqual(packTreeSnapshot(path.join(dir, ".agentpack")), before);
+});
+
+test("MCP rejects invalid record text and argument containers without changing the ledger", async () => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), "agentpack-mcp-text-"));
+  run(dir, ["init"]);
+  const before = packTreeSnapshot(path.join(dir, ".agentpack"));
+  const mcp = createMcpHarness(dir);
+  let id = 0;
+  for (const modern of [false, true]) {
+    const metadata = modern ? { _meta: {
+      "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+      "io.modelcontextprotocol/clientCapabilities": {}
+    } } : {};
+    for (const name of ["record_decision", "record_dead_end"]) {
+      for (const args of [null, [], 42, "arguments", false]) {
+        const message = await mcp.send({ jsonrpc: "2.0", id: ++id, method: "tools/call",
+          params: { ...metadata, name, arguments: args } });
+        assert.equal(message.error?.code, -32602);
+      }
+      for (const text of [undefined, null, 42, false, {}, [], "", " \t\n"]) {
+        const message = await mcp.send({ jsonrpc: "2.0", id: ++id, method: "tools/call",
+          params: { ...metadata, name, arguments: { text } } });
+        assert.equal(message.error, undefined);
+        assert.equal(message.result.isError, true);
+        assert.match(message.result.content[0].text, /requires non-empty text/);
+        assert.equal(message.result.resultType, modern ? "complete" : undefined);
+        if (modern) assert.equal(message.result._meta["io.modelcontextprotocol/serverInfo"].name, "agentpack");
+      }
+    }
+    for (const name of [undefined, null, 42, ""]) {
+      const message = await mcp.send({ jsonrpc: "2.0", id: ++id, method: "tools/call",
+        params: { ...metadata, name } });
+      assert.equal(message.error?.code, -32602);
+    }
+    const omittedArgs = await mcp.send({ jsonrpc: "2.0", id: ++id, method: "tools/call",
+      params: { ...metadata, name: "task_list" } });
+    assert.equal(omittedArgs.error, undefined, "no-argument tools still accept omitted arguments");
+    const missingText = await mcp.send({ jsonrpc: "2.0", id: ++id, method: "tools/call",
+      params: { ...metadata, name: "record_decision" } });
+    assert.equal(missingText.result.isError, true);
+  }
+  assert.deepEqual(packTreeSnapshot(path.join(dir, ".agentpack")), before);
+  for (const [name, text] of [["record_decision", "42"], ["record_dead_end", "  Keep original spacing.  "]]) {
+    const message = await mcp.send({ jsonrpc: "2.0", id: ++id, method: "tools/call",
+      params: { name, arguments: { text } } });
+    assert.equal(message.error, undefined);
+    assert.match(message.result.content[0].text, /Recorded/);
+  }
+  const events = readFileSync(path.join(dir, ".agentpack", "events.jsonl"), "utf8")
+    .trim().split("\n").map((line) => JSON.parse(line));
+  assert.deepEqual(events.filter((event) => ["decision", "dead-end"].includes(event.type))
+    .map((event) => event.text), ["42", "  Keep original spacing.  "]);
+});
+
+test("CLI record rejects blank text without changing the ledger", () => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), "agentpack-cli-text-"));
+  run(dir, ["init"]);
+  const before = packTreeSnapshot(path.join(dir, ".agentpack"));
+  for (const type of ["decision", "dead-end", "note"]) {
+    for (const args of [[], [""], [" \t\n"], ["--text", "   "]]) {
+      const result = runWithStatus(dir, ["record", type, ...args]);
+      assert.equal(result.status, 1);
+      assert.match(result.stderr, /record requires text/);
+    }
+  }
+  assert.deepEqual(packTreeSnapshot(path.join(dir, ".agentpack")), before);
+  assert.match(run(dir, ["record", "decision", "42"]), /Recorded decision/);
+});
+
 interface McpMessage {
   id?: string | number | null;
   result?: any;

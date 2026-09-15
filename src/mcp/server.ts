@@ -670,24 +670,41 @@ export function startMcpServer(startDir: string, input: Readable = process.stdin
 }
 
 function handleMessage(root: string, line: string, output: Writable): void {
-  let request: JsonRpcRequest;
+  let parsed: unknown;
   try {
-    request = JSON.parse(line) as JsonRpcRequest;
+    parsed = JSON.parse(line);
   } catch (error) {
     send(output, null, null, { code: -32700, message: errorMessage(error) });
     return;
   }
 
-  if (!request.id && request.method?.startsWith("notifications/")) {
+  if (!isObject(parsed) || parsed.jsonrpc !== "2.0" || typeof parsed.method !== "string"
+      || (parsed.id !== undefined && parsed.id !== null && typeof parsed.id !== "string"
+        && !(typeof parsed.id === "number" && Number.isFinite(parsed.id)))) {
+    send(output, null, null, { code: -32600, message: "Invalid JSON-RPC request" });
+    return;
+  }
+
+  const request = parsed as JsonRpcRequest;
+  const notification = request.id === undefined;
+  if (notification && request.method?.startsWith("notifications/")) {
     return;
   }
 
   try {
-    const params = request.params || {};
+    if (request.params !== undefined && !isObject(request.params)) {
+      throw new McpProtocolError(-32602, "params must be an object");
+    }
+    const params = request.params ?? {};
     const modern = validateModernRequest(params);
     const result = route(root, request.method, params, modern);
-    send(output, request.id, modern ? modernResult(request.method, result) : result);
+    if (!notification) {
+      send(output, request.id, modern ? modernResult(request.method, result) : result);
+    }
   } catch (error) {
+    if (notification) {
+      return;
+    }
     send(output, request.id, null, error instanceof McpProtocolError
       ? { code: error.code, message: error.message, data: error.data }
       : { code: -32000, message: errorMessage(error) });
@@ -719,6 +736,12 @@ function route(root: string, method: string | undefined, params: Record<string, 
   }
 
   if (method === "tools/call") {
+    if (typeof params.name !== "string" || !params.name.trim()) {
+      throw new McpProtocolError(-32602, "tools/call requires a tool name");
+    }
+    if (params.arguments !== undefined && !isObject(params.arguments)) {
+      throw new McpProtocolError(-32602, "tools/call arguments must be an object");
+    }
     return callTool(root, text(params.name), objectValue(params.arguments));
   }
 
@@ -850,6 +873,11 @@ function isImplementation(value: unknown): boolean {
 }
 
 function callTool(root: string, name: string, args: Record<string, unknown>): unknown {
+  if ((name === "record_decision" || name === "record_dead_end")
+      && (typeof args.text !== "string" || !args.text.trim())) {
+    return { ...toolText(`${name} requires non-empty text.`), isError: true };
+  }
+
   if (name === "load_context" || name === "resume") {
     const preset = mcpBudgetPreset(args.preset);
     const budget = resolveBudget({
