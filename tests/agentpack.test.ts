@@ -221,6 +221,64 @@ test("TUI terminal session restores raw mode and alternate screen", () => {
   assert.ok(failingWrites.includes("\x1b[?25h\x1b[?1049l"), "draw failure restores the alternate screen");
 });
 
+test("TUI styling adds hierarchy while NO_COLOR keeps the same readable structure", () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), "agentpack-tui-color-"));
+  run(root, ["init"]);
+  run(root, ["task", "start", "active task"]);
+  const model = buildTuiModel(root);
+  const active = model.tasks[0]!;
+  for (const status of ["completed", "parked", "blocked"] as const) {
+    model.tasks.push({
+      current: false,
+      passport: { ...active.passport, id: `task_${status}`, title: `${status} task`, status }
+    });
+  }
+  const originalNoColor = process.env.NO_COLOR;
+  const originalTerm = process.env.TERM;
+
+  const render = (noColor: boolean): string => {
+    if (noColor) process.env.NO_COLOR = "1";
+    else delete process.env.NO_COLOR;
+    process.env.TERM = "xterm-256color";
+    const input = new PassThrough() as PassThrough & { isTTY: boolean; setRawMode: (enabled: boolean) => PassThrough };
+    const output = new PassThrough() as PassThrough & { isTTY: boolean };
+    const signals = new EventEmitter();
+    let text = "";
+    input.isTTY = true;
+    input.setRawMode = () => input;
+    output.isTTY = true;
+    output.on("data", (chunk) => { text += chunk.toString(); });
+    const restore = runTuiSession(model, { stdin: input as any, stdout: output as any, signals: signals as any });
+    restore();
+    return text;
+  };
+
+  try {
+    const styled = render(false);
+    assert.match(styled, /\x1b\[1m\x1b\[36mAgentpack Inspector/, "title has a restrained accent");
+    assert.match(styled, /\x1b\[1m\x1b\[36m\x1b\[7m>\* \[active\]/, "selection remains explicit and visually distinct");
+    assert.match(styled, /\x1b\[32m\[completed\]\x1b\[0m completed task/);
+    assert.match(styled, /\x1b\[33m\[parked\]\x1b\[0m parked task/);
+    assert.match(styled, /\x1b\[31m\[blocked\]\x1b\[0m blocked task/);
+    assert.match(styled, /\x1b\[2m─{72}/, "content has a visible boundary");
+
+    const plain = render(true);
+    assert.doesNotMatch(plain, /\x1b\[[0-9;]*m/, "NO_COLOR removes SGR styling while keeping terminal controls");
+    assert.match(plain, /Agentpack Inspector · READ ONLY/);
+    assert.match(plain, /\[Tasks\]/);
+    assert.match(plain, />\* \[active\]/, "selection and status remain readable without color");
+    assert.match(plain, /─{72}/);
+  } finally {
+    if (originalNoColor === undefined) delete process.env.NO_COLOR;
+    else process.env.NO_COLOR = originalNoColor;
+    if (originalTerm === undefined) delete process.env.TERM;
+    else process.env.TERM = originalTerm;
+  }
+
+  const snapshot = renderTuiSnapshot(model);
+  assert.doesNotMatch(snapshot, /\x1b/, "non-interactive snapshots stay deterministic and unstyled");
+});
+
 test("TUI bounds retained content and loads task details lazily", () => {
   const root = mkdtempSync(path.join(os.tmpdir(), "agentpack-tui-bounds-"));
   run(root, ["init"]);

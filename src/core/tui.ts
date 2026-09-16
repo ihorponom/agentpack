@@ -24,6 +24,18 @@ const MAX_WARNINGS = 100;
 const MAX_RENDER_LINE = 320;
 const STATIC_TASKS = 40;
 const PAGE_ROWS = 24;
+const TUI_RULE = "─".repeat(72);
+
+const ANSI = {
+  reset: "\x1b[0m",
+  bold: "\x1b[1m",
+  dim: "\x1b[2m",
+  reverse: "\x1b[7m",
+  red: "\x1b[31m",
+  green: "\x1b[32m",
+  yellow: "\x1b[33m",
+  cyan: "\x1b[36m",
+} as const;
 
 export interface TuiEvidence {
   id: string;
@@ -127,6 +139,7 @@ export function runTuiSession(model: TuiModel, runtime: TuiRuntime): () => void 
   }
   let navigation: TuiNavigation = { selected: 0, view: 0, offset: 0, query: "", searching: false };
   let restored = false;
+  const colors = terminalColorsEnabled();
   let cachedDetails: { taskId: string; value: TuiTaskDetails } | undefined;
   const visible = () => visibleTasks(model, navigation.query);
   const detailFor = (task: TuiTask): TuiTaskDetails => {
@@ -161,20 +174,38 @@ export function runTuiSession(model: TuiModel, runtime: TuiRuntime): () => void 
       body.push(...loaded.warnings.map((warning) => `[warning] ${warning}`));
     }
     navigation.offset = Math.min(navigation.offset, Math.max(0, body.length - PAGE_ROWS));
-    const page = body.slice(navigation.offset, navigation.offset + PAGE_ROWS).map(displayLine);
-    const header = labels.map((label, index) => index === navigation.view ? `[${label}]` : label).join("  ");
-    const selected = task ? `Selected: ${task.passport.id} (${task.current ? "current" : "historical"})` : "";
-    const footer = navigation.searching ? `/${navigation.query}` : "j/k move/scroll · Enter drill · Tab view · / search · Esc back · q quit";
+    const page = body.slice(navigation.offset, navigation.offset + PAGE_ROWS).map((line, index) => {
+      if (navigation.view === 0) {
+        const item = tasks[navigation.offset + index];
+        return item ? styledTaskLine(item, navigation.offset + index === navigation.selected, colors) : displayLine(line);
+      }
+      return styledContentLine(displayLine(line), colors);
+    });
+    const header = labels.map((label, index) => {
+      const tab = index === navigation.view ? `[${label}]` : label;
+      return index === navigation.view ? paint(tab, colors, ANSI.bold, ANSI.cyan) : paint(tab, colors, ANSI.dim);
+    }).join("  ");
+    const selected = task
+      ? paint(displayLine(`Selected: ${task.passport.id} (${task.current ? "current" : "historical"})`), colors, ANSI.dim)
+      : "";
+    const footer = navigation.searching
+      ? paint(displayLine(`/${navigation.query}`), colors, ANSI.bold, ANSI.yellow)
+      : paint("j/k move/scroll · Enter drill · Tab view · / search · Esc back · q quit", colors, ANSI.dim);
+    const title = [
+      paint("Agentpack Inspector", colors, ANSI.bold, ANSI.cyan),
+      paint("· READ ONLY", colors, ANSI.dim),
+      paint(`· ${tasks.length}/${model.tasks.length} tasks · ${model.health.eventCount} events · ${model.health.checkpointCount} checkpoints`, colors, ANSI.dim),
+    ].join(" ");
     const screen = [
-      "\x1b[H\x1b[2JAgentpack Inspector — READ ONLY",
+      `\x1b[H\x1b[2J${title}`,
       header,
-      ...(navigation.query ? [`Filter: ${navigation.query}`] : []),
-      "",
+      paint(TUI_RULE, colors, ANSI.dim),
+      ...(navigation.query ? [paint(displayLine(`Filter: ${navigation.query}`), colors, ANSI.yellow)] : []),
       ...page,
-      "",
+      paint(TUI_RULE, colors, ANSI.dim),
       ...(selected ? [selected] : []),
       footer,
-    ].map((line, index) => index === 0 ? line : displayLine(line)).join("\n");
+    ].join("\n");
     runtime.stdout.write(screen);
   };
   const onData = (data: Buffer | string) => {
@@ -467,6 +498,42 @@ function visibleTasks(model: TuiModel, query: string): TuiTask[] {
 
 function taskListLine(task: TuiTask, selected: boolean, alwaysShowId: boolean): string {
   return `${selected ? ">" : " "}${task.current ? "*" : " "} [${task.passport.status}] ${selected || alwaysShowId ? `(${task.passport.id}) ` : ""}${task.passport.title}`;
+}
+
+function styledTaskLine(task: TuiTask, selected: boolean, colors: boolean): string {
+  const line = displayLine(taskListLine(task, selected, false));
+  if (selected) return paint(line, colors, ANSI.bold, ANSI.cyan, ANSI.reverse);
+  const status = displayLine(task.passport.status);
+  const token = `[${status}]`;
+  const styledStatus = paint(token, colors, statusColor(status));
+  const withStatus = line.replace(token, styledStatus);
+  return task.current ? withStatus.replace("*", paint("*", colors, ANSI.bold, ANSI.cyan)) : withStatus;
+}
+
+function styledContentLine(line: string, colors: boolean): string {
+  if (!line) return line;
+  if (/^\[warning\]|^Warnings?:/i.test(line)) return paint(line, colors, ANSI.yellow);
+  if (/^(No |\(empty\)|—$)/.test(line)) return paint(line, colors, ANSI.dim);
+  if (line.endsWith(":")) return paint(line, colors, ANSI.bold, ANSI.cyan);
+  const statusMatch = line.match(/\[(active|blocked|completed|failed|parked|passed|pending|verifying|accepted|unknown)\]/i);
+  if (!statusMatch) return line;
+  return line.replace(statusMatch[0], paint(statusMatch[0], colors, statusColor(statusMatch[1] || "unknown")));
+}
+
+function statusColor(status: string): string {
+  if (["blocked", "failed"].includes(status.toLowerCase())) return ANSI.red;
+  if (["completed", "passed", "accepted"].includes(status.toLowerCase())) return ANSI.green;
+  if (["parked", "pending", "verifying"].includes(status.toLowerCase())) return ANSI.yellow;
+  if (status.toLowerCase() === "active") return ANSI.cyan;
+  return ANSI.dim;
+}
+
+function terminalColorsEnabled(): boolean {
+  return !("NO_COLOR" in process.env) && process.env.TERM !== "dumb";
+}
+
+function paint(value: string, enabled: boolean, ...styles: string[]): string {
+  return enabled && styles.length ? `${styles.join("")}${value}${ANSI.reset}` : value;
 }
 
 function passportLines(task: TuiTask): string[] {

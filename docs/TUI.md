@@ -13,6 +13,12 @@ Controls: `j`/`k` or arrows move, `Enter` drills into the next view,
 exits. When stdin or stdout is not a TTY, the command prints a deterministic
 static Tasks/Health snapshot and exits, which makes it safe in CI and pipes.
 
+In an interactive terminal, the Inspector uses restrained ANSI styling to
+separate the active view, selected task, task status, warnings, and secondary
+context. Selection markers, status labels, and section boundaries remain
+visible without color. Set `NO_COLOR` or use `TERM=dumb` to disable styling;
+non-interactive output never contains color codes.
+
 This is deliberately not a task manager. It has no mutation commands, no
 preferences or cache, and never changes `.agentpack`, the current-task pointer,
 or lifecycle state. The source of truth remains the existing JSON and JSONL
