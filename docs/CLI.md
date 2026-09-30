@@ -88,7 +88,7 @@ agentpack task update \
   --write-scope tests/checkout.test.ts \
   --risk medium
 agentpack task list [--scope <path>] [--status <status>] [--open]
-agentpack task status
+agentpack task status [--id <id>]
 agentpack task verify --status passed --evidence evt_... --summary "Focused checks passed"
 agentpack task handoff
 agentpack task finalize
@@ -101,7 +101,7 @@ Write scopes are repo-relative paths. `.` means the repository root. A directory
 The common workflow is:
 
 1. `task start` declares the work.
-2. `task status` gives a quick current-task view.
+2. `task status` gives a quick current-task view. `task status --id <id>` inspects a selected Passport without switching or changing any ledger bytes. It shows the objective, constraints, all next actions, blocked reason, verification summary/evidence, bound HEAD and selected-task diagnostics, with the actual current task labeled separately.
 3. `task update` keeps objective, scope, risk, or next actions current. List flags append; `--clear-next-actions` replaces the next actions with the provided `--next` items (or empties the list) when the plan went stale.
 4. Keep `task verify` pending through the active fix loop; aggregate intermediate checks as evidence/checkpoints, then record a final result and its bound HEAD only when edits end.
 5. `task handoff` prints the compact summary for another chat, client, worktree, or agent.

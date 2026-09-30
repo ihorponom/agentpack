@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { execFileSync, spawn } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -185,6 +185,30 @@ try {
 
   const parkedTaskId = taskListText.match(/- (task_\S+) \[parked\]/)?.[1] || "";
   const activeTaskId = taskListText.match(/\* (task_\S+) \[active\]/)?.[1] || "";
+  const snapshotPack = () => {
+    const files = {};
+    const visit = (dir) => {
+      for (const entry of readdirSync(dir, { withFileTypes: true })) {
+        const file = path.join(dir, entry.name);
+        if (entry.isDirectory()) visit(file);
+        else files[path.relative(workspace, file)] = readFileSync(file).toString("hex");
+      }
+    };
+    visit(path.join(workspace, ".agentpack"));
+    return JSON.stringify(files);
+  };
+  const beforeInspection = snapshotPack();
+  for (const meta of [undefined, modernMeta]) {
+    const inspection = await client.request("tools/call", {
+      name: "task_status", arguments: { id: parkedTaskId }, ...(meta ? { _meta: meta } : {})
+    });
+    const output = inspection.result?.content?.[0]?.text || "";
+    assertMatch(output, /MCP smoke parked task \[parked\]/, "inspection retains parked lifecycle");
+    assertMatch(output, /Resume after smoke/, "inspection recovers next actions");
+    assertEqual(output.includes(`Actual current task: ${activeTaskId}`), true, "inspection labels actual current task");
+    assertEqual(inspection.result?.resultType, meta ? "complete" : undefined, "inspection preserves protocol response shape");
+    assertEqual(snapshotPack(), beforeInspection, "inspection changes no ledger bytes");
+  }
   const taskSwitch = await client.request("tools/call", {
     name: "task_switch",
     arguments: { id: parkedTaskId, parkCurrent: true }

@@ -108,18 +108,18 @@ push, tag, publish, or create GitHub Releases.
 
 `task_start` creates a new current Task Passport. It accepts `title`, `objective`, `constraints`, `writeScope`, `nextActions`, `tags`, and `risk`, matching the CLI start semantics. It refuses to replace an active, blocked, or verifying current task; call `task_park` or close that task before starting unrelated MCP work.
 
-`task_status` prints the same quick current-task view as `agentpack task status`. It does not scan the source cache and should not be used as a substitute for `task_audit`.
+`task_status` without arguments prints the same quick current-task view as `agentpack task status`. With `{ "id": "task_..." }`, it inspects a selected Passport without activating, switching, parking, or writing ledger state. The inspection includes objective, constraints, all next actions, blocked reason, verification summary/evidence, bound HEAD and selected-task diagnostics. Inspected and actual-current contexts are labeled separately; MCP gate warnings always describe the actual current task. Invalid, missing, corrupt, or escaping passport paths are rejected. It does not scan the source cache and should not be used as a substitute for `task_audit`.
 
 `load_context`, `resume`, and `task_status` append a `Gate Warnings` section when the current passport has gate findings (no active task; task parked, blocked, verifying, or closed; branch drift). This is the client-neutral warn layer of the task gate: any MCP client sees lifecycle warnings without needing hook support. Enforcement modes and the full check live in `agentpack task gate` (see docs/CLI.md).
 
-Repeated `task_status` calls on one MCP connection shorten only an unchanged
+Repeated no-argument `task_status` calls on one MCP connection shorten only an unchanged
 branch-drift advisory to a reminder referring to the status's `Drift` line.
 The first warning is full; context loads/resumes always show full warnings.
 Task, branch, mode or finding changes, successful MCP mutations, initialization,
 or a new connection restore full wording. State retains one fingerprint in
 memory and writes nothing to the ledger. Lifecycle/blocking findings and
 CLI/native-hook diagnostics are always complete; the gate is evaluated on
-every call and its enforcement behavior is unchanged.
+every call and its enforcement behavior is unchanged. Inspection by id always shows full current-task gate warnings because its `Drift` line describes the selected task.
 
 `task_park` marks the current Task Passport as `parked` without finalizing verification. Use it when work is intentionally deferred and a different task or phase should become current. A parked task remains switchable and can be resumed later with `task_switch`.
 

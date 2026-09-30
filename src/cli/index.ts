@@ -33,7 +33,7 @@ import {
   finalizeAdvisories,
   finalizeCurrentTask,
   formatCurrentTaskHandoff,
-  formatCurrentTaskStatus,
+  formatTaskStatus,
   formatTaskAuditReport,
   formatTaskFinalizationMessage,
   formatTaskList,
@@ -310,7 +310,7 @@ Setup:
 
 Task Passport:
   agentpack task start <title> [--objective <text>] [--write-scope <path>] [--next <item>] [--risk low|medium|high]
-  agentpack task status
+  agentpack task status [--id <id>]
   agentpack task handoff
   agentpack task verify --status passed|failed|accepted [--evidence <id>] [--summary <text>]
   agentpack task finalize
@@ -514,7 +514,7 @@ handoff context, and lifecycle status.
 
 Common workflow:
   agentpack task start <title> [--objective <text>] [--write-scope <path>] [--next <item>] [--risk low|medium|high]
-  agentpack task status
+  agentpack task status [--id <id>]
   agentpack task update [--objective <text>] [--write-scope <path>] [--next <item>] [--clear-next-actions] [--risk low|medium|high]
   agentpack task verify [--status pending|passed|failed|accepted] [--evidence <id>] [--summary <text>]
   agentpack task handoff
@@ -532,7 +532,7 @@ Inspection and coordination:
 
 Notes:
   Write scopes are repo-relative paths; . means the repository root.
-  task status is the quick current-task view.
+  task status is the quick current-task view; --id inspects another task without switching.
   task audit is the diagnostic continuity check; --json exposes additive structured review candidates.
   task handoff is the compact summary for another chat, client, worktree, or agent.
   task finalize refuses unknown or pending verification by default.
@@ -810,7 +810,15 @@ function taskCommand(root: string, rest: string[]): void {
   }
 
   if (subcommand === "status") {
-    process.stdout.write(`${redactForRoot(root, formatCurrentTaskStatus(root))}\n`);
+    const parsed = parseArgs(args);
+    if (parsed.positionals.length > 0 || Object.keys(parsed.options).some((key) => key !== "id")) {
+      throw new Error("Usage: agentpack task status [--id <id>]");
+    }
+    const id = parsed.options.id;
+    if (id !== undefined && (typeof id !== "string" || !id.trim())) {
+      throw new Error("task status --id requires one non-empty task id");
+    }
+    process.stdout.write(`${redactForRoot(root, formatTaskStatus(root, id))}\n`);
     return;
   }
 

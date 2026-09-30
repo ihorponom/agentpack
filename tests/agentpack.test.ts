@@ -25,6 +25,7 @@ import { buildDoctorReport } from "../src/core/doctor.js";
 import { findCeremonyDiagnostics } from "../src/core/ledger.js";
 import { getGitInfo } from "../src/core/git.js";
 import { sha256 } from "../src/core/hash.js";
+import { formatCurrentTaskStatus, formatTaskStatus } from "../src/core/tasks.js";
 import { buildResume } from "../src/core/resume.js";
 import { buildTuiModel, loadTuiCheckpointDetails, loadTuiTaskDetails, reduceTuiNavigation, renderTuiSnapshot, runTuiSession, sanitizeTerminalText } from "../src/core/tui.js";
 import { writePackTransaction } from "../src/core/store.js";
@@ -3057,6 +3058,131 @@ test("task status reports missing current passport without requiring audit", () 
   const status = run(dir, ["task", "status"]);
   assert.match(status, /Task status/);
   assert.match(status, /No current task passport/);
+});
+
+function snapshotPackBytes(dir: string): Array<[string, string]> {
+  const root = path.join(dir, ".agentpack");
+  return walkEntries(root).filter((file) => statSync(file).isFile()).sort()
+    .map((file) => [path.relative(root, file), readFileSync(file).toString("hex")]);
+}
+
+test("task status by id preserves selected lifecycle and all ledger bytes", () => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), "agentpack-task-inspect-"));
+  run(dir, ["init"]);
+  run(dir, ["task", "start", "Selected task", "--objective", "Recover the selected objective",
+    "--constraint", "Preserve compatibility", "--next", "Investigate first", "--next", "Verify second"]);
+  const selected = JSON.parse(run(dir, ["task", "passport"]));
+  run(dir, ["task", "park"]);
+  run(dir, ["task", "start", "Actual current", "--next", "Continue current"]);
+  const current = JSON.parse(run(dir, ["task", "passport"]));
+  const file = path.join(dir, ".agentpack", "tasks", selected.id, "passport.json");
+  for (const status of ["parked", "blocked", "verifying", "completed", "abandoned"]) {
+    const passport = { ...selected, status, blockedReason: "Waiting for dependency",
+      currentHead: "frozen-head", verification: { status: "passed", evidence: ["review-evidence"], summary: "Frozen verdict" } };
+    writeFileSync(file, JSON.stringify(passport));
+    const before = snapshotPackBytes(dir);
+    const output = run(dir, ["task", "status", "--id", selected.id]);
+    assert.match(output, new RegExp(`Selected task \\[${status}\\]`));
+    for (const field of ["Recover the selected objective", "Preserve compatibility", "Investigate first", "Verify second",
+      "Waiting for dependency", "Frozen verdict", "review-evidence", "Bound HEAD: frozen-head"]) assert.ok(output.includes(field), field);
+    assert.ok(output.includes(`Actual current task: ${current.id}`));
+    assert.ok(output.includes(`Inspected task: ${selected.id} (not current)`));
+    assert.equal(formatTaskStatus(dir), formatCurrentTaskStatus(dir));
+    assert.equal(run(dir, ["task", "status"]), `${formatCurrentTaskStatus(dir)}\n`);
+    assert.match(run(dir, ["task", "status", "--id", current.id]), /\(current\)/);
+    assert.deepEqual(snapshotPackBytes(dir), before);
+  }
+  unlinkSync(path.join(dir, ".agentpack", "tasks", "current"));
+  const before = snapshotPackBytes(dir);
+  assert.match(run(dir, ["task", "status", "--id", selected.id]), /Actual current task: \(none\)/);
+  assert.deepEqual(snapshotPackBytes(dir), before);
+});
+
+test("task inspection rejects invalid, missing, corrupt and escaping ids without writes", () => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), "agentpack-inspect-errors-"));
+  run(dir, ["init"]);
+  run(dir, ["task", "start", "Target"]);
+  const selected = JSON.parse(run(dir, ["task", "passport"]));
+  const file = path.join(dir, ".agentpack", "tasks", selected.id, "passport.json");
+  const before = snapshotPackBytes(dir);
+  for (const id of ["../outside", "task_../outside", "task_missing", "", " task_invalid"]) {
+    assert.match(runExpectError(dir, ["task", "status", "--id", id]), /Invalid task id|not found|requires one non-empty/);
+    assert.deepEqual(snapshotPackBytes(dir), before);
+  }
+  for (const args of [["--id"], ["--id", selected.id, "--id", selected.id], ["--unknown"], [selected.id]]) {
+    assert.match(runExpectError(dir, ["task", "status", ...args]), /requires one non-empty|Usage:/);
+    assert.deepEqual(snapshotPackBytes(dir), before);
+  }
+  for (const contents of ["{", JSON.stringify({ ...selected, id: "task_wrong" }), JSON.stringify({ ...selected, constraints: 5 })]) {
+    writeFileSync(file, contents);
+    const corrupt = snapshotPackBytes(dir);
+    assert.match(runExpectError(dir, ["task", "status", "--id", selected.id]), /JSON|invalid/);
+    assert.deepEqual(snapshotPackBytes(dir), corrupt);
+  }
+  if (process.platform !== "win32") {
+    const outside = mkdtempSync(path.join(os.tmpdir(), "agentpack-inspect-outside-"));
+    const target = path.join(outside, "passport.json");
+    writeFileSync(target, JSON.stringify(selected));
+    unlinkSync(file);
+    symlinkSync(target, file);
+    const escaped = snapshotPackBytes(dir);
+    assert.match(runExpectError(dir, ["task", "status", "--id", selected.id]), /outside|symlink|symbolic-link|regular file/);
+    assert.deepEqual(snapshotPackBytes(dir), escaped);
+  }
+});
+
+test("MCP inspection keeps actual-current gate context and redaction in legacy and modern responses", async () => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), "agentpack-mcp-inspect-"));
+  runGit(dir, ["init"]);
+  writeFileSync(path.join(dir, "index.js"), "initial\n");
+  runGit(dir, ["add", "index.js"]);
+  commit(dir, "initial");
+  runGit(dir, ["branch", "-M", "main"]);
+  run(dir, ["init"]);
+  run(dir, ["task", "start", "Selected", "--next", "Recover selected", "--write-scope", "."]);
+  const selected = JSON.parse(run(dir, ["task", "passport"]));
+  run(dir, ["task", "park"]);
+  run(dir, ["task", "start", "Actual current", "--write-scope", "."]);
+  const current = JSON.parse(run(dir, ["task", "passport"]));
+  runGit(dir, ["switch", "-c", "inspection-branch"]);
+  const file = path.join(dir, ".agentpack", "tasks", selected.id, "passport.json");
+  writeFileSync(file, JSON.stringify({ ...selected, branch: "inspection-branch", status: "blocked",
+    objective: "Investigate api_key=secret-inspection-token", blockedReason: "Waiting for selected input" }));
+  run(dir, ["task", "park"]);
+  const before = snapshotPackBytes(dir);
+  const mcp = createMcpHarness(dir);
+  let id = 0;
+  const modernMeta = { "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+    "io.modelcontextprotocol/clientInfo": { name: "inspection-test", version: "1" },
+    "io.modelcontextprotocol/clientCapabilities": {} };
+  for (const meta of [undefined, modernMeta, undefined]) {
+    const response = await mcp.send({ jsonrpc: "2.0", id: ++id, method: "tools/call",
+      params: { name: "task_status", arguments: { id: selected.id }, ...(meta ? { _meta: meta } : {}) } });
+    assert.equal(response.error, undefined);
+    const output = response.result.content[0].text;
+    assert.ok(output.includes(`Inspected task: ${selected.id} (not current)`));
+    assert.ok(output.includes(`Actual current task: ${current.id}`));
+    assert.match(output, /Waiting for selected input/);
+    assert.match(output, /Drift: none/);
+    assert.match(output, /## Gate Warnings \(actual current task\)/);
+    assert.match(output, /Current task is parked/);
+    assert.match(output, /Branch drift: task .*current branch is inspection-branch/);
+    assert.doesNotMatch(output, /Branch drift unchanged|secret-inspection-token/);
+    assert.equal(response.result.resultType, meta ? "complete" : undefined);
+    assert.deepEqual(snapshotPackBytes(dir), before);
+  }
+  for (const value of [null, false, 1, [], {}, "", "../escape", "task_missing"]) {
+    const response = await mcp.send({ jsonrpc: "2.0", id: ++id, method: "tools/call",
+      params: { name: "task_status", arguments: { id: value } } });
+    assert.ok(response.error, JSON.stringify(value));
+    assert.deepEqual(snapshotPackBytes(dir), before);
+  }
+  writeFileSync(file, "{}");
+  const corrupt = snapshotPackBytes(dir);
+  const response = await mcp.send({ jsonrpc: "2.0", id: ++id, method: "tools/call",
+    params: { name: "task_status", arguments: { id: selected.id } } });
+  assert.ok(response.error);
+  assert.deepEqual(snapshotPackBytes(dir), corrupt);
 });
 
 test("redacts secrets from stored context and handoff outputs", () => {

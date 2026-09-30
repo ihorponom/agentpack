@@ -25,7 +25,7 @@ import {
   finalizeAdvisories,
   finalizeCurrentTask,
   formatCurrentTaskHandoff,
-  formatCurrentTaskStatus,
+  formatTaskStatus,
   formatTaskAuditReport,
   formatTaskFinalizationMessage,
   formatTaskList,
@@ -434,10 +434,12 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
   {
     name: "task_status",
     annotations: READ_ONLY_TOOL_ANNOTATIONS,
-    description: "Print a quick summary of the current Task Passport (status, objective, next actions, verification) plus gate warnings, without scanning the source cache. Call for a fast lifecycle check; use task_audit for the full continuity audit. Read-only.",
+    description: "Print a quick current-task summary, or pass id to inspect a selected Passport with objective, constraints, all next actions and verification without switching tasks. Gate warnings always concern the actual current task. No source-cache scan; use task_audit for the full continuity audit. Read-only.",
     inputSchema: {
       type: "object",
-      properties: {}
+      properties: {
+        id: { type: "string", minLength: 1, description: "Task Passport id to inspect without changing the current task or lifecycle. Omit for the legacy current-task summary." }
+      }
     }
   },
   {
@@ -1049,7 +1051,12 @@ function callTool(root: string, name: string, args: Record<string, unknown>, war
   }
 
   if (name === "task_status") {
-    return toolText(appendGateWarnings(root, redactForRoot(root, formatCurrentTaskStatus(root)), warnings, true));
+    if (args.id !== undefined && (typeof args.id !== "string" || !args.id.trim())) {
+      throw new Error("task_status id must be a non-empty string");
+    }
+    const id = args.id as string | undefined;
+    return toolText(redactForRoot(root, appendGateWarnings(root, formatTaskStatus(root, id), warnings, id === undefined,
+      id === undefined ? "Gate Warnings" : "Gate Warnings (actual current task)")));
   }
 
   if (name === "task_list") {
@@ -1166,7 +1173,7 @@ function callTool(root: string, name: string, args: Record<string, unknown>, war
 
 // MCP-warn layer: state-reading tools carry current gate findings so any MCP client sees
 // lifecycle/drift warnings without needing client-specific hooks.
-function appendGateWarnings(root: string, body: string, warnings: McpWarningState, compactRepeatedBranch = false): string {
+function appendGateWarnings(root: string, body: string, warnings: McpWarningState, compactRepeatedBranch = false, heading = "Gate Warnings"): string {
   try {
     const report = evaluateGate(root, {});
     const branch = report.findings.find((finding) => finding.code === "branch-drift");
@@ -1181,7 +1188,7 @@ function appendGateWarnings(root: string, body: string, warnings: McpWarningStat
       compactRepeatedBranch && repeated && finding.code === "branch-drift"
         ? "Branch drift unchanged; see Drift above. Resolve before editing."
         : finding.message}`);
-    return `${body}\n\n## Gate Warnings\n${lines.join("\n")}`;
+    return `${body}\n\n## ${heading}\n${lines.join("\n")}`;
   } catch {
     delete warnings.branchWarningKey;
     return body;

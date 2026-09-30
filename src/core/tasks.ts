@@ -899,6 +899,42 @@ function isDocumentationScope(scope: string): boolean {
   return normalized === "docs" || normalized.startsWith("docs/") || /\.(md|mdx|rst|txt)$/i.test(normalized);
 }
 
+export function formatTaskStatus(root: string, id?: string): string {
+  if (id === undefined) return formatCurrentTaskStatus(root);
+
+  const passport = readPassport(root, id);
+  let current: string;
+  try {
+    current = readCurrentTaskId(root) || "(none)";
+  } catch (error) {
+    current = `(unreadable: ${error instanceof Error ? error.message : String(error)})`;
+  }
+  const git = getGitInfo(root);
+  const warnings = taskHandoffWarnings(root, passport, git, []);
+  return [
+    "Task inspection (read-only)",
+    `${passport.title} [${passport.status}]`,
+    `Inspected task: ${passport.id}${current === passport.id ? " (current)" : " (not current)"}`,
+    `Actual current task: ${current}`,
+    `Objective: ${passport.objective}`,
+    `Branch: ${passport.branch || "(unknown)"}`,
+    `Bound HEAD: ${passport.currentHead || "(unknown)"}`,
+    `Worktree: ${passport.worktree}`,
+    `Risk: ${passport.risk}`,
+    `Verification: ${passport.verification.status}${passport.verification.summary ? ` - ${passport.verification.summary}` : ""}`,
+    `Evidence: ${passport.verification.evidence.join(", ") || "(none)"}`,
+    `Blocked reason: ${passport.blockedReason || "(none)"}`,
+    "Constraints:",
+    ...formatList(passport.constraints),
+    "Write scope:",
+    ...formatList(passport.writeScope),
+    "Next actions:",
+    ...formatList(passport.nextActions),
+    `Drift: ${formatTaskDrift(passport, git)}`,
+    `Inspected task diagnostics: ${warnings.task.join(" | ") || "No action-required task warnings."}`
+  ].join("\n");
+}
+
 export function formatCurrentTaskStatus(root: string): string {
   let passport: TaskPassport | null;
 
