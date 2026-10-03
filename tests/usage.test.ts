@@ -350,7 +350,10 @@ test("Task usage links suggested sessions once and reports by Task Passport id a
   assert.match(listed.stdout, /1\. main \(claude\)/);
   assert.match(listed.stdout, /2\/3 requests while the task was current/);
   assert.doesNotMatch(listed.stdout, /old\.jsonl|rollout-other|PRIVATE/);
-  assert.equal(JSON.parse(run("report", "--json").stdout).kind, "task-usage-candidates");
+  const candidatesJson = JSON.parse(run("report", "--json").stdout);
+  assert.deepEqual(Object.keys(candidatesJson).sort(), ["candidates", "intervals", "kind", "linked", "searched", "taskId", "warnings"], "candidates JSON contract");
+  assert.equal(candidatesJson.kind, "task-usage-candidates");
+  assert.deepEqual(Object.keys(candidatesJson.candidates[0]).sort(), ["client", "file", "id", "linked", "number", "requests", "started", "subagent", "taskRequests"], "candidate JSON contract");
   assert.match(run("link", "--coverage", "partial", "--note", "Main only").stderr, /link sources before declaring coverage/);
   assert.equal(existsSync(taskUsageManifestPath(dir, passport.id)), false, "listing does not link");
 
@@ -361,6 +364,10 @@ test("Task usage links suggested sessions once and reports by Task Passport id a
   assert.deepEqual(manifest.sources.map((source: { file: string; turns?: string }) => [source.file, source.turns]), [[realpathSync(main), undefined], [realpathSync(codexFile), undefined]]);
   const report = JSON.parse(run("report", "--task", passport.id, "--json").stdout);
   assert.equal(report.kind, "task-usage-report");
+  assert.deepEqual(Object.keys(report).sort(), ["billedUsd", "coverage", "kind", "manifest", "requests", "slices", "taskId", "totals", "version", "warnings"], "task report JSON contract");
+  const linkJson = JSON.parse(run("link", "--client", "codex", "--file", codexFile, "--phase", "implementation", "--json").stdout);
+  assert.deepEqual(Object.keys(linkJson).sort(), ["kind", "linked", "report", "taskId"], "link JSON contract");
+  assert.equal(linkJson.kind, "task-usage-link");
   assert.equal(report.taskId, passport.id);
   assert.equal(report.requests, 3);
   assert.equal(report.coverage.status, "partial");

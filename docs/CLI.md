@@ -254,7 +254,17 @@ candidate shows a stable session id and how many of its requests fall in
 those periods. Candidates are suggestions only; nothing is counted until
 `--pick` links them. `--pick` accepts list numbers or session ids; numbers can
 shift when sessions change between calls, so prefer ids in scripts. `--json`
-output carries `kind`: `task-usage-candidates` or `task-usage-report`.
+output carries `kind`, and these shapes are stable:
+
+- `task-usage-candidates`: `taskId`, `linked`, `intervals` (`from`, `to` or
+  null while current), `searched`, `warnings`, `candidates` (`number`, `id`,
+  `client`, `file`, `subagent`, `started`, `requests`, `taskRequests`,
+  `linked`)
+- `task-usage-report`: `version`, `taskId`, `manifest` (`path`, `sha256`),
+  `coverage`, `requests`, `totals`, `slices` (`phase`, `report`), `billedUsd`
+  (always null), `warnings`
+- `task-usage-link`: `taskId`, `linked` (file names), `report`;
+  `task-usage-unlink`: `taskId`, `removed`, `remaining`
 
 Discovery reads `$CLAUDE_CONFIG_DIR` (default `~/.claude`) and `$CODEX_HOME`
 (default `~/.codex`), parses only sessions updated after the task started,
