@@ -240,7 +240,9 @@ The task id defaults to the current Task Passport and may be given
 positionally or with `--task`. Sessions that ran Agentpack for the task are
 included automatically: a session is traced when its own Agentpack output
 started the task, switched to it, or showed it as the current Passport in
-`load_context`/`resume`; its subagents follow it. Other sessions are linked
+`load_context`/`resume` (only tool output counts, not prose or quoted history);
+its subagents follow it, including Codex child threads such as guardian
+reviews. Other sessions are linked
 once per task and stored in `.agentpack/usage/<task-id>.json`. Reading a
 report never writes; traced sessions cannot be unlinked.
 
@@ -291,8 +293,11 @@ agentpack usage unlink --task <task-id> --file <session-id or path>
 Explicit `--client`/`--file` links one source; `--turns` narrows it further
 within the task's periods. Linking a file again replaces its selection. `--phase` labels linked sources (default `main`).
 Coverage starts as `partial`; `--coverage` with `--note` declares it once
-sources are linked or traced. Every link is validated against the combined report, so
-overlapping selections are rejected before the file is written. `agentpack tui`
+sources are linked or traced. Every link is validated against the combined
+report before the file is written: a source without usage (wrong client, not a
+transcript, nothing while the task was current) is rejected, and requests
+repeated across sources, as in resumed or forked sessions, count once with a
+warning. Explicit `--manifest` files still reject overlapping selections. `agentpack tui`
 shows the same report, or the candidates, in its Usage tab.
 
 ### Direct sources

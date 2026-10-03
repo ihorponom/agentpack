@@ -233,15 +233,10 @@ function reportFromBytes(bytes: Buffer, resolved: string, byTurn: boolean, inter
     }
     // Task reports count a request once even when resumed or forked transcripts repeat it;
     // explicit --manifest files keep rejecting overlap below.
-    let read: ReturnType<typeof readUsageReport>;
-    try {
-      read = readUsageReport({ client, files: [sourceFile], byTurn, ...(turns !== undefined ? { turns } : {}),
-        ...(sourceIntervals ? { intervals: sourceIntervals } : {}), ...(intervals ? { exclude: seen } : {}) }, path.dirname(resolved));
-    } catch (error) {
-      if (!intervals || !(error instanceof Error && error.message.startsWith("No supported usage records"))) throw error;
-      emptySources.push(path.basename(sourceFile, ".jsonl"));
-      continue;
-    }
+    // Sources with no usage at all still fail (wrong client, outside the task's
+    // periods, not a transcript); only sources emptied by repeats are skipped.
+    const read = readUsageReport({ client, files: [sourceFile], byTurn, ...(turns !== undefined ? { turns } : {}),
+      ...(sourceIntervals ? { intervals: sourceIntervals } : {}), ...(intervals ? { exclude: seen } : {}) }, path.dirname(resolved));
     const { report, requestIds } = read;
     repeatedRequests += read.excludedRequests;
     if (!report.requests) {

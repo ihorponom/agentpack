@@ -252,7 +252,8 @@ function hasAgentpackTrace(file: string, taskId: string): boolean {
   try { text = readFileSync(file, "utf8"); } catch { return false; }
   const id = taskId.replace(/[.]/gu, "\\.");
   const end = "(?![A-Za-z0-9_-]|\\.[A-Za-z0-9])";
-  const trace = new RegExp(`(?:Started task|Switched to task) ${id}${end}|Current Task Passport(?:\\\\n|\\n)- ID: ${id}${end}`, "u");
+  // Newlines may be raw, JSON-escaped, or escaped twice (Codex code-mode tool output).
+  const trace = new RegExp(`(?:Started task|Switched to task) ${id}${end}|Current Task Passport(?:\\\\+n|\\n)- ID: ${id}${end}`, "u");
   // Claude tool_result rows; Codex function/custom tool call outputs.
   return text.split("\n").some(line => (line.includes('"tool_result"') || line.includes('_call_output"')) && trace.test(line));
 }
