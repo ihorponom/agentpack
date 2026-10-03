@@ -151,6 +151,16 @@ function clientCost(row: Record<string, unknown>, bounded: boolean): UsageSource
 
 /** Read explicit local sources only. Never write ledger state or infer billing rates. */
 export function buildUsageReport(options: UsageOptions, cwd: string): UsageReport {
+  return parseUsageReport(options, cwd).report;
+}
+
+/** Internal request identities allow manifest aggregation to reject overlap. */
+export function readUsageReport(options: UsageOptions, cwd: string): { report: UsageReport; requestIds: string[] } {
+  const { report, requests } = parseUsageReport(options, cwd);
+  return { report, requestIds: [...requests.keys()].map(key => `${options.client}:${key}`) };
+}
+
+function parseUsageReport(options: UsageOptions, cwd: string): { report: UsageReport; requests: Map<string, RequestUsage> } {
   if (options.client !== "codex" && options.client !== "claude") throw new Error("Usage supports codex or claude JSONL sources");
   if (!options.files.length) throw new Error("Usage requires at least one --file");
   const from = boundary(options.from, "--from");
@@ -323,7 +333,7 @@ export function buildUsageReport(options: UsageOptions, cwd: string): UsageRepor
   if (models.has("unknown")) warnings.push("Some requests lack a recognized model label.");
   if ((options.byTurn || turnRange) && unassignedRequests) warnings.push("Some requests lack usable turn boundaries and are not included in turn rows.");
   if (options.byTurn || turnRange) warnings.push("Turn duration includes tools/waits; Claude user-message boundaries do not establish completion or duration. Time-filtered durations are unavailable.");
-  return {
+  const report: UsageReport = {
     version: 1, client: options.client, task: options.task || null,
     boundary: { from: options.from || null, to: options.to || null, selection: "Usage record timestamps: inclusive from, exclusive to; whole supplied sources when unbounded" },
     requests: requests.size, duplicateRecords, duplicateFiles, totals,
@@ -331,6 +341,7 @@ export function buildUsageReport(options: UsageOptions, cwd: string): UsageRepor
     turnSelection: options.turns || null, unassignedRequests,
     ...(options.byTurn ? { turns: [...turnGroups.values()].filter(turn => turn.requests > 0) } : {})
   };
+  return { report, requests };
 }
 
 function printable(text: string): string {

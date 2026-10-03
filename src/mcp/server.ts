@@ -1,5 +1,6 @@
 import { appendEvent, requirePackRoot } from "../core/store.js";
 import { buildUsageReport, formatUsageReport } from "../core/usage.js";
+import { buildTaskUsageReport, formatTaskUsageReport } from "../core/usage-manifest.js";
 import { buildResume } from "../core/resume.js";
 import { createCheckpoint, diffCheckpoints } from "../core/checkpoints.js";
 import {
@@ -115,10 +116,11 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
   {
     name: "usage_report",
     annotations: READ_ONLY_TOOL_ANNOTATIONS,
-    description: "Report local Codex/Claude Code usage from explicitly supplied JSONL files when the user asks about work usage. Same read-only report as CLI usage report; no collection, rates or ledger writes. Optional byTurn shows boundaries and turns selects N or N:M in one file. Monetary snapshots are source-session estimates, unavailable for filtered ranges. Missing child sources are not discovered. Supported clients: Codex and Claude Code.",
+    description: "Report local Codex/Claude Code usage from explicitly supplied JSONL files when the user asks about work usage. Supply manifest for explicit task/phase selections and declared coverage, or client/files for a direct report. Same read-only report as CLI usage report; no collection, rates or ledger writes. Optional byTurn shows boundaries and turns selects N or N:M in one file. Monetary snapshots are source-session estimates, unavailable for filtered ranges. Missing child sources are not discovered. Supported clients: Codex and Claude Code.",
     inputSchema: {
       type: "object", additionalProperties: false,
       properties: {
+        manifest: { type: "string", minLength: 1, description: "Local task usage manifest; exclusive with direct source options. Paths inside it resolve from its directory." },
         client: { type: "string", enum: ["codex", "claude"] },
         files: { type: "array", minItems: 1, items: { type: "string", minLength: 1 }, description: "Explicit local JSONL paths; relative paths resolve from the pack root." },
         task: { type: "string", description: "Descriptive label; does not modify a Passport." },
@@ -127,7 +129,10 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
         byTurn: { type: "boolean", description: "Include source-local turn rows." },
         turns: { type: "string", description: "Inclusive N or N:M turn selection; exactly one file required." },
         json: { type: "boolean", description: "Return aggregate report JSON as text instead of human-readable text." }
-      }, required: ["client", "files"]
+      }, oneOf: [
+        { required: ["manifest"], not: { anyOf: ["client", "files", "task", "from", "to", "turns"].map(key => ({ required: [key] })) } },
+        { required: ["client", "files"], not: { required: ["manifest"] } }
+      ]
     }
   },
   {
@@ -929,14 +934,20 @@ function isImplementation(value: unknown): boolean {
 
 function callTool(root: string, name: string, args: Record<string, unknown>, warnings: McpWarningState): unknown {
   if (name === "usage_report") {
-    const allowed = new Set(["client", "files", "task", "from", "to", "byTurn", "turns", "json"]);
+    const allowed = new Set(["client", "files", "task", "from", "to", "byTurn", "turns", "json", "manifest"]);
     if (Object.keys(args).some(key => !allowed.has(key))) throw new Error("Unknown usage_report argument");
+    for (const key of ["byTurn", "json"]) if (args[key] !== undefined && typeof args[key] !== "boolean") throw new Error(`${key} requires a boolean`);
+    if (args.manifest !== undefined) {
+      if (typeof args.manifest !== "string" || !args.manifest.trim()) throw new Error("manifest requires a non-empty path");
+      if (["client", "files", "task", "from", "to", "turns"].some(key => args[key] !== undefined)) throw new Error("manifest cannot be combined with direct source options");
+      const report = buildTaskUsageReport(args.manifest, root, args.byTurn === true);
+      return toolText(args.json ? JSON.stringify(report, null, 2) : formatTaskUsageReport(report));
+    }
     if (args.client !== "codex" && args.client !== "claude") throw new Error("usage_report requires client codex or claude");
     if (!Array.isArray(args.files) || !args.files.length || args.files.some(file => typeof file !== "string" || !file.trim())) throw new Error("usage_report requires explicit files");
     for (const key of ["task", "from", "to", "turns"]) {
       if (args[key] !== undefined && (typeof args[key] !== "string" || !args[key].trim())) throw new Error(`${key} requires a non-empty string`);
     }
-    for (const key of ["byTurn", "json"]) if (args[key] !== undefined && typeof args[key] !== "boolean") throw new Error(`${key} requires a boolean`);
     const report = buildUsageReport({ client: args.client, files: args.files as string[],
       ...(typeof args.task === "string" ? { task: args.task } : {}),
       ...(typeof args.from === "string" ? { from: args.from } : {}),

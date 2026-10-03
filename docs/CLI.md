@@ -61,6 +61,41 @@ prove whole-task coverage or completion. Child sessions and other clients are
 not discovered automatically. Supported clients: Codex and Claude Code.
 No account connections, background collection or telemetry are required.
 
+```bash
+agentpack usage report --manifest .agentpack/usage/task-example.json --by-turn
+```
+
+`--manifest` is exclusive with `--client`, `--file`, `--task`, `--from`, `--to`
+and `--turns`. It accepts `--json` and `--by-turn`.
+
+Task mapping uses an explicit local manifest:
+
+```json
+{
+  "version": 1,
+  "taskId": "task_example",
+  "coverage": { "status": "partial", "note": "Main session only; separate reviews excluded" },
+  "sources": [
+    { "client": "codex", "file": "/absolute/path/to/rollout.jsonl", "turns": "4:5", "phase": "implementation" },
+    { "client": "claude", "file": "/absolute/path/to/review.jsonl", "phase": "review" }
+  ]
+}
+```
+
+Each source selects one file and optionally inclusive `N` or `N:M` turns.
+Omitting `turns` selects the whole source. Relative source paths resolve from
+the manifest directory. Use separate entries for disjoint ranges or phases;
+requests appearing in multiple entries are rejected, including copied exports.
+The manifest accepts up to 32 selections and 1 MiB. Sources retain the existing
+64 MiB limit. Source hashes identify the bytes read; reports never include
+transcript content or request identities.
+
+Coverage is the author's declaration: `partial` or `declared-complete`, with a
+required explanatory note. It is not proof of completeness, task completion,
+or quality. No boundaries are inferred from Passport dates;
+`taskId` is an explicit identity and does not read or modify the Passport.
+Session monetary estimates remain separate and are not summed as task cost.
+
 ## Default workflow
 
 Agentpack's default workflow is MCP-connected: generated project instructions guide Codex, Claude Code, Cursor, and other MCP clients to load context, record durable task state, and checkpoint progress while they work.

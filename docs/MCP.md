@@ -23,6 +23,17 @@ Client monetary snapshots are source-session estimates; time or turn selection
 suppresses them. No rates are guessed or verified charges claimed. Use an
 updated server build and reconnect the MCP client to discover the new tool.
 
+For explicit task mapping, call the same tool with:
+
+```json
+{"manifest":".agentpack/usage/task-example.json","byTurn":true,"json":true}
+```
+
+`manifest` is exclusive with `client`, `files`, `task`, `from`, `to` and `turns`.
+Its path resolves from the pack root; source paths resolve from its directory.
+The report includes totals and a report for each declared phase/source slice.
+The manifest schema and coverage limits are documented in [CLI.md](CLI.md).
+
 `agentpack mcp` starts a local stdio MCP server. This is Agentpack's primary runtime surface for connected coding agents.
 
 The MCP stdio transport uses newline-delimited JSON-RPC messages over stdin/stdout. The client launches Agentpack as a subprocess, sends JSON-RPC messages to stdin, and reads JSON-RPC responses from stdout. Agentpack must not write non-MCP logs to stdout.

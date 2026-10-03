@@ -9,6 +9,7 @@ import { PassThrough } from "node:stream";
 import { startMcpServer, TOOL_DEFINITIONS } from "../src/mcp/server.js";
 import { initPack } from "../src/core/store.js";
 import { buildUsageReport, formatUsageReport } from "../src/core/usage.js";
+import { buildTaskUsageReport, formatTaskUsageReport } from "../src/core/usage-manifest.js";
 
 const cli = fileURLToPath(new URL("../src/agentpack.js", import.meta.url));
 const time = "2026-10-02T12:00:00Z";
@@ -219,9 +220,86 @@ test("usage_report MCP shares CLI calculation, is read-only and validates its ar
   assert.ok(response.result);
   const cliReport = JSON.parse(execFileSync(process.execPath, [cli, "usage", "report", "--client", "codex", "--file", file, "--by-turn", "--turns", "1", "--json"], { cwd: dir, encoding: "utf8" }));
   assert.deepEqual(JSON.parse(response.result.content[0]!.text), cliReport);
+  const manifestFile = path.join(dir, "task-usage.json");
+  writeFileSync(manifestFile, JSON.stringify({ version: 1, taskId: "task_test", coverage: { status: "partial", note: "Main session only" }, sources: [
+    { client: "codex", file: "input.jsonl", turns: "1", phase: "implementation" }
+  ] }));
+  const mapped = await send({ manifest: manifestFile, byTurn: true, json: true });
+  assert.ok(mapped.result);
+  const mappedCli = JSON.parse(execFileSync(process.execPath, [cli, "usage", "report", "--manifest", manifestFile, "--by-turn", "--json"], { cwd: dir, encoding: "utf8" }));
+  assert.deepEqual(JSON.parse(mapped.result.content[0]!.text), mappedCli);
+  assert.equal(mappedCli.slices[0].report.turns[0].complete, true);
+  assert.ok((await send({ manifest: manifestFile, client: "codex", files: [file] })).error);
+  assert.ok((await send({ manifest: manifestFile, json: "true" })).error);
+  assert.ok((await send({ manifest: " " })).error);
+  assert.equal(spawnSync(process.execPath, [cli, "usage", "report", "--manifest", manifestFile, "--client", "codex"], { cwd: dir }).status, 1);
   assert.equal(TOOL_DEFINITIONS.find(tool => tool.name === "usage_report")?.annotations.readOnlyHint, true);
   assert.deepEqual(readFileSync(path.join(dir, ".agentpack", "state.json")), state);
   for (const args of [{ client: "cursor", files: [file] }, { client: "codex", files: [] }, { client: "codex", files: [false] }, { client: "codex", files: [file], byTurn: "true" }, { client: "codex", files: [file], unexpected: true }]) {
     assert.ok((await send(args)).error);
   }
+});
+
+
+test("Task usage manifest aggregates disjoint phases and clients with explicit coverage", t => {
+  const { dir } = fixture(t, [started("turn1"), context, codex("r1"), completed("turn1"),
+    started("turn2"), { type: "turn_context", payload: { turn_id: "turn2", model: "model-b" } },
+    { ...codex("r2"), payload: { ...codex("r2").payload, turn_id: "turn2" } }, completed("turn2")]);
+  writeFileSync(path.join(dir, "claude.jsonl"), [claude("m1"), cost].map(row => JSON.stringify(row)).join("\n"));
+  const manifest = path.join(dir, "usage.json");
+  const data = { version: 1, taskId: "task_test", coverage: { status: "declared-complete", note: "Author declaration, not verified" }, sources: [
+    { client: "codex", file: "input.jsonl", turns: "1", phase: "implementation" },
+    { client: "codex", file: "input.jsonl", turns: "2", phase: "fixes" },
+    { client: "claude", file: "claude.jsonl", phase: "review" }
+  ] };
+  writeFileSync(manifest, JSON.stringify(data));
+  const before = readdirSync(dir);
+  const bytes = readFileSync(manifest);
+  const r = buildTaskUsageReport(manifest, os.tmpdir(), true);
+  assert.equal(r.requests, 3);
+  assert.deepEqual(r.totals, { input: 300, uncachedInput: 90, cacheRead: 180, cacheWrite: 30, output: 60, reasoning: null });
+  assert.equal(r.slices[1]?.report.models[0]?.model, "model-b");
+  assert.equal(r.slices[2]?.report.sources[0]?.cost.usd, 0.25);
+  assert.equal(r.billedUsd, null);
+  assert.equal(r.coverage.status, "declared-complete");
+  assert.match(formatTaskUsageReport(r), /not independently verified/);
+  assert.doesNotMatch(JSON.stringify(r), /PRIVATE_PROMPT_SENTINEL|requestIds/);
+  assert.deepEqual(readdirSync(dir), before);
+  assert.deepEqual(readFileSync(manifest), bytes);
+});
+
+test("Task usage rejects overlapping requests across ranges, aliases and copied exports", t => {
+  const { dir, file } = fixture(t, [started("turn1"), context, codex("r1"), completed("turn1")]);
+  const manifest = path.join(dir, "usage.json");
+  writeFileSync(path.join(dir, "copy.jsonl"), readFileSync(file));
+  symlinkSync(file, path.join(dir, "alias.jsonl"));
+  for (const second of ["input.jsonl", "copy.jsonl", "alias.jsonl"]) {
+    writeFileSync(manifest, JSON.stringify({ version: 1, taskId: "task_test", coverage: { status: "partial", note: "Main session" }, sources: [
+      { client: "codex", file: "input.jsonl", turns: "1", phase: "implementation" },
+      { client: "codex", file: second, phase: "review" }
+    ] }));
+    assert.throws(() => buildTaskUsageReport(manifest, dir), /Overlapping usage selections/);
+  }
+});
+
+test("Task usage validates bounded manifests without leaking malformed content", t => {
+  const { dir } = fixture(t, [context, codex("r1")]);
+  const file = path.join(dir, "usage.json");
+  const valid = { version: 1, taskId: "task_test", coverage: { status: "partial", note: "Selected source" }, sources: [
+    { client: "codex", file: "input.jsonl", phase: "implementation" }
+  ] };
+  for (const value of [null, { ...valid, version: 2 }, { ...valid, unexpected: true }, { ...valid, taskId: "label" },
+    { ...valid, coverage: { status: "complete", note: "Unchecked" } }, { ...valid, sources: [] },
+    { ...valid, sources: Array(33).fill(valid.sources[0]) },
+    { ...valid, sources: [{ ...valid.sources[0], from: time }] },
+    { ...valid, sources: [{ ...valid.sources[0], client: "cursor" }] },
+    { ...valid, coverage: { status: "partial", note: "\u001b[31m" } }]) {
+    writeFileSync(file, JSON.stringify(value));
+    assert.throws(() => buildTaskUsageReport(file, dir), /usage|Usage|Invalid|Unsupported|Supported/);
+  }
+  writeFileSync(file, "PRIVATE_PROMPT_SENTINEL invalid JSON");
+  assert.throws(() => buildTaskUsageReport(file, dir), /must contain valid JSON/);
+  writeFileSync(file, " ".repeat(1024 * 1024 + 1));
+  assert.throws(() => buildTaskUsageReport(file, dir), /at most 1 MiB/);
+  assert.throws(() => buildTaskUsageReport(dir, dir), /regular local JSON/);
 });

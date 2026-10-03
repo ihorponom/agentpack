@@ -81,6 +81,7 @@ import { evaluateGate, formatGateReport, type GateOptions, type GateReport } fro
 import { startMcpServer } from "../mcp/server.js";
 import { startTui } from "../core/tui.js";
 import { buildUsageReport, formatUsageReport } from "../core/usage.js";
+import { buildTaskUsageReport, formatTaskUsageReport } from "../core/usage-manifest.js";
 
 export type ArgValue = string | boolean | string[];
 
@@ -142,13 +143,21 @@ export async function runCli(argv: string[], cwd: string): Promise<void> {
       throw new Error("Every --file requires a path");
     }
     const parsed = parseArgs(inputArgs);
-    const allowed = new Set(["client", "file", "task", "from", "to", "json", "by-turn", "turns"]);
+    const allowed = new Set(["client", "file", "task", "from", "to", "json", "by-turn", "turns", "manifest"]);
     if (parsed.positionals.length || Object.keys(parsed.options).some(key => !allowed.has(key))) {
       throw new Error("Unknown usage report argument; see agentpack usage --help");
     }
-    for (const key of ["client", "task", "from", "to", "turns"]) {
+    for (const key of ["client", "task", "from", "to", "turns", "manifest"]) {
       const value = parsed.options[key];
       if (value !== undefined && (typeof value !== "string" || !value.trim())) throw new Error(`--${key} requires one value`);
+    }
+    if (parsed.options.manifest !== undefined) {
+      if (["client", "file", "task", "from", "to", "turns"].some(key => parsed.options[key] !== undefined)) {
+        throw new Error("--manifest cannot be combined with direct source options");
+      }
+      const report = buildTaskUsageReport(stringOption(parsed.options.manifest), cwd, booleanOption(parsed.options["by-turn"], "--by-turn"));
+      process.stdout.write(`${booleanOption(parsed.options.json, "--json") ? JSON.stringify(report, null, 2) : formatTaskUsageReport(report)}\n`);
+      return;
     }
     const files = toArray(parsed.options.file);
     if (!files.length || files.some(file => !file.trim())) throw new Error("Usage requires at least one --file <jsonl>");
@@ -405,7 +414,8 @@ function printCommandHelp(command: string): boolean {
 
 function commandHelpText(command: string): string {
   if (command === "usage") {
-    return `agentpack usage report --client codex|claude --file <jsonl> [--file <jsonl>] [--task <label>] [--from <ISO>] [--to <ISO>] [--by-turn] [--turns N|N:M] [--json]
+    return `agentpack usage report --manifest <json> [--by-turn] [--json]
+agentpack usage report --client codex|claude --file <jsonl> [--file <jsonl>] [--task <label>] [--from <ISO>] [--to <ISO>] [--by-turn] [--turns N|N:M] [--json]
 
 Read explicit local transcripts and print aggregate token usage by model.
 No initialized pack is needed; no files or ledger state are written.
