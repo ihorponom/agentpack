@@ -51,8 +51,8 @@ input. Previews are bounded, redacted with the pack configuration, and stripped
 of ANSI/control sequences. Evidence paths must remain regular non-symlink files
 below `.agentpack/evidence`; checkpoint detail reads only the known regular
 non-symlink files below the selected `.agentpack/checkpoints/<id>` directory.
-The Usage view reports the sources linked to the selected task. When none are
-linked it lists candidate sessions, which reads Claude Code and Codex
+The Usage view reports the selected task's linked sessions plus the sessions
+that ran Agentpack for it. When there are none it lists candidate sessions, which reads Claude Code and Codex
 transcripts outside `.agentpack` (`$CLAUDE_CONFIG_DIR`, `$CODEX_HOME`, by
 default `~/.claude` and `~/.codex`) with the same bounds as `agentpack usage
 link`; it shows only counts, ids and paths, never transcript content, and

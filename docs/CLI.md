@@ -231,38 +231,47 @@ security boundaries, and collision behavior.
 
 ```bash
 agentpack usage report                      # current task
-agentpack usage report --task <task-id>     # any Task Passport
-agentpack usage link --task <task-id>       # list candidate sessions
-agentpack usage link --task <task-id> --pick 1,3      # or session ids
+agentpack usage report <task-id>            # any Task Passport (or --task <task-id>)
+agentpack usage link <task-id>              # list candidate sessions
+agentpack usage link <task-id> --pick 1,3   # or session ids
 ```
 
-`--task` defaults to the current Task Passport. Sources are linked once per
-task and stored in `.agentpack/usage/<task-id>.json`; after that the report
-needs only the id.
+The task id defaults to the current Task Passport and may be given
+positionally or with `--task`. Sessions that ran Agentpack for the task are
+included automatically: a session is traced when its own Agentpack output
+started the task, switched to it, or showed it as the current Passport in
+`load_context`/`resume`; its subagents follow it. Other sessions are linked
+once per task and stored in `.agentpack/usage/<task-id>.json`. Reading a
+report never writes; traced sessions cannot be unlinked.
 
 A task report counts only requests made while the task was the current
 Passport: from `task start` or `task switch` to `task park`, `task close` or
 `task finalize`, read from the task's lifecycle events (older tasks without
 them use created to closed). A session shared by several tasks is therefore
-split between them by time, and per-task totals do not overlap. Requests
-without timestamps cannot be attributed and are omitted and counted.
+split between them by time, and per-task totals do not overlap. A subagent
+session counts whole for the task that was current when it started, because a
+subagent keeps working for that task while the main session moves on.
+Requests without timestamps cannot be attributed and are omitted and counted.
 
-While nothing is linked, `usage report` and `usage link` list candidate
-sessions: Claude Code transcripts (including subagents) and Codex rollouts
-recorded in the task worktree with requests while the task was current. Each
-candidate shows a stable session id and how many of its requests fall in
-those periods. Candidates are suggestions only; nothing is counted until
-`--pick` links them. `--pick` accepts list numbers or session ids; numbers can
+While nothing is traced or linked, `usage report` lists candidate sessions;
+`usage link` always does. Candidates are Claude Code transcripts (including
+subagents) and Codex rollouts recorded in the task worktree with requests
+counted for the task. Each shows a stable session id, whether it is
+`[traced]`, and how many of its requests count. Untraced candidates are
+suggestions only; nothing from them is counted until `--pick` links them, and
+the report warns how many remain. `--pick` accepts list numbers or session ids; numbers can
 shift when sessions change between calls, so prefer ids in scripts. `--json`
 output carries `kind`, and these shapes are stable:
 
 - `task-usage-candidates`: `taskId`, `linked`, `intervals` (`from`, `to` or
   null while current), `searched`, `warnings`, `candidates` (`number`, `id`,
   `client`, `file`, `subagent`, `started`, `requests`, `taskRequests`,
-  `linked`)
+  `traced`, `linked`)
 - `task-usage-report`: `version`, `taskId`, `manifest` (`path`, `sha256`),
-  `coverage`, `requests`, `totals`, `slices` (`phase`, `report`), `billedUsd`
-  (always null), `warnings`
+  `coverage`, `requests`, `totals`, `slices` (`phase`, `report`; traced
+  sessions use phase `traced`), `billedUsd` (always null), `warnings`. For
+  `--task`, `manifest` describes the effective selection of linked plus
+  traced sessions.
 - `task-usage-link`: `taskId`, `linked` (file names), `report`;
   `task-usage-unlink`: `taskId`, `removed`, `remaining`
 
@@ -282,7 +291,7 @@ agentpack usage unlink --task <task-id> --file <session-id or path>
 Explicit `--client`/`--file` links one source; `--turns` narrows it further
 within the task's periods. Linking a file again replaces its selection. `--phase` labels linked sources (default `main`).
 Coverage starts as `partial`; `--coverage` with `--note` declares it once
-sources are linked. Every link is validated against the combined report, so
+sources are linked or traced. Every link is validated against the combined report, so
 overlapping selections are rejected before the file is written. `agentpack tui`
 shows the same report, or the candidates, in its Usage tab.
 

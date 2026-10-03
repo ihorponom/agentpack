@@ -1,4 +1,4 @@
-import { readFileSync, realpathSync, statSync } from "node:fs";
+import { closeSync, openSync, readFileSync, readSync, realpathSync, statSync } from "node:fs";
 import path from "node:path";
 import { sha256 } from "./hash.js";
 
@@ -155,6 +155,36 @@ function clientCost(row: Record<string, unknown>, bounded: boolean): UsageSource
 /** Read explicit local sources only. Never write ledger state or infer billing rates. */
 export function buildUsageReport(options: UsageOptions, cwd: string): UsageReport {
   return parseUsageReport(options, cwd).report;
+}
+
+/** First-line Codex session_meta payload (bounded read), or null. */
+export function readCodexSessionMeta(file: string): Record<string, unknown> | null {
+  let fd: number | undefined;
+  try {
+    fd = openSync(file, "r");
+    const chunks: Buffer[] = [];
+    let total = 0;
+    let newline = -1;
+    while (newline < 0 && total < 1024 * 1024) {
+      const chunk = Buffer.alloc(64 * 1024);
+      const bytes = readSync(fd, chunk, 0, chunk.length, total);
+      if (!bytes) break;
+      newline = chunk.subarray(0, bytes).indexOf(10);
+      chunks.push(chunk.subarray(0, newline < 0 ? bytes : newline));
+      total += bytes;
+    }
+    const row = JSON.parse(Buffer.concat(chunks).toString("utf8")) as Record<string, unknown>;
+    return row.type === "session_meta" && row.payload && typeof row.payload === "object" ? row.payload as Record<string, unknown> : null;
+  } catch {
+    return null;
+  } finally {
+    if (fd !== undefined) closeSync(fd);
+  }
+}
+
+/** Claude subagent transcripts live under <session>/subagents/; Codex marks them in session_meta. */
+export function isSubagentTranscript(client: UsageOptions["client"], file: string): boolean {
+  return client === "claude" ? file.split(path.sep).includes("subagents") : readCodexSessionMeta(file)?.thread_source === "subagent";
 }
 
 /** Request times and source-local turns for one source, without request identities or content. */

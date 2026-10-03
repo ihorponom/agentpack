@@ -4,8 +4,7 @@ import { resolveRegularFileWithin } from "./hash.js";
 import { redactForRoot } from "./redaction.js";
 import { getPackPath } from "./store.js";
 import { readPassport } from "./tasks.js";
-import { findUsageCandidates, formatUsageCandidates } from "./usage-discovery.js";
-import { buildLinkedTaskUsageReport, formatTaskUsageReport, hasLinkedTaskUsage } from "./usage-manifest.js";
+import { buildTaskUsage, formatTaskUsage } from "./usage-discovery.js";
 import type { AgentpackEvent, TaskPassport } from "./types.js";
 
 const PREVIEW_BYTES = 12_000;
@@ -138,10 +137,7 @@ export function loadTuiTaskDetails(model: TuiModel, task: TuiTask): TuiTaskDetai
 export function loadTuiTaskUsage(model: TuiModel, task: TuiTask): string[] {
   const id = task.passport.id;
   try {
-    const text = hasLinkedTaskUsage(model.root, id)
-      ? formatTaskUsageReport(buildLinkedTaskUsageReport(model.root, id))
-      : formatUsageCandidates(findUsageCandidates(model.root, id));
-    return text.split("\n");
+    return formatTaskUsage(buildTaskUsage(model.root, id)).split("\n");
   } catch (error) {
     return [`Usage unavailable: ${message(error)}`, `Inspect: agentpack usage report --task ${id}`];
   }

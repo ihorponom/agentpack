@@ -350,12 +350,12 @@ test("Task usage links suggested sessions once and reports by Task Passport id a
   assert.equal(listed.status, 0);
   assert.match(listed.stdout, /No usage sources linked yet/);
   assert.match(listed.stdout, /1\. main \(claude\)/);
-  assert.match(listed.stdout, /2\/3 requests while the task was current/);
+  assert.match(listed.stdout, /2\/3 requests counted for the task/);
   assert.doesNotMatch(listed.stdout, /old\.jsonl|rollout-other|PRIVATE/);
   const candidatesJson = JSON.parse(run("report", "--json").stdout);
   assert.deepEqual(Object.keys(candidatesJson).sort(), ["candidates", "intervals", "kind", "linked", "searched", "taskId", "warnings"], "candidates JSON contract");
   assert.equal(candidatesJson.kind, "task-usage-candidates");
-  assert.deepEqual(Object.keys(candidatesJson.candidates[0]).sort(), ["client", "file", "id", "linked", "number", "requests", "started", "subagent", "taskRequests"], "candidate JSON contract");
+  assert.deepEqual(Object.keys(candidatesJson.candidates[0]).sort(), ["client", "file", "id", "linked", "number", "requests", "started", "subagent", "taskRequests", "traced"], "candidate JSON contract");
   assert.match(run("link", "--coverage", "partial", "--note", "Main only").stderr, /link sources before declaring coverage/);
   assert.equal(existsSync(taskUsageManifestPath(dir, passport.id)), false, "listing does not link");
 
@@ -456,12 +456,25 @@ test("Tasks sharing one session split it by the periods each task was current", 
   assert.equal(second.requests, 2, "m2 at the boundary belongs to the task that became current, plus m4");
   assert.equal(first.requests + second.requests, buildUsageReport({ client: "claude", files: [session] }, dir).requests - 1);
 
+  const subagent = path.join(dir, "s", "subagents", "agent-y.jsonl");
+  mkdirSync(path.dirname(subagent), { recursive: true });
+  writeFileSync(subagent, [claude("y1", 20, at(35)), claude("y2", 20, at(45))].map(row => JSON.stringify(row)).join("\n") + "\n");
+  assert.equal(linkTaskUsage(dir, a.id, [{ client: "claude", file: subagent, phase: "review" }], dir).requests, 4,
+    "a subagent started while A was current counts whole for A, even after the main session switched to B");
+  const forB = linkTaskUsage(dir, b.id, [{ client: "claude", file: subagent, phase: "review" }], dir);
+  assert.equal(forB.requests, 2, "and not at all for B");
+  assert.match(forB.warnings.join(" "), /Subagent sessions started while another task was current are not counted: agent-y/);
+  unlinkTaskUsage(dir, b.id, subagent, dir);
+  assert.equal(unlinkTaskUsage(dir, b.id, session, dir), 0);
+  assert.equal(existsSync(taskUsageManifestPath(dir, b.id)), false, "an emptied manifest with default coverage is removed");
+  linkTaskUsage(dir, b.id, [{ client: "claude", file: session, phase: "main" }], dir);
+
   const copy = path.join(dir, "copy", "shared.jsonl");
   mkdirSync(path.dirname(copy));
   writeFileSync(copy, JSON.stringify(claude("m9", 20, at(6))) + "\n");
   linkTaskUsage(dir, a.id, [{ client: "claude", file: copy, phase: "copy" }], dir);
   assert.throws(() => unlinkTaskUsage(dir, a.id, "shared", dir), /matches 2 linked sources; unlink by path/);
-  assert.equal(unlinkTaskUsage(dir, a.id, copy, dir), 1);
+  assert.equal(unlinkTaskUsage(dir, a.id, copy, dir), 2);
 
   parkCurrentTask(dir);
   const imported = startTask(dir, { title: "Imported" });
@@ -474,4 +487,60 @@ test("Tasks sharing one session split it by the periods each task was current", 
   writeFileSync(path.join(dir, ".agentpack", "tasks", imported.id, "events.jsonl"), JSON.stringify({ type: "task-import", ts: at(50) }) + "\n");
   assert.throws(() => linkTaskUsage(dir, imported.id, [{ client: "claude", file: session, phase: "main" }], dir), /never been the current Task Passport/);
   assert.match(findUsageCandidates(dir, imported.id, { CLAUDE_CONFIG_DIR: dir, CODEX_HOME: dir }).warnings.join(" "), /never been the current/);
+});
+
+test("Sessions with an Agentpack trace of the task are reported without linking", t => {
+  const dir = realpathSync(mkdtempSync(path.join(os.tmpdir(), "agentpack-usage-trace-")));
+  const home = mkdtempSync(path.join(os.tmpdir(), "agentpack-usage-trace-home-"));
+  t.after(() => { rmSync(dir, { recursive: true, force: true }); rmSync(home, { recursive: true, force: true }); });
+  initPack(dir);
+  const passport = startTask(dir, { title: "Traced task" });
+  const after = (seconds: number) => new Date(Date.parse(passport.createdAt) + seconds * 1000).toISOString();
+  const project = path.join(home, "claude", "projects", path.resolve(passport.worktree).replace(/[^A-Za-z0-9]/gu, "-"));
+  const write = (file: string, rows: unknown[]) => {
+    mkdirSync(path.dirname(file), { recursive: true });
+    writeFileSync(file, rows.map(row => JSON.stringify(row)).join("\n") + "\n");
+  };
+  const toolResult = (text: string) => ({ type: "user", timestamp: after(1), message: { content: [{ type: "tool_result", content: text }] } });
+  write(path.join(project, "worker.jsonl"), [toolResult(`Started task ${passport.id}.`), claude("w1", 20, after(2)), claude("w2", 20, after(3))]);
+  write(path.join(project, "worker", "subagents", "agent-r.jsonl"), [claude("r1", 20, after(4))]);
+  write(path.join(project, "chat.jsonl"), [claude("c1", 20, after(5))]);
+  write(path.join(project, "mention.jsonl"), [toolResult(`Inspected task: ${passport.id} (not current)`), claude("n1", 20, after(6))]);
+  const day = new Date(Date.parse(passport.createdAt));
+  const codexDay = path.join(home, "codex", "sessions", String(day.getFullYear()), String(day.getMonth() + 1).padStart(2, "0"), String(day.getDate()).padStart(2, "0"));
+  const codexMeta = (payload: Record<string, unknown>) => ({ type: "session_meta", timestamp: after(1), payload: { cwd: dir, ...payload } });
+  write(path.join(codexDay, "rollout-parent.jsonl"), [codexMeta({ id: "p1" }), context,
+    { type: "response_item", timestamp: after(1), payload: { type: "function_call_output", output: `## Current Task Passport\n- ID: ${passport.id}\n` } },
+    codex("cx1", usage, after(7))]);
+  write(path.join(codexDay, "rollout-sub.jsonl"), [codexMeta({ id: "s1", thread_source: "subagent", parent_thread_id: "p1" }), context, codex("cs1", usage, after(8))]);
+  const env = { ...process.env, CLAUDE_CONFIG_DIR: path.join(home, "claude"), CODEX_HOME: path.join(home, "codex") };
+  const run = (...args: string[]) => spawnSync(process.execPath, [cli, ...args], { cwd: dir, encoding: "utf8", env });
+
+  const listed = JSON.parse(run("usage", "link", passport.id, "--json").stdout);
+  assert.deepEqual(listed.candidates.map((c: { id: string; traced: boolean }) => [c.id, c.traced]).sort(),
+    [["agent-r", true], ["chat", false], ["mention", false], ["rollout-parent", true], ["rollout-sub", true], ["worker", true]],
+    "only start/switch/current-passport output traces a session; subagents follow their Claude or Codex parent");
+  const report = JSON.parse(run("usage", "report", "--json", passport.id).stdout);
+  assert.equal(report.kind, "task-usage-report", "a positional id after a boolean flag selects the task");
+  assert.equal(report.requests, 5, "traced sessions and their subagents, not the untraced chat");
+  assert.deepEqual(report.slices.map((slice: { phase: string }) => slice.phase), ["traced", "traced", "traced", "traced"]);
+  assert.match(report.warnings.join(" "), /2 other candidate session\(s\)/);
+  assert.equal(existsSync(taskUsageManifestPath(dir, passport.id)), false, "reading never writes");
+  assert.match(run("usage", "unlink", passport.id, "--file", "worker").stderr, /always included/);
+  assert.equal(run("usage", "link", passport.id, "--coverage", "declared-complete", "--note", "Worker session only").status, 0);
+  assert.equal(JSON.parse(run("usage", "report", passport.id, "--json").stdout).coverage.status, "declared-complete");
+  assert.equal(JSON.parse(run("usage", "link", passport.id, "--pick", "chat", "--json").stdout).report.requests, 6);
+  assert.equal(run("usage", "unlink", passport.id, "--file", "chat").status, 0);
+  assert.equal(JSON.parse(run("usage", "report", passport.id, "--json").stdout).coverage.status, "declared-complete", "declared coverage survives removing the last linked source");
+  assert.match(run("task", "usage", "report").stderr, /top-level command: agentpack usage report/);
+  assert.match(run("usage", "report", passport.id, "--client", "claude", "--file", "x.jsonl").stderr, /positional task id cannot be combined/);
+  const saved = { claude: process.env.CLAUDE_CONFIG_DIR, codex: process.env.CODEX_HOME };
+  process.env.CLAUDE_CONFIG_DIR = env.CLAUDE_CONFIG_DIR;
+  process.env.CODEX_HOME = env.CODEX_HOME;
+  try {
+    assert.match(loadTuiTaskUsage(buildTuiModel(dir), { passport, current: true }).join("\n"), /Phase: traced/);
+  } finally {
+    if (saved.claude === undefined) delete process.env.CLAUDE_CONFIG_DIR; else process.env.CLAUDE_CONFIG_DIR = saved.claude;
+    if (saved.codex === undefined) delete process.env.CODEX_HOME; else process.env.CODEX_HOME = saved.codex;
+  }
 });

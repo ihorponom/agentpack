@@ -1,13 +1,7 @@
 import { appendEvent, requirePackRoot } from "../core/store.js";
 import { buildUsageReport, formatUsageReport } from "../core/usage.js";
-import {
-  buildLinkedTaskUsageReport,
-  buildTaskUsageReport,
-  formatTaskUsageReport,
-  hasLinkedTaskUsage,
-  usageTaskId
-} from "../core/usage-manifest.js";
-import { findUsageCandidates, formatUsageCandidates, formatUsageLinkResult, runUsageLink, type UsageLinkRequest } from "../core/usage-discovery.js";
+import { buildTaskUsageReport, formatTaskUsageReport, usageTaskId } from "../core/usage-manifest.js";
+import { buildTaskUsage, formatTaskUsage, formatUsageLinkResult, runUsageLink, type UsageLinkRequest } from "../core/usage-discovery.js";
 import { buildResume } from "../core/resume.js";
 import { createCheckpoint, diffCheckpoints } from "../core/checkpoints.js";
 import {
@@ -123,7 +117,7 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
   {
     name: "usage_report",
     annotations: READ_ONLY_TOOL_ANNOTATIONS,
-    description: "Report local Codex/Claude Code usage when the user asks about work usage. Pass task (Task Passport id; omit for the current task) to report the sources linked to it; if none are linked, the result lists candidate sessions of the task worktree with requests while the task was current, to link with usage_link. Task reports count only requests made while the task was the current Passport. Alternatively supply manifest, or client/files for a direct report. Same read-only report as CLI usage report; no collection, rates or ledger writes. Optional byTurn shows boundaries and turns selects N, N: or N:M in one file. Monetary snapshots are source-session estimates, unavailable for filtered ranges. Supported clients: Codex and Claude Code.",
+    description: "Report local Codex/Claude Code usage when the user asks about work usage. Pass task (Task Passport id; omit for the current task) to report the sources linked to it; sessions that ran Agentpack for the task (and their subagents) are included automatically; if none are traced or linked, the result lists candidate sessions of the task worktree to link with usage_link. Task reports count only requests made while the task was the current Passport; a subagent counts whole for the task current when it started. Alternatively supply manifest, or client/files for a direct report. Same read-only report as CLI usage report; no collection, rates or ledger writes. Optional byTurn shows boundaries and turns selects N, N: or N:M in one file. Monetary snapshots are source-session estimates, unavailable for filtered ranges. Supported clients: Codex and Claude Code.",
     inputSchema: {
       type: "object", additionalProperties: false,
       properties: {
@@ -146,7 +140,7 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
   {
     name: "usage_link",
     annotations: UPDATING_TOOL_ANNOTATIONS,
-    description: "Link Codex/Claude Code session transcripts to a Task Passport so usage_report can report the task by id. Without pick, file, remove or coverage it only lists candidate sessions of the task worktree with requests while the task was current. Show candidates to the user and link only what they confirm: pick links sessions by session id (numbers can shift between calls); client/file/turns links an explicit one. Re-linking a file replaces its selection; remove unlinks a file by path or session id. Writes .agentpack/usage/<task id>.json only.",
+    description: "Link Codex/Claude Code session transcripts to a Task Passport so usage_report can report the task by id. Without pick, file, remove or coverage it only lists candidate sessions of the task worktree with requests while the task was current. Show candidates to the user and link only what they confirm: pick links sessions by session id (numbers can shift between calls); client/file/turns links an explicit one. Re-linking a file replaces its selection; remove unlinks a linked file by path or session id (traced sessions are always included). Writes .agentpack/usage/<task id>.json only.",
     inputSchema: {
       type: "object", additionalProperties: false,
       properties: {
@@ -1004,12 +998,8 @@ function callTool(root: string, name: string, args: Record<string, unknown>, war
       if (["from", "to", "turns"].some(key => args[key] !== undefined)) throw new Error("Task usage reports use linked turns; from, to and turns require client and files");
       if (args.task !== undefined && (typeof args.task !== "string" || !args.task.trim())) throw new Error("task requires a non-empty string");
       const taskId = usageTaskId(root, args.task as string | undefined);
-      if (hasLinkedTaskUsage(root, taskId)) {
-        const report = buildLinkedTaskUsageReport(root, taskId, args.byTurn === true);
-        return toolText(args.json ? JSON.stringify(report, null, 2) : formatTaskUsageReport(report));
-      }
-      const candidates = findUsageCandidates(root, taskId);
-      return toolText(args.json ? JSON.stringify(candidates, null, 2) : formatUsageCandidates(candidates));
+      const view = buildTaskUsage(root, taskId, args.byTurn === true);
+      return toolText(args.json ? JSON.stringify(view, null, 2) : formatTaskUsage(view));
     }
     if (args.client !== "codex" && args.client !== "claude") throw new Error("usage_report requires client codex or claude");
     if (!Array.isArray(args.files) || !args.files.length || args.files.some(file => typeof file !== "string" || !file.trim())) throw new Error("usage_report requires explicit files");

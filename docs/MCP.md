@@ -214,8 +214,11 @@ candidates. `client`/`file`/`turns` links an explicit source; linking a file
 again replaces its selection; `phase` labels the links (default `main`);
 `coverage` with `note` declares coverage; `remove` unlinks a file. It writes
 only `.agentpack/usage/<task id>.json` and validates the combined report first.
+Sessions whose own Agentpack output started, switched to or loaded the task
+(and their subagents) are included without linking and cannot be removed.
 Task reports count only requests made while the task was the current Passport,
-so tasks sharing a session do not overlap; `remove` accepts a path or session id.
+and a subagent session counts whole for the task current when it started, so
+tasks sharing a session do not overlap; `remove` accepts a path or session id.
 Linking rules and discovery locations are documented in [CLI.md](CLI.md).
 
 For direct reports, supply explicit local JSONL sources:

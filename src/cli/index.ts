@@ -81,14 +81,8 @@ import { evaluateGate, formatGateReport, type GateOptions, type GateReport } fro
 import { startMcpServer } from "../mcp/server.js";
 import { startTui } from "../core/tui.js";
 import { buildUsageReport, formatUsageReport } from "../core/usage.js";
-import {
-  buildLinkedTaskUsageReport,
-  buildTaskUsageReport,
-  formatTaskUsageReport,
-  hasLinkedTaskUsage,
-  usageTaskId
-} from "../core/usage-manifest.js";
-import { findUsageCandidates, formatUsageCandidates, formatUsageLinkResult, runUsageLink, type UsageLinkRequest } from "../core/usage-discovery.js";
+import { buildTaskUsageReport, formatTaskUsageReport, usageTaskId } from "../core/usage-manifest.js";
+import { buildTaskUsage, formatTaskUsage, formatUsageLinkResult, runUsageLink, type UsageLinkRequest } from "../core/usage-discovery.js";
 
 export type ArgValue = string | boolean | string[];
 
@@ -331,9 +325,7 @@ Task Passport:
   agentpack task --help
 
 Inspect and export:
-  agentpack usage report [--task <id>] [--by-turn] [--json]
-  agentpack usage link [--task <id>] [--pick <n>]
-  agentpack usage report --client codex|claude --file <jsonl> [--file <jsonl>] [--task <label>] [--json]
+  agentpack usage report [<task-id>] [--by-turn] [--json]    (agentpack usage --help: linking, direct files)
   agentpack tui
   agentpack resume --preset agent [--query <text>]
   agentpack source status [--json] [--changed] [--missing]
@@ -380,8 +372,8 @@ function printCommandHelp(command: string): boolean {
 
 function commandHelpText(command: string): string {
   if (command === "usage") {
-    return `agentpack usage report [--task <id>] [--by-turn] [--json]
-agentpack usage link [--task <id>] [--pick <n|session-id>[,...]] [--phase <name>] [--coverage partial|declared-complete --note <text>]
+    return `agentpack usage report [<task-id> | --task <id>] [--by-turn] [--json]
+agentpack usage link [<task-id> | --task <id>] [--pick <n|session-id>[,...]] [--phase <name>] [--coverage partial|declared-complete --note <text>]
 agentpack usage link [--task <id>] --client codex|claude --file <jsonl> [--turns N|N:|N:M] [--phase <name>]
 agentpack usage unlink [--task <id>] --file <session-id|jsonl>
 agentpack usage report --manifest <json> [--by-turn] [--json]
@@ -976,6 +968,7 @@ function taskCommand(root: string, rest: string[]): void {
     return;
   }
 
+  if (subcommand === "usage") throw new Error("Usage reports are a top-level command: agentpack usage report [<task-id>]");
   throw new Error("task command supports start, update, list, status, handoff, passport, switch, audit, park, block, verify, update-verification, finalize, and close");
 }
 
@@ -1189,7 +1182,19 @@ function usageCommand(cwd: string, rest: string[]): void {
     && (!inputArgs[index + 1] || inputArgs[index + 1]?.startsWith("-")))) {
     throw new Error("Every --file requires a path");
   }
-  const parsed = parseArgs(inputArgs);
+  // A task id may be given positionally (`usage report <task-id>`), even after a
+  // boolean flag that parseArgs would otherwise treat as taking a value.
+  const valueFlags = new Set(["--task", "--file", "--client", "--from", "--to", "--turns", "--manifest", "--pick", "--phase", "--coverage", "--note"]);
+  const positionalTasks = inputArgs.filter((arg, index) => /^task_[A-Za-z0-9][A-Za-z0-9._-]*$/u.test(arg) && !valueFlags.has(inputArgs[index - 1] || ""));
+  if (positionalTasks.length > 1) throw new Error("Pass one task id");
+  const parsed = parseArgs(inputArgs.filter(arg => !positionalTasks.includes(arg)));
+  if (positionalTasks.length) {
+    if (typeof parsed.options.task === "string") throw new Error("Pass the task id either positionally or with --task, not both");
+    if (action === "report" && ["client", "file", "manifest"].some(key => parsed.options[key] !== undefined)) {
+      throw new Error("A positional task id cannot be combined with --client, --file or --manifest; use --task <label> there");
+    }
+    parsed.options.task = positionalTasks[0]!;
+  }
   const allowed = new Set(action === "report" ? ["client", "file", "task", "from", "to", "json", "by-turn", "turns", "manifest"]
     : action === "link" ? ["task", "pick", "client", "file", "turns", "phase", "coverage", "note", "json"]
     : ["task", "file", "json"]);
@@ -1238,14 +1243,8 @@ function usageCommand(cwd: string, rest: string[]): void {
       throw new Error("Task usage reports use the turns linked to the task; --from, --to and --turns require --client and --file");
     }
     const root = requirePackRoot(cwd);
-    const taskId = usageTaskId(root, task);
-    if (hasLinkedTaskUsage(root, taskId)) {
-      const report = buildLinkedTaskUsageReport(root, taskId, byTurn);
-      process.stdout.write(`${json ? JSON.stringify(report, null, 2) : formatTaskUsageReport(report)}\n`);
-      return;
-    }
-    const candidates = findUsageCandidates(root, taskId);
-    process.stdout.write(`${json ? JSON.stringify(candidates, null, 2) : formatUsageCandidates(candidates)}\n`);
+    const view = buildTaskUsage(root, usageTaskId(root, task), byTurn);
+    process.stdout.write(`${json ? JSON.stringify(view, null, 2) : formatTaskUsage(view)}\n`);
     return;
   }
   const files = toArray(parsed.options.file);
