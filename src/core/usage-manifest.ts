@@ -144,7 +144,7 @@ export function unlinkTaskUsage(root: string, taskId: string, file: string, cwd:
       throw new Error(`Usage source is not linked to ${taskId}: ${file}`);
     }
     // An emptied manifest is kept only to preserve a declared-complete coverage for traced sessions.
-    if (!remaining.length && manifest.coverage.status !== "declared-complete") {
+    if (!remaining.length && !(manifest.coverage.status === "declared-complete" && traced.length)) {
       rmSync(taskUsageManifestPath(root, taskId));
       return 0;
     }
@@ -209,6 +209,8 @@ function reportFromBytes(bytes: Buffer, resolved: string, byTurn: boolean, inter
   const { taskId, coverage, sources } = parseManifest(parsed, intervals !== null);
   const seen = new Set<string>();
   const skippedSubagents: string[] = [];
+  const emptySources: string[] = [];
+  let repeatedRequests = 0;
   const totals: UsageReport["totals"] = { input: 0, uncachedInput: 0, cacheRead: 0, cacheWrite: 0, output: 0, reasoning: 0 };
   const slices: TaskUsageReport["slices"] = [];
   let requests = 0;
@@ -219,14 +221,33 @@ function reportFromBytes(bytes: Buffer, resolved: string, byTurn: boolean, inter
     if (intervals && isSubagentTranscript(client, sourceFile)) {
       const start = readUsageTimeline(client, sourceFile, path.dirname(resolved)).requests
         .reduce<number | null>((min, request) => request.at === null ? min : min === null ? request.at : Math.min(min, request.at), null);
-      if (start === null || !intervals.some(interval => start >= Date.parse(interval.from) && (interval.to === null || start < Date.parse(interval.to)))) {
+      if (start === null) {
+        emptySources.push(path.basename(sourceFile, ".jsonl"));
+        continue;
+      }
+      if (!intervals.some(interval => start >= Date.parse(interval.from) && (interval.to === null || start < Date.parse(interval.to)))) {
         skippedSubagents.push(path.basename(sourceFile, ".jsonl"));
         continue;
       }
       sourceIntervals = null;
     }
-    const { report, requestIds } = readUsageReport({ client, files: [sourceFile], byTurn,
-      ...(turns !== undefined ? { turns } : {}), ...(sourceIntervals ? { intervals: sourceIntervals } : {}) }, path.dirname(resolved));
+    // Task reports count a request once even when resumed or forked transcripts repeat it;
+    // explicit --manifest files keep rejecting overlap below.
+    let read: ReturnType<typeof readUsageReport>;
+    try {
+      read = readUsageReport({ client, files: [sourceFile], byTurn, ...(turns !== undefined ? { turns } : {}),
+        ...(sourceIntervals ? { intervals: sourceIntervals } : {}), ...(intervals ? { exclude: seen } : {}) }, path.dirname(resolved));
+    } catch (error) {
+      if (!intervals || !(error instanceof Error && error.message.startsWith("No supported usage records"))) throw error;
+      emptySources.push(path.basename(sourceFile, ".jsonl"));
+      continue;
+    }
+    const { report, requestIds } = read;
+    repeatedRequests += read.excludedRequests;
+    if (!report.requests) {
+      emptySources.push(path.basename(sourceFile, ".jsonl"));
+      continue;
+    }
     for (const id of requestIds) {
       if (seen.has(id)) throw new Error("Overlapping usage selections; a request appears in more than one manifest source");
       seen.add(id);
@@ -245,6 +266,8 @@ function reportFromBytes(bytes: Buffer, resolved: string, byTurn: boolean, inter
     warnings: [...new Set(["Coverage is declared by the manifest author; it is not independently verified.",
       ...(intervals ? ["Only requests made while the task was the current Passport are counted; sessions shared with other tasks are split by those periods. Subagent sessions count whole for the task that was current when they started."] : []),
       ...(skippedSubagents.length ? [`Subagent sessions started while another task was current are not counted: ${skippedSubagents.join(", ")}.`] : []),
+      ...(emptySources.length ? [`Sources without new requests while the task was current: ${emptySources.join(", ")}.`] : []),
+      ...(repeatedRequests ? [`${repeatedRequests} request(s) repeated across sources (resumed or forked sessions) were counted once.`] : []),
       "Session monetary estimates are not combined into task monetary cost.",
       ...slices.flatMap(slice => slice.report.warnings)])] };
 }

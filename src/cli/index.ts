@@ -379,12 +379,14 @@ agentpack usage unlink [--task <id>] --file <session-id|jsonl>
 agentpack usage report --manifest <json> [--by-turn] [--json]
 agentpack usage report --client codex|claude --file <jsonl> [--file <jsonl>] [--task <label>] [--from <ISO>] [--to <ISO>] [--by-turn] [--turns N|N:|N:M] [--json]
 
-Task usage: --task defaults to the current Task Passport. Sources are linked once per task
-in .agentpack/usage/<id>.json. Without linked sources, report and link list candidate
-Claude Code/Codex sessions of the task worktree with requests while the task was current;
-nothing is counted until you link them with --pick or --file. Task reports count only
-requests made while the task was the current Passport (start/switch to park/close), so
-tasks sharing a session do not overlap. N: selects turn N to the end. Session ids are
+Task usage: the task id (positional or --task) defaults to the current Task Passport.
+Sessions whose own Agentpack output started, switched to or loaded the task, and their
+subagents, are counted automatically. Other Claude Code/Codex sessions of the worktree
+are listed as candidates and count only after usage link (--pick or --file); links are
+stored in .agentpack/usage/<id>.json. Reports count only requests made while the task was
+the current Passport (start/switch to park/close), and a subagent counts whole for the
+task current when it started, so tasks sharing a session do not overlap; requests repeated
+by resumed or forked sessions count once. N: selects turn N to the end. Session ids are
 stable; numbers can shift when sessions change, so prefer ids in scripts.
 
 Direct reports read explicit local transcripts and print aggregate token usage by model.
@@ -1184,10 +1186,12 @@ function usageCommand(cwd: string, rest: string[]): void {
   }
   // A task id may be given positionally (`usage report <task-id>`), even after a
   // boolean flag that parseArgs would otherwise treat as taking a value.
-  const valueFlags = new Set(["--task", "--file", "--client", "--from", "--to", "--turns", "--manifest", "--pick", "--phase", "--coverage", "--note"]);
-  const positionalTasks = inputArgs.filter((arg, index) => /^task_[A-Za-z0-9][A-Za-z0-9._-]*$/u.test(arg) && !valueFlags.has(inputArgs[index - 1] || ""));
-  if (positionalTasks.length > 1) throw new Error("Pass one task id");
-  const parsed = parseArgs(inputArgs.filter(arg => !positionalTasks.includes(arg)));
+  const valueFlags = new Set(["task", "file", "client", "from", "to", "turns", "manifest", "pick", "phase", "coverage", "note"]);
+  const positionalIndexes = inputArgs.flatMap((arg, index) => /^task_[A-Za-z0-9][A-Za-z0-9._-]*$/u.test(arg)
+    && !valueFlags.has((inputArgs[index - 1] || "").replace(/^--?/u, "")) ? [index] : []);
+  if (positionalIndexes.length > 1) throw new Error("Pass one task id");
+  const positionalTasks = positionalIndexes.map(index => inputArgs[index]!);
+  const parsed = parseArgs(inputArgs.filter((_arg, index) => !positionalIndexes.includes(index)));
   if (positionalTasks.length) {
     if (typeof parsed.options.task === "string") throw new Error("Pass the task id either positionally or with --task, not both");
     if (action === "report" && ["client", "file", "manifest"].some(key => parsed.options[key] !== undefined)) {

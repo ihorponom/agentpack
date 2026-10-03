@@ -12,6 +12,8 @@ export interface UsageOptions {
   turns?: string;
   /** Task reports: keep only requests inside these periods (end exclusive; null = open). */
   intervals?: Array<{ from: string; to: string | null }>;
+  /** Task reports: request identities already counted from another source (resumed or forked sessions). */
+  exclude?: ReadonlySet<string>;
 }
 
 interface Tokens {
@@ -184,7 +186,14 @@ export function readCodexSessionMeta(file: string): Record<string, unknown> | nu
 
 /** Claude subagent transcripts live under <session>/subagents/; Codex marks them in session_meta. */
 export function isSubagentTranscript(client: UsageOptions["client"], file: string): boolean {
-  return client === "claude" ? file.split(path.sep).includes("subagents") : readCodexSessionMeta(file)?.thread_source === "subagent";
+  return client === "claude" ? file.split(path.sep).includes("subagents") : isCodexChildThread(readCodexSessionMeta(file));
+}
+
+/** Codex child threads (subagents, guardian reviews) name a parent thread or a subagent source. */
+export function isCodexChildThread(meta: Record<string, unknown> | null): boolean {
+  if (!meta) return false;
+  const source = meta.source && typeof meta.source === "object" ? meta.source as Record<string, unknown> : {};
+  return meta.thread_source === "subagent" || typeof meta.parent_thread_id === "string" || source.subagent !== undefined;
 }
 
 /** Request times and source-local turns for one source, without request identities or content. */
@@ -195,12 +204,12 @@ export function readUsageTimeline(client: UsageOptions["client"], file: string, 
 }
 
 /** Internal request identities allow manifest aggregation to reject overlap. */
-export function readUsageReport(options: UsageOptions, cwd: string): { report: UsageReport; requestIds: string[] } {
-  const { report, requests } = parseUsageReport(options, cwd);
-  return { report, requestIds: [...requests.keys()].map(key => `${options.client}:${key}`) };
+export function readUsageReport(options: UsageOptions, cwd: string): { report: UsageReport; requestIds: string[]; excludedRequests: number } {
+  const { report, requests, excludedRequests } = parseUsageReport(options, cwd);
+  return { report, requestIds: [...requests.keys()].map(key => `${options.client}:${key}`), excludedRequests };
 }
 
-function parseUsageReport(options: UsageOptions, cwd: string): { report: UsageReport; requests: Map<string, RequestUsage>; turnGroups: Map<string, UsageTurn> } {
+function parseUsageReport(options: UsageOptions, cwd: string): { report: UsageReport; requests: Map<string, RequestUsage>; turnGroups: Map<string, UsageTurn>; excludedRequests: number } {
   if (options.client !== "codex" && options.client !== "claude") throw new Error("Usage supports codex or claude JSONL sources");
   if (!options.files.length) throw new Error("Usage requires at least one --file");
   const from = boundary(options.from, "--from");
@@ -224,6 +233,7 @@ function parseUsageReport(options: UsageOptions, cwd: string): { report: UsageRe
   const paths = new Set<string>();
   let duplicateFiles = 0;
   let duplicateRecords = 0;
+  let excludedRequests = 0;
   for (const file of options.files) {
     // Resolve explicit symlinks so the same source cannot be counted twice.
     let resolved: string;
@@ -248,7 +258,6 @@ function parseUsageReport(options: UsageOptions, cwd: string): { report: UsageRe
     };
     sources.push(source);
     let model = "unknown";
-    let session = "";
     const turnModels = new Map<string, string>();
     const sourceRequests = new Map<string, Tokens>();
     let cumulative: unknown;
@@ -294,7 +303,6 @@ function parseUsageReport(options: UsageOptions, cwd: string): { report: UsageRe
         model = label(payload.model);
         if (typeof payload.turn_id === "string") turnModels.set(payload.turn_id, model);
       }
-      if (row.type === "session_meta" && typeof payload.id === "string") session = payload.id;
       if (options.client === "claude" && row.type === "cost-state") {
         source.cost = clientCost(row, bounded || turnRange !== null);
         continue;
@@ -316,7 +324,10 @@ function parseUsageReport(options: UsageOptions, cwd: string): { report: UsageRe
       try { tokens = normalize(options.client, options.client === "codex" ? payload.usage : message.usage); }
       catch { source.invalidUsage += 1; continue; }
       const requestModel = options.client === "codex" ? turnModels.get(String(payload.turn_id)) || model : label(message.model);
-      const key = options.client === "codex" ? id : `${typeof row.sessionId === "string" ? row.sessionId : session}:${id}`;
+      // Claude message ids are API response ids, unique across sessions; resumed
+      // or forked transcripts copy them under a new sessionId.
+      const key = id;
+      if (options.exclude?.has(`${options.client}:${key}`)) { excludedRequests += 1; continue; }
       source.usageRecords += 1;
       sourceRequests.set(key, tokens);
       if (options.client === "codex") cumulative = payload.thread_token_usage;
@@ -350,7 +361,7 @@ function parseUsageReport(options: UsageOptions, cwd: string): { report: UsageRe
       } catch { source.cumulativeCheck = "mismatch"; }
     }
   }
-  if (!requests.size) throw new Error("No supported usage records in selected sources/range; check client, schema and boundaries");
+  if (!requests.size && !excludedRequests) throw new Error("No supported usage records in selected sources/range; check client, schema and boundaries");
   const models = new Map<string, { model: string; requests: number; tokens: Tokens }>();
   const totals = emptyTokens();
   let unassignedRequests = 0;
@@ -386,7 +397,7 @@ function parseUsageReport(options: UsageOptions, cwd: string): { report: UsageRe
     turnSelection: options.turns || null, unassignedRequests,
     ...(options.byTurn ? { turns: [...turnGroups.values()].filter(turn => turn.requests > 0) } : {})
   };
-  return { report, requests, turnGroups };
+  return { report, requests, turnGroups, excludedRequests };
 }
 
 function printable(text: string): string {

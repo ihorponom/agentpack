@@ -465,8 +465,9 @@ test("Tasks sharing one session split it by the periods each task was current", 
   assert.equal(forB.requests, 2, "and not at all for B");
   assert.match(forB.warnings.join(" "), /Subagent sessions started while another task was current are not counted: agent-y/);
   unlinkTaskUsage(dir, b.id, subagent, dir);
+  linkTaskUsage(dir, b.id, [], dir, { status: "declared-complete", note: "Shared session only" });
   assert.equal(unlinkTaskUsage(dir, b.id, session, dir), 0);
-  assert.equal(existsSync(taskUsageManifestPath(dir, b.id)), false, "an emptied manifest with default coverage is removed");
+  assert.equal(existsSync(taskUsageManifestPath(dir, b.id)), false, "an emptied manifest is removed when no traced session keeps its coverage meaningful");
   linkTaskUsage(dir, b.id, [{ client: "claude", file: session, phase: "main" }], dir);
 
   const copy = path.join(dir, "copy", "shared.jsonl");
@@ -505,6 +506,9 @@ test("Sessions with an Agentpack trace of the task are reported without linking"
   write(path.join(project, "worker.jsonl"), [toolResult(`Started task ${passport.id}.`), claude("w1", 20, after(2)), claude("w2", 20, after(3))]);
   write(path.join(project, "worker", "subagents", "agent-r.jsonl"), [claude("r1", 20, after(4))]);
   write(path.join(project, "chat.jsonl"), [claude("c1", 20, after(5))]);
+  const forked = (row: { sessionId: string }) => ({ ...row, sessionId: "fork" });
+  write(path.join(project, "worker-fork.jsonl"), [toolResult(`Started task ${passport.id}.`), forked(claude("w1", 20, after(2))), forked(claude("w2", 20, after(3))), forked(claude("w3", 20, after(9)))]);
+  write(path.join(project, "prose.jsonl"), [{ type: "user", timestamp: after(1), message: { content: `Earlier output said: Started task ${passport.id}.` } }, claude("q1", 20, after(10))]);
   write(path.join(project, "mention.jsonl"), [toolResult(`Inspected task: ${passport.id} (not current)`), claude("n1", 20, after(6))]);
   const day = new Date(Date.parse(passport.createdAt));
   const codexDay = path.join(home, "codex", "sessions", String(day.getFullYear()), String(day.getMonth() + 1).padStart(2, "0"), String(day.getDate()).padStart(2, "0"));
@@ -513,23 +517,29 @@ test("Sessions with an Agentpack trace of the task are reported without linking"
     { type: "response_item", timestamp: after(1), payload: { type: "function_call_output", output: `## Current Task Passport\n- ID: ${passport.id}\n` } },
     codex("cx1", usage, after(7))]);
   write(path.join(codexDay, "rollout-sub.jsonl"), [codexMeta({ id: "s1", thread_source: "subagent", parent_thread_id: "p1" }), context, codex("cs1", usage, after(8))]);
+  write(path.join(codexDay, "rollout-guardian.jsonl"), [codexMeta({ id: "g1", thread_source: "guardian_review", parent_thread_id: "p1" }), context,
+    { type: "response_item", timestamp: after(1), payload: { type: "message", role: "user", content: [{ type: "input_text", text: `history: Started task ${passport.id}.` }] } },
+    codex("cg1", usage, after(11))]);
   const env = { ...process.env, CLAUDE_CONFIG_DIR: path.join(home, "claude"), CODEX_HOME: path.join(home, "codex") };
   const run = (...args: string[]) => spawnSync(process.execPath, [cli, ...args], { cwd: dir, encoding: "utf8", env });
 
   const listed = JSON.parse(run("usage", "link", passport.id, "--json").stdout);
   assert.deepEqual(listed.candidates.map((c: { id: string; traced: boolean }) => [c.id, c.traced]).sort(),
-    [["agent-r", true], ["chat", false], ["mention", false], ["rollout-parent", true], ["rollout-sub", true], ["worker", true]],
-    "only start/switch/current-passport output traces a session; subagents follow their Claude or Codex parent");
+    [["agent-r", true], ["chat", false], ["mention", false], ["prose", false], ["rollout-guardian", true], ["rollout-parent", true], ["rollout-sub", true], ["worker", true], ["worker-fork", true]],
+    "only tool output of start/switch/current-passport traces a session; Codex child threads (subagent, guardian) follow their parent");
+  assert.equal(listed.candidates.find((c: { id: string }) => c.id === "rollout-guardian").subagent, true);
   const report = JSON.parse(run("usage", "report", "--json", passport.id).stdout);
   assert.equal(report.kind, "task-usage-report", "a positional id after a boolean flag selects the task");
-  assert.equal(report.requests, 5, "traced sessions and their subagents, not the untraced chat");
-  assert.deepEqual(report.slices.map((slice: { phase: string }) => slice.phase), ["traced", "traced", "traced", "traced"]);
-  assert.match(report.warnings.join(" "), /2 other candidate session\(s\)/);
+  assert.equal(report.requests, 7, "traced sessions and their subagents; the fork's copied requests count once");
+  assert.deepEqual(report.slices.map((slice: { phase: string }) => slice.phase), ["traced", "traced", "traced", "traced", "traced"]);
+  assert.match(report.warnings.join(" "), /Sources without new requests while the task was current: worker\./, "the original adds nothing once its fork was counted");
+  assert.match(report.warnings.join(" "), /2 request\(s\) repeated across sources \(resumed or forked sessions\) were counted once/);
+  assert.match(report.warnings.join(" "), /3 other candidate session\(s\)/);
   assert.equal(existsSync(taskUsageManifestPath(dir, passport.id)), false, "reading never writes");
   assert.match(run("usage", "unlink", passport.id, "--file", "worker").stderr, /always included/);
   assert.equal(run("usage", "link", passport.id, "--coverage", "declared-complete", "--note", "Worker session only").status, 0);
   assert.equal(JSON.parse(run("usage", "report", passport.id, "--json").stdout).coverage.status, "declared-complete");
-  assert.equal(JSON.parse(run("usage", "link", passport.id, "--pick", "chat", "--json").stdout).report.requests, 6);
+  assert.equal(JSON.parse(run("usage", "link", passport.id, "--pick", "chat", "--json").stdout).report.requests, 8);
   assert.equal(run("usage", "unlink", passport.id, "--file", "chat").status, 0);
   assert.equal(JSON.parse(run("usage", "report", passport.id, "--json").stdout).coverage.status, "declared-complete", "declared coverage survives removing the last linked source");
   assert.match(run("task", "usage", "report").stderr, /top-level command: agentpack usage report/);

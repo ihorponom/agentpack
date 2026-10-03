@@ -11,7 +11,7 @@ import {
   type TaskUsageReport,
   type UsageSourceLink
 } from "./usage-manifest.js";
-import { readCodexSessionMeta, readUsageTimeline } from "./usage.js";
+import { isCodexChildThread, readCodexSessionMeta, readUsageTimeline } from "./usage.js";
 
 export interface UsageCandidate {
   number: number;
@@ -128,6 +128,7 @@ export function buildTaskUsage(root: string, taskId: string, byTurn = false, env
   const traced = tracedLinks(found);
   if (!readLinkedSourceFiles(root, taskId).length && !traced.length) return found;
   const report = buildLinkedTaskUsageReport(root, taskId, byTurn, traced);
+  report.warnings.push(...found.warnings);
   const others = found.candidates.filter(candidate => !candidate.traced && !candidate.linked).length;
   if (others) report.warnings.push(`${others} other candidate session(s) of this worktree are not included; review them with agentpack usage link --task ${taskId}.`);
   return report;
@@ -242,12 +243,18 @@ function inspect(client: "codex" | "claude", source: SourceFile, periods: Readon
   };
 }
 
-/** Agentpack lifecycle output naming the task: start, switch, or a resume/load_context showing it as current. */
+/**
+ * Agentpack lifecycle output naming the task (start, switch, or resume/load_context
+ * showing it as current), searched only in tool outputs, not in prose or quotes.
+ */
 function hasAgentpackTrace(file: string, taskId: string): boolean {
   let text: string;
   try { text = readFileSync(file, "utf8"); } catch { return false; }
   const id = taskId.replace(/[.]/gu, "\\.");
-  return new RegExp(`(?:Started task|Switched to task) ${id}(?![A-Za-z0-9_-])|Current Task Passport(?:\\\\n|\\n)- ID: ${id}(?![A-Za-z0-9_-])`, "u").test(text);
+  const end = "(?![A-Za-z0-9_-]|\\.[A-Za-z0-9])";
+  const trace = new RegExp(`(?:Started task|Switched to task) ${id}${end}|Current Task Passport(?:\\\\n|\\n)- ID: ${id}${end}`, "u");
+  // Claude tool_result rows; Codex function/custom tool call outputs.
+  return text.split("\n").some(line => (line.includes('"tool_result"') || line.includes('_call_output"')) && trace.test(line));
 }
 
 function claudeFiles(dir: string, from: number, warnings: string[]): SourceFile[] {
@@ -278,7 +285,7 @@ function codexFiles(dir: string, worktree: string, from: number, to: number | nu
     const meta = readCodexSessionMeta(file);
     if (typeof meta?.cwd !== "string" || real(meta.cwd) !== worktree) continue;
     const parent = typeof meta.parent_thread_id === "string" ? `codex:${meta.parent_thread_id}` : undefined;
-    matched.push({ file, subagent: meta.thread_source === "subagent", key: `codex:${String(meta.id)}`, ...(parent ? { parent } : {}) });
+    matched.push({ file, subagent: isCodexChildThread(meta), key: `codex:${String(meta.id)}`, ...(parent ? { parent } : {}) });
   }
   return recent(matched, from, warnings, "Codex");
 }
