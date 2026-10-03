@@ -297,6 +297,37 @@ export function readPassport(root: string, taskId: string): TaskPassport {
   return validateTaskPassport(value, taskId);
 }
 
+const MAX_TASK_EVENT_BYTES = 2_000_000;
+
+/**
+ * Periods while the task was the current Passport, from its lifecycle events:
+ * start/switch begin one; park/close/finalize end it. Falls back to
+ * createdAt..closedAt when no lifecycle events are readable. An open end is null.
+ */
+export function readTaskActiveIntervals(root: string, taskId: string): Array<{ from: string; to: string | null }> {
+  const passport = readPassport(root, taskId);
+  const intervals: Array<{ from: string; to: string | null }> = [];
+  let open: string | null = null;
+  let text = "";
+  if (existsSync(taskEventsPath(root, taskId))) {
+    const file = resolveRegularFileWithin(getPackPath(root), path.join("tasks", taskId, "events.jsonl"), "task events");
+    if (statSync(file).size > MAX_TASK_EVENT_BYTES) throw new Error(`Task events for ${taskId} exceed 2 MB; cannot derive active intervals`);
+    text = readFileSync(file, "utf8");
+  }
+  for (const line of text.split("\n")) {
+    let event: { type?: unknown; ts?: unknown };
+    try { event = JSON.parse(line) as { type?: unknown; ts?: unknown }; } catch { continue; }
+    if (typeof event.ts !== "string" || !Number.isFinite(Date.parse(event.ts))) continue;
+    if ((event.type === "task-start" || event.type === "task-switch") && open === null) open = event.ts;
+    if ((event.type === "task-park" || event.type === "task-close" || event.type === "task-finalize") && open !== null) {
+      intervals.push({ from: open, to: event.ts });
+      open = null;
+    }
+  }
+  if (open !== null) intervals.push({ from: open, to: passport.closedAt });
+  return intervals.length ? intervals : [{ from: passport.createdAt, to: passport.closedAt }];
+}
+
 export function switchTask(root: string, taskId: string, options: { parkCurrent?: boolean } = {}): TaskPassport {
   return withPackWriteLock(root, () => {
     const existing = readPassport(root, taskId);

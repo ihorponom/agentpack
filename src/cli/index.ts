@@ -383,16 +383,17 @@ function commandHelpText(command: string): string {
     return `agentpack usage report [--task <id>] [--by-turn] [--json]
 agentpack usage link [--task <id>] [--pick <n|session-id>[,...]] [--phase <name>] [--coverage partial|declared-complete --note <text>]
 agentpack usage link [--task <id>] --client codex|claude --file <jsonl> [--turns N|N:|N:M] [--phase <name>]
-agentpack usage unlink [--task <id>] --file <jsonl>
+agentpack usage unlink [--task <id>] --file <session-id|jsonl>
 agentpack usage report --manifest <json> [--by-turn] [--json]
 agentpack usage report --client codex|claude --file <jsonl> [--file <jsonl>] [--task <label>] [--from <ISO>] [--to <ISO>] [--by-turn] [--turns N|N:|N:M] [--json]
 
 Task usage: --task defaults to the current Task Passport. Sources are linked once per task
 in .agentpack/usage/<id>.json. Without linked sources, report and link list candidate
-Claude Code/Codex sessions of the task worktree with requests in the Passport window;
-nothing is counted until you link them with --pick or --file. N: selects turn N to the end.
-Reports for a closed task exclude requests after it closed. Session ids are stable; numbers
-can shift when sessions change, so prefer ids in scripts.
+Claude Code/Codex sessions of the task worktree with requests while the task was current;
+nothing is counted until you link them with --pick or --file. Task reports count only
+requests made while the task was the current Passport (start/switch to park/close), so
+tasks sharing a session do not overlap. N: selects turn N to the end. Session ids are
+stable; numbers can shift when sessions change, so prefer ids in scripts.
 
 Direct reports read explicit local transcripts and print aggregate token usage by model.
 No initialized pack is needed; no files or ledger state are written.

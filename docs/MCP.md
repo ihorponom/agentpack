@@ -200,8 +200,8 @@ To report a task, pass its Passport id (or nothing for the current task):
 ```
 
 If no sources are linked yet, the result (`kind: "task-usage-candidates"` in
-JSON) lists candidate sessions of the task worktree with requests inside the
-Passport window. Show them to the user, then link the confirmed ones with
+JSON) lists candidate sessions of the task worktree with requests made while the
+task was current. Show them to the user, then link the confirmed ones with
 `usage_link`, preferably by session id because list numbers can shift between
 calls:
 
@@ -214,7 +214,8 @@ candidates. `client`/`file`/`turns` links an explicit source; linking a file
 again replaces its selection; `phase` labels the links (default `main`);
 `coverage` with `note` declares coverage; `remove` unlinks a file. It writes
 only `.agentpack/usage/<task id>.json` and validates the combined report first.
-Reports for a closed task exclude requests after its `closedAt`.
+Task reports count only requests made while the task was the current Passport,
+so tasks sharing a session do not overlap; `remove` accepts a path or session id.
 Linking rules and discovery locations are documented in [CLI.md](CLI.md).
 
 For direct reports, supply explicit local JSONL sources:

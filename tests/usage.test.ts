@@ -9,9 +9,9 @@ import { PassThrough } from "node:stream";
 import { startMcpServer, TOOL_DEFINITIONS } from "../src/mcp/server.js";
 import { initPack } from "../src/core/store.js";
 import { buildUsageReport, formatUsageReport } from "../src/core/usage.js";
-import { buildTaskUsageReport, formatTaskUsageReport, taskUsageManifestPath } from "../src/core/usage-manifest.js";
+import { buildLinkedTaskUsageReport, buildTaskUsageReport, formatTaskUsageReport, linkTaskUsage, taskUsageManifestPath } from "../src/core/usage-manifest.js";
 import { findUsageCandidates } from "../src/core/usage-discovery.js";
-import { closeCurrentTask, startTask } from "../src/core/tasks.js";
+import { closeCurrentTask, parkCurrentTask, readTaskActiveIntervals, startTask } from "../src/core/tasks.js";
 import { buildTuiModel, loadTuiTaskUsage } from "../src/core/tui.js";
 
 const cli = fileURLToPath(new URL("../src/agentpack.js", import.meta.url));
@@ -338,17 +338,17 @@ test("Task usage links suggested sessions once and reports by Task Passport id a
   const run = (...args: string[]) => spawnSync(process.execPath, [cli, "usage", ...args], { cwd: dir, encoding: "utf8", env });
 
   const found = findUsageCandidates(dir, passport.id, env);
-  assert.deepEqual(found.candidates.map(c => [c.client, path.basename(c.file), c.subagent, c.windowRequests, c.requests, c.turns]), [
-    ["claude", "main.jsonl", false, 2, 3, "2:"],
-    ["codex", "rollout-a.jsonl", false, 1, 1, null],
-    ["claude", "agent-x.jsonl", true, 1, 1, null]
+  assert.deepEqual(found.candidates.map(c => [c.client, c.id, c.subagent, c.taskRequests, c.requests]), [
+    ["claude", "main", false, 2, 3],
+    ["codex", "rollout-a", false, 1, 1],
+    ["claude", "agent-x", true, 1, 1]
   ]);
 
   const listed = run("report");
   assert.equal(listed.status, 0);
   assert.match(listed.stdout, /No usage sources linked yet/);
   assert.match(listed.stdout, /1\. main \(claude\)/);
-  assert.match(listed.stdout, /suggested: turns 2:/);
+  assert.match(listed.stdout, /2\/3 requests while the task was current/);
   assert.doesNotMatch(listed.stdout, /old\.jsonl|rollout-other|PRIVATE/);
   assert.equal(JSON.parse(run("report", "--json").stdout).kind, "task-usage-candidates");
   assert.match(run("link", "--coverage", "partial", "--note", "Main only").stderr, /link sources before declaring coverage/);
@@ -358,7 +358,7 @@ test("Task usage links suggested sessions once and reports by Task Passport id a
   assert.equal(linked.status, 0, linked.stderr);
   assert.match(linked.stdout, /Linked to task_.*: main\.jsonl, rollout-a\.jsonl/);
   const manifest = JSON.parse(readFileSync(taskUsageManifestPath(dir, passport.id), "utf8"));
-  assert.deepEqual(manifest.sources.map((source: { file: string; turns?: string }) => [source.file, source.turns]), [[realpathSync(main), "2:"], [realpathSync(codexFile), undefined]]);
+  assert.deepEqual(manifest.sources.map((source: { file: string; turns?: string }) => [source.file, source.turns]), [[realpathSync(main), undefined], [realpathSync(codexFile), undefined]]);
   const report = JSON.parse(run("report", "--task", passport.id, "--json").stdout);
   assert.equal(report.kind, "task-usage-report");
   assert.equal(report.taskId, passport.id);
@@ -405,19 +405,45 @@ test("Task usage links suggested sessions once and reports by Task Passport id a
   for (const [name, args] of [["usage_report", { from: time }], ["usage_link", { pick: [1], file: main }], ["usage_link", { remove: child, phase: "x" }], ["usage_link", { coverage: "partial" }]] as const) {
     assert.ok((await call(name, args)).error, JSON.stringify(args));
   }
-  assert.match((await call("usage_link", { remove: child })).result!.content[0]!.text, /1 linked source/);
+  assert.match((await call("usage_link", { remove: "agent-x" })).result!.content[0]!.text, /1 linked source/, "unlink accepts the session id");
 
   closeCurrentTask(dir);
-  const passportFile = path.join(dir, ".agentpack", "tasks", passport.id, "passport.json");
   const closedAt = new Date(created + 120_000).toISOString();
-  writeFileSync(passportFile, JSON.stringify({ ...JSON.parse(readFileSync(passportFile, "utf8")), closedAt }));
+  writeFileSync(path.join(dir, ".agentpack", "tasks", passport.id, "events.jsonl"),
+    [{ type: "task-start", ts: passport.createdAt }, { type: "task-close", ts: closedAt }].map(event => JSON.stringify(event)).join("\n") + "\n");
   writeFileSync(codexFile, readFileSync(codexFile, "utf8") + JSON.stringify(codex("r2", usage, new Date(created + 180_000).toISOString())) + "\n");
   const closed = JSON.parse(run("report", "--task", passport.id, "--json").stdout);
   assert.equal(closed.requests, 1, "requests after the task closed are excluded");
-  assert.ok(closed.warnings.some((warning: string) => warning.includes(closedAt)));
+  assert.ok(closed.warnings.some((warning: string) => warning.includes("while the task was the current Passport")));
+  assert.deepEqual(closed.slices[0].report.boundary.intervals, [{ from: passport.createdAt, to: closedAt }]);
 
   const tui = loadTuiTaskUsage(buildTuiModel(dir), { passport, current: false }).join("\n");
   assert.match(tui, new RegExp(`Task usage: ${passport.id}`));
   assert.match(tui, /Requests: 1/);
   assert.doesNotMatch(tui, /PRIVATE/);
+});
+
+test("Tasks sharing one session split it by the periods each task was current", t => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), "agentpack-usage-intervals-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  initPack(dir);
+  const a = startTask(dir, { title: "First" });
+  parkCurrentTask(dir);
+  const b = startTask(dir, { title: "Second" });
+  const at = (minutes: number) => new Date(Date.parse("2026-10-01T10:00:00Z") + minutes * 60_000).toISOString();
+  const events = (id: string, rows: Array<[string, number]>) => writeFileSync(path.join(dir, ".agentpack", "tasks", id, "events.jsonl"),
+    rows.map(([type, minutes]) => JSON.stringify({ type, ts: at(minutes) })).join("\n") + "\n");
+  events(a.id, [["task-start", 0], ["task-park", 10], ["task-switch", 30], ["task-park", 40]]);
+  events(b.id, [["task-start", 10], ["task-park", 30], ["task-switch", 40]]);
+  const session = path.join(dir, "shared.jsonl");
+  writeFileSync(session, [claude("m0", 20, at(-5)), claude("m1", 20, at(5)), claude("m2", 20, at(10)), claude("m3", 20, at(35)), claude("m4", 20, at(45))]
+    .map(row => JSON.stringify(row)).join("\n") + "\n");
+  assert.deepEqual(readTaskActiveIntervals(dir, a.id), [{ from: at(0), to: at(10) }, { from: at(30), to: at(40) }]);
+  assert.deepEqual(readTaskActiveIntervals(dir, b.id), [{ from: at(10), to: at(30) }, { from: at(40), to: null }]);
+  for (const task of [a, b]) linkTaskUsage(dir, task.id, [{ client: "claude", file: session, phase: "main" }], dir);
+  const first = buildLinkedTaskUsageReport(dir, a.id);
+  const second = buildLinkedTaskUsageReport(dir, b.id);
+  assert.equal(first.requests, 2, "m1 and m3; m0 predates the task");
+  assert.equal(second.requests, 2, "m2 at the boundary belongs to the task that became current, plus m4");
+  assert.equal(first.requests + second.requests, buildUsageReport({ client: "claude", files: [session] }, dir).requests - 1);
 });

@@ -123,7 +123,7 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
   {
     name: "usage_report",
     annotations: READ_ONLY_TOOL_ANNOTATIONS,
-    description: "Report local Codex/Claude Code usage when the user asks about work usage. Pass task (Task Passport id; omit for the current task) to report the sources linked to it; if none are linked, the result lists candidate sessions of the task worktree in the Passport window to link with usage_link. Alternatively supply manifest, or client/files for a direct report. Same read-only report as CLI usage report; no collection, rates or ledger writes. Optional byTurn shows boundaries and turns selects N, N: or N:M in one file. Monetary snapshots are source-session estimates, unavailable for filtered ranges. Supported clients: Codex and Claude Code.",
+    description: "Report local Codex/Claude Code usage when the user asks about work usage. Pass task (Task Passport id; omit for the current task) to report the sources linked to it; if none are linked, the result lists candidate sessions of the task worktree with requests while the task was current, to link with usage_link. Task reports count only requests made while the task was the current Passport. Alternatively supply manifest, or client/files for a direct report. Same read-only report as CLI usage report; no collection, rates or ledger writes. Optional byTurn shows boundaries and turns selects N, N: or N:M in one file. Monetary snapshots are source-session estimates, unavailable for filtered ranges. Supported clients: Codex and Claude Code.",
     inputSchema: {
       type: "object", additionalProperties: false,
       properties: {
@@ -146,19 +146,19 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
   {
     name: "usage_link",
     annotations: UPDATING_TOOL_ANNOTATIONS,
-    description: "Link Codex/Claude Code session transcripts to a Task Passport so usage_report can report the task by id. Without pick, file, remove or coverage it only lists candidate sessions of the task worktree with requests in the Passport window. Show candidates to the user and link only what they confirm: pick links suggested selections by session id (numbers can shift between calls); client/file/turns links an explicit one. Re-linking a file replaces its selection; remove unlinks a file. Writes .agentpack/usage/<task id>.json only.",
+    description: "Link Codex/Claude Code session transcripts to a Task Passport so usage_report can report the task by id. Without pick, file, remove or coverage it only lists candidate sessions of the task worktree with requests while the task was current. Show candidates to the user and link only what they confirm: pick links sessions by session id (numbers can shift between calls); client/file/turns links an explicit one. Re-linking a file replaces its selection; remove unlinks a file by path or session id. Writes .agentpack/usage/<task id>.json only.",
     inputSchema: {
       type: "object", additionalProperties: false,
       properties: {
         task: { type: "string", minLength: 1, description: "Task Passport id; omit for the current task." },
-        pick: { type: "array", minItems: 1, items: { oneOf: [{ type: "string", minLength: 1 }, { type: "integer", minimum: 1 }] }, description: "Candidate session ids (preferred) or numbers from the listing to link with their suggested selection." },
+        pick: { type: "array", minItems: 1, items: { oneOf: [{ type: "string", minLength: 1 }, { type: "integer", minimum: 1 }] }, description: "Candidate session ids (preferred) or numbers from the listing to link." },
         client: { type: "string", enum: ["codex", "claude"] },
         file: { type: "string", minLength: 1, description: "Explicit local JSONL path; relative paths resolve from the pack root." },
         turns: { type: "string", description: "Inclusive N, N: (to the end) or N:M turn selection for file." },
         phase: { type: "string", minLength: 1, description: "Phase label for the linked sources. Default main." },
         coverage: { type: "string", enum: ["partial", "declared-complete"], description: "Declared coverage; requires note." },
         note: { type: "string", minLength: 1, description: "Coverage note; requires coverage." },
-        remove: { type: "string", minLength: 1, description: "Linked JSONL path to unlink; exclusive with other link options." },
+        remove: { type: "string", minLength: 1, description: "Linked JSONL path or session id to unlink; exclusive with other link options." },
         json: { type: "boolean", description: "Return JSON instead of human-readable text." }
       }
     }

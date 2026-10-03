@@ -238,38 +238,43 @@ agentpack usage link --task <task-id> --pick 1,3      # or session ids
 
 `--task` defaults to the current Task Passport. Sources are linked once per
 task and stored in `.agentpack/usage/<task-id>.json`; after that the report
-needs only the id. While nothing is linked, `usage report` and `usage link`
-list candidate sessions: Claude Code transcripts (including subagents) and
-Codex rollouts recorded in the task worktree that have requests inside the
-Passport window (created to closed, or now while open). Each candidate shows a
-stable session id, its requests in the window and a suggested selection: the
-whole session, or the turns with requests in the window (`N:` means through the
-end of the session for an open task). Candidates are suggestions only; nothing
-is counted until `--pick` links them. `--pick` accepts list numbers or session
-ids; numbers can shift when sessions change between calls, so prefer ids in
-scripts. `--json` output carries `kind`: `task-usage-candidates` or
-`task-usage-report`.
+needs only the id.
+
+A task report counts only requests made while the task was the current
+Passport: from `task start` or `task switch` to `task park`, `task close` or
+`task finalize`, read from the task's lifecycle events (older tasks without
+them use created to closed). A session shared by several tasks is therefore
+split between them by time, and per-task totals do not overlap. Requests
+without timestamps cannot be attributed and are omitted and counted.
+
+While nothing is linked, `usage report` and `usage link` list candidate
+sessions: Claude Code transcripts (including subagents) and Codex rollouts
+recorded in the task worktree with requests while the task was current. Each
+candidate shows a stable session id and how many of its requests fall in
+those periods. Candidates are suggestions only; nothing is counted until
+`--pick` links them. `--pick` accepts list numbers or session ids; numbers can
+shift when sessions change between calls, so prefer ids in scripts. `--json`
+output carries `kind`: `task-usage-candidates` or `task-usage-report`.
 
 Discovery reads `$CLAUDE_CONFIG_DIR` (default `~/.claude`) and `$CODEX_HOME`
 (default `~/.codex`), parses only sessions updated after the task started,
 inspects at most 200 sessions per client and Codex day directories for at most
-the last 120 days of the window, and warns when a limit applies. Text output
+the last 120 days of the task, and warns when a limit applies or a session is
+skipped as unreadable or larger than 64 MiB. Text output
 shortens the home directory to `~`; `--json` keeps absolute paths.
 
 ```bash
 agentpack usage link --task <task-id> --client claude --file /path/to/session.jsonl --turns 4: --phase review
 agentpack usage link --task <task-id> --coverage declared-complete --note "Main and review sessions"
-agentpack usage unlink --task <task-id> --file /path/to/session.jsonl
+agentpack usage unlink --task <task-id> --file <session-id or path>
 ```
 
-Explicit `--client`/`--file`/`--turns` links one source. Linking a file again
-replaces its selection. `--phase` labels linked sources (default `main`).
+Explicit `--client`/`--file` links one source; `--turns` narrows it further
+within the task's periods. Linking a file again replaces its selection. `--phase` labels linked sources (default `main`).
 Coverage starts as `partial`; `--coverage` with `--note` declares it once
 sources are linked. Every link is validated against the combined report, so
-overlapping selections are rejected before the file is written. Reports for a
-closed task exclude requests after its `closedAt`, so a session that continues
-into the next task is not counted twice. `agentpack tui` shows the same report, or
-the candidates, in its Usage tab.
+overlapping selections are rejected before the file is written. `agentpack tui`
+shows the same report, or the candidates, in its Usage tab.
 
 ### Direct sources
 

@@ -10,6 +10,8 @@ export interface UsageOptions {
   to?: string;
   byTurn?: boolean;
   turns?: string;
+  /** Task reports: keep only requests inside these periods (end exclusive; null = open). */
+  intervals?: Array<{ from: string; to: string | null }>;
 }
 
 interface Tokens {
@@ -54,7 +56,7 @@ export interface UsageReport {
   version: 1;
   client: UsageOptions["client"];
   task: string | null;
-  boundary: { from: string | null; to: string | null; selection: string };
+  boundary: { from: string | null; to: string | null; selection: string; intervals?: Array<{ from: string; to: string | null }> };
   requests: number;
   duplicateRecords: number;
   duplicateFiles: number;
@@ -174,7 +176,9 @@ function parseUsageReport(options: UsageOptions, cwd: string): { report: UsageRe
   const from = boundary(options.from, "--from");
   const to = boundary(options.to, "--to");
   if (from !== null && to !== null && from >= to) throw new Error("--from must be earlier than --to");
-  const bounded = from !== null || to !== null;
+  if (options.intervals && (from !== null || to !== null)) throw new Error("Task intervals cannot be combined with --from or --to");
+  const intervals = options.intervals?.map(interval => [boundary(interval.from, "interval start")!, boundary(interval.to ?? undefined, "interval end")] as const);
+  const bounded = from !== null || to !== null || intervals !== undefined;
   let turnRange: [number, number] | null = null;
   if (options.turns !== undefined) {
     const match = /^([1-9]\d*)(:([1-9]\d*)?)?$/u.exec(options.turns);
@@ -275,6 +279,7 @@ function parseUsageReport(options: UsageOptions, cwd: string): { report: UsageRe
       const time = timestamp(row.timestamp);
       if (bounded && time === null) { source.missingTimestamps += 1; continue; }
       if (time !== null && ((from !== null && time < from) || (to !== null && time >= to))) continue;
+      if (intervals && !intervals.some(([start, end]) => time! >= start && (end === null || time! < end))) continue;
       const id = options.client === "codex" ? payload.response_id : message.id;
       if (typeof id !== "string" || !identifier.test(id)) { source.invalidUsage += 1; continue; }
       let tokens: Tokens;
@@ -343,7 +348,9 @@ function parseUsageReport(options: UsageOptions, cwd: string): { report: UsageRe
   if (options.byTurn || turnRange) warnings.push("Turn duration includes tools/waits; Claude user-message boundaries do not establish completion or duration. Time-filtered durations are unavailable.");
   const report: UsageReport = {
     version: 1, client: options.client, task: options.task || null,
-    boundary: { from: options.from || null, to: options.to || null, selection: "Usage record timestamps: inclusive from, exclusive to; whole supplied sources when unbounded" },
+    boundary: options.intervals
+      ? { from: null, to: null, selection: "Usage record timestamps inside the task's active intervals (end exclusive)", intervals: options.intervals }
+      : { from: options.from || null, to: options.to || null, selection: "Usage record timestamps: inclusive from, exclusive to; whole supplied sources when unbounded" },
     requests: requests.size, duplicateRecords, duplicateFiles, totals,
     models: [...models.values()].sort((a, b) => a.model.localeCompare(b.model)), sources, warnings, billedUsd: null,
     turnSelection: options.turns || null, unassignedRequests,
@@ -358,7 +365,9 @@ function printable(text: string): string {
 
 export function formatUsageReport(report: UsageReport): string {
   const lines = ["Agentpack usage report (read-only)", `Client: ${report.client}`, `Task label: ${printable(report.task || "(not supplied)")}`,
-    `Boundary: ${report.boundary.from || "start of sources"} to ${report.boundary.to || "end of sources"} (end exclusive)`,
+    report.boundary.intervals
+      ? `Boundary: task active ${report.boundary.intervals.map(interval => `${interval.from} to ${interval.to || "now"}`).join("; ")} (end exclusive)`
+      : `Boundary: ${report.boundary.from || "start of sources"} to ${report.boundary.to || "end of sources"} (end exclusive)`,
     `Requests: ${report.requests}; duplicate records: ${report.duplicateRecords}; duplicate files: ${report.duplicateFiles}`, ""];
   for (const group of [...report.models, { model: "TOTAL", requests: report.requests, tokens: report.totals }]) {
     const t = group.tokens;

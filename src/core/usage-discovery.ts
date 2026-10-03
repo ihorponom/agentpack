@@ -1,7 +1,7 @@
 import { closeSync, openSync, readdirSync, readSync, realpathSync, statSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { readPassport } from "./tasks.js";
+import { readPassport, readTaskActiveIntervals } from "./tasks.js";
 import {
   formatTaskUsageReport,
   hasLinkedTaskUsage,
@@ -22,11 +22,8 @@ export interface UsageCandidate {
   subagent: boolean;
   started: string | null;
   requests: number;
-  windowRequests: number;
-  /** False when no turn boundary covers the in-window requests; link with explicit file/turns. */
-  selectable: boolean;
-  /** Suggested turns; null selects the whole source. */
-  turns: string | null;
+  /** Requests made while the task was current; only these count after linking. */
+  taskRequests: number;
   linked: boolean;
 }
 
@@ -34,7 +31,7 @@ export interface UsageCandidates {
   kind: "task-usage-candidates";
   taskId: string;
   linked: boolean;
-  window: { from: string; to: string | null };
+  intervals: Array<{ from: string; to: string | null }>;
   searched: string[];
   warnings: string[];
   candidates: UsageCandidate[];
@@ -65,12 +62,14 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 
 /**
  * Suggest Claude Code/Codex sessions recorded in the task worktree that have
- * requests inside the Passport window. Suggestions only; linking stays explicit.
+ * requests while the task was current. Suggestions only; linking stays explicit.
  */
 export function findUsageCandidates(root: string, taskId: string, env: NodeJS.ProcessEnv = process.env): UsageCandidates {
   const passport = readPassport(root, taskId);
-  const from = Date.parse(passport.createdAt);
-  const to = passport.closedAt ? Date.parse(passport.closedAt) : null;
+  const intervals = readTaskActiveIntervals(root, taskId);
+  const periods = intervals.map(interval => [Date.parse(interval.from), interval.to === null ? null : Date.parse(interval.to)] as const);
+  const from = periods[0]![0];
+  const to = periods[periods.length - 1]![1];
   const worktree = path.resolve(passport.worktree);
   const home = os.homedir();
   // Claude Code names project directories after the session cwd with every
@@ -86,14 +85,14 @@ export function findUsageCandidates(root: string, taskId: string, env: NodeJS.Pr
   ] as const;
   for (const [client, files] of sources) {
     for (const source of files) {
-      const candidate = inspect(client, source, from, to);
+      const candidate = inspect(client, source, periods, warnings);
       if (candidate) found.push({ ...candidate, linked: linked.has(candidate.file) });
     }
   }
   found.sort((a, b) => (a.started || "￿").localeCompare(b.started || "￿") || a.file.localeCompare(b.file));
   return {
     kind: "task-usage-candidates", taskId, linked: linked.size > 0,
-    window: { from: passport.createdAt, to: passport.closedAt || null },
+    intervals,
     searched: [claudeDir, codexDir], warnings,
     candidates: found.map((candidate, index) => ({ number: index + 1, ...candidate }))
   };
@@ -144,8 +143,7 @@ export function pickUsageCandidates(root: string, taskId: string, picks: Array<n
     if (matches.length > 1) throw new Error(`Usage candidate ${pick} is ambiguous; link it with an explicit file`);
     const candidate = matches[0];
     if (!candidate) throw new Error(`No usage candidate ${pick} for ${taskId}; list candidates first`);
-    if (!candidate.selectable) throw new Error(`Usage candidate ${pick} has no turn boundary inside the task window; link it with an explicit file and turns`);
-    return { client: candidate.client, file: candidate.file, phase, ...(candidate.turns === null ? {} : { turns: candidate.turns }) };
+    return { client: candidate.client, file: candidate.file, phase };
   });
 }
 
@@ -153,22 +151,20 @@ export function formatUsageCandidates(result: UsageCandidates): string {
   const lines = [
     `Task usage: ${result.taskId}`,
     result.linked ? "Linked sources exist; candidates marked [linked] are already included." : "No usage sources linked yet.",
-    `Task window: ${result.window.from} to ${result.window.to || "now (task open)"}`,
+    `Task was current: ${result.intervals.map(interval => `${interval.from} to ${interval.to || "now"}`).join("; ")}`,
     `Searched: ${result.searched.map(display).join(", ")}`,
     ...result.warnings.map(warning => `Warning: ${warning}`),
     ""
   ];
   if (!result.candidates.length) {
-    lines.push("No Claude Code or Codex sessions of this worktree have requests in the task window.",
+    lines.push("No Claude Code or Codex sessions of this worktree have requests while the task was current.",
       `Link a source explicitly: agentpack usage link --task ${result.taskId} --client claude|codex --file <jsonl> [--turns N|N:|N:M]`);
     return lines.join("\n");
   }
-  lines.push("Candidate sessions (suggestions only; nothing is counted until linked):");
+  lines.push("Candidate sessions (suggestions only; nothing is counted until linked; linked sessions count only requests made while the task was current):");
   for (const c of result.candidates) {
-    const selection = !c.selectable ? "no turn boundary fits the window; link with explicit --file/--turns"
-      : c.turns === null ? "whole session" : `turns ${c.turns}`;
     lines.push(`${c.number}. ${c.id} (${c.client}${c.subagent ? " subagent" : ""})${c.linked ? " [linked]" : ""}`,
-      `   started ${c.started || "unknown"}; ${c.windowRequests}/${c.requests} requests in task window; suggested: ${selection}`,
+      `   started ${c.started || "unknown"}; ${c.taskRequests}/${c.requests} requests while the task was current`,
       `   ${display(c.file)}`);
   }
   lines.push("", `Link: agentpack usage link --task ${result.taskId} --pick <number or session id>[,...]`,
@@ -176,31 +172,25 @@ export function formatUsageCandidates(result: UsageCandidates): string {
   return lines.join("\n");
 }
 
-function inspect(client: "codex" | "claude", source: SourceFile, from: number, to: number | null): Omit<UsageCandidate, "number" | "linked"> | null {
+function inspect(client: "codex" | "claude", source: SourceFile, periods: ReadonlyArray<readonly [number, number | null]>, warnings: string[]): Omit<UsageCandidate, "number" | "linked"> | null {
   let timeline;
   try { timeline = readUsageTimeline(client, source.file, path.dirname(source.file)); }
-  catch { return null; }
-  const inWindow = timeline.requests.filter(request => request.at !== null && request.at >= from && (to === null || request.at < to));
-  if (!inWindow.length) return null;
-  const { report } = timeline;
-  let turns: string | null = null;
-  let selectable = true;
-  if (inWindow.length !== report.requests) {
-    // Turns with at least one request inside the window, using source-local numbering.
-    const selected = inWindow.flatMap(request => request.turn === null ? [] : [request.turn]);
-    const final = (report.turns || []).reduce((max, turn) => Math.max(max, turn.turn), 0);
-    if (!selected.length) selectable = false;
-    else {
-      const first = selected.reduce((min, turn) => Math.min(min, turn));
-      const last = selected.reduce((max, turn) => Math.max(max, turn));
-      turns = to === null && last === final ? `${first}:` : first === last ? `${first}` : `${first}:${last}`;
+  catch (error) {
+    // Files without usage records are ordinary (metadata-only sessions); real read or parse failures are disclosed.
+    if (!(error instanceof Error && error.message.startsWith("No supported usage records"))) {
+      warnings.push(`Skipped unreadable ${client} session ${path.basename(source.file, ".jsonl")}: ${error instanceof Error ? error.message : String(error)}`);
     }
+    return null;
   }
+  const taskRequests = timeline.requests.filter(request => request.at !== null
+    && periods.some(([start, end]) => request.at! >= start && (end === null || request.at! < end))).length;
+  if (!taskRequests) return null;
+  const { report } = timeline;
   const file = report.sources[0]?.path || source.file;
   return {
     id: path.basename(file, ".jsonl"), client, file, subagent: source.subagent,
     started: report.turns?.find(turn => turn.start !== null)?.start || null,
-    requests: report.requests, windowRequests: inWindow.length, selectable, turns
+    requests: report.requests, taskRequests
   };
 }
 
@@ -217,22 +207,22 @@ function claudeFiles(dir: string, from: number, warnings: string[]): SourceFile[
 }
 
 function codexFiles(dir: string, worktree: string, from: number, to: number | null, warnings: string[]): SourceFile[] {
-  const files: SourceFile[] = [];
+  const files: string[] = [];
   const end = to ?? Date.now();
   const start = Math.max(from - DAY_MS, end - MAX_CODEX_DAYS * DAY_MS);
-  if (start > from - DAY_MS) warnings.push(`Codex sessions were searched only for the last ${MAX_CODEX_DAYS} days of the task window; link earlier sessions explicitly.`);
-  // Rollout directories use local dates; one extra day on each side covers time zones.
-  for (let day = start; day <= end + DAY_MS; day += DAY_MS) {
-    const date = new Date(day);
+  if (start > from - DAY_MS) warnings.push(`Codex sessions were searched only for the last ${MAX_CODEX_DAYS} days of the task; link earlier sessions explicitly.`);
+  // Rollout directories use local calendar dates; step by date (DST-safe) with one extra day on each side.
+  const last = new Date(end + DAY_MS);
+  for (let date = new Date(start); date <= last; date = new Date(date.getFullYear(), date.getMonth(), date.getDate() + 1)) {
     const dayDir = path.join(dir, String(date.getFullYear()), String(date.getMonth() + 1).padStart(2, "0"), String(date.getDate()).padStart(2, "0"));
-    for (const entry of entries(dayDir)) if (entry.endsWith(".jsonl")) files.push({ file: path.join(dayDir, entry), subagent: false });
+    for (const entry of entries(dayDir)) if (entry.endsWith(".jsonl")) files.push(path.join(dayDir, entry));
   }
   const matched: SourceFile[] = [];
-  for (const { file } of recent(files, from, warnings, "Codex")) {
+  for (const file of new Set(files)) {
     const meta = codexMeta(file);
     if (typeof meta?.cwd === "string" && real(meta.cwd) === worktree) matched.push({ file, subagent: meta.thread_source === "subagent" });
   }
-  return matched;
+  return recent(matched, from, warnings, "Codex");
 }
 
 function recent(files: SourceFile[], from: number, warnings: string[], label: string): SourceFile[] {
@@ -240,7 +230,9 @@ function recent(files: SourceFile[], from: number, warnings: string[], label: st
   for (const source of files) {
     try {
       const stat = statSync(source.file);
-      if (stat.isFile() && stat.size <= MAX_FILE_BYTES && stat.mtimeMs >= from) stats.push({ ...source, mtime: stat.mtimeMs });
+      if (!stat.isFile() || stat.mtimeMs < from) continue;
+      if (stat.size > MAX_FILE_BYTES) warnings.push(`Skipped ${label} session ${path.basename(source.file, ".jsonl")}: larger than 64 MiB.`);
+      else stats.push({ ...source, mtime: stat.mtimeMs });
     } catch { /* unreadable transcripts are not candidates */ }
   }
   if (stats.length > MAX_FILES_PER_CLIENT) warnings.push(`Only the ${MAX_FILES_PER_CLIENT} most recently updated ${label} sessions were inspected; link others explicitly.`);

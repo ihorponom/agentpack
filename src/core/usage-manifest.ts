@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, statSync } f
 import path from "node:path";
 import { resolveRegularFileWithin, sha256 } from "./hash.js";
 import { getPackPath, PACK_DIR_MODE, withPackWriteLock, writeJson } from "./store.js";
-import { getCurrentPassport, readPassport } from "./tasks.js";
+import { getCurrentPassport, readPassport, readTaskActiveIntervals } from "./tasks.js";
 import { formatUsageReport, readUsageReport, type UsageReport } from "./usage.js";
 
 export interface TaskUsageReport {
@@ -73,11 +73,11 @@ export function hasLinkedTaskUsage(root: string, taskId: string): boolean {
 
 /** Report the sources explicitly linked to a Task Passport; never sums unlinked sessions. */
 export function buildLinkedTaskUsageReport(root: string, taskId: string, byTurn = false): TaskUsageReport {
-  const passport = readPassport(root, taskId);
+  const intervals = readTaskActiveIntervals(root, taskId);
   if (!hasLinkedTaskUsage(root, taskId)) throw new Error(`No usage sources linked to ${taskId}`);
   const file = resolveRegularFileWithin(getPackPath(root), path.join("usage", `${taskId}.json`), "usage manifest");
   if (statSync(file).size > MAX_MANIFEST_BYTES) throw new Error("Linked usage manifest exceeds 1 MiB");
-  const report = reportFromBytes(readFileSync(file), file, byTurn, passport.closedAt);
+  const report = reportFromBytes(readFileSync(file), file, byTurn, intervals);
   if (report.taskId !== taskId) throw new Error(`Linked usage manifest belongs to ${report.taskId}, not ${taskId}`);
   return report;
 }
@@ -88,7 +88,7 @@ export function readLinkedSourceFiles(root: string, taskId: string): string[] {
 
 /** Add or replace (by resolved file) explicit task sources after validating the combined report. */
 export function linkTaskUsage(root: string, taskId: string, links: UsageSourceLink[], cwd: string, coverage?: UsageCoverage): TaskUsageReport {
-  const { closedAt } = readPassport(root, taskId);
+  const intervals = readTaskActiveIntervals(root, taskId);
   return withPackWriteLock(root, () => {
     const manifest = hasLinkedTaskUsage(root, taskId)
       ? readLinkedManifest(root, taskId)
@@ -103,26 +103,27 @@ export function linkTaskUsage(root: string, taskId: string, links: UsageSourceLi
       else manifest.sources.push(source);
     }
     if (coverage) manifest.coverage = coverage;
-    return writeLinkedManifest(root, manifest, closedAt);
+    return writeLinkedManifest(root, manifest, intervals);
   });
 }
 
-/** Remove one linked source; returns the remaining source count. */
+/** Remove one linked source by path or session id; returns the remaining source count. */
 export function unlinkTaskUsage(root: string, taskId: string, file: string, cwd: string): number {
-  const { closedAt } = readPassport(root, taskId);
+  const intervals = readTaskActiveIntervals(root, taskId);
   return withPackWriteLock(root, () => {
     if (!hasLinkedTaskUsage(root, taskId)) throw new Error(`No usage sources linked to ${taskId}`);
     const manifest = readLinkedManifest(root, taskId);
     const absolute = path.resolve(cwd, file);
     let resolved = absolute;
     try { resolved = realpathSync(absolute); } catch { /* a deleted transcript can still be unlinked by its recorded path */ }
-    const remaining = manifest.sources.filter(source => source.file !== resolved && source.file !== absolute);
+    const remaining = manifest.sources.filter(source => source.file !== resolved && source.file !== absolute
+      && path.basename(source.file, ".jsonl") !== file);
     if (remaining.length === manifest.sources.length) throw new Error(`Usage source is not linked to ${taskId}: ${file}`);
     if (!remaining.length) {
       rmSync(taskUsageManifestPath(root, taskId));
       return 0;
     }
-    writeLinkedManifest(root, { ...manifest, sources: remaining }, closedAt);
+    writeLinkedManifest(root, { ...manifest, sources: remaining }, intervals);
     return remaining.length;
   });
 }
@@ -137,10 +138,12 @@ function readLinkedManifest(root: string, taskId: string): UsageManifest {
   return manifest;
 }
 
-function writeLinkedManifest(root: string, manifest: UsageManifest, closedAt: string | null): TaskUsageReport {
+type Intervals = Array<{ from: string; to: string | null }>;
+
+function writeLinkedManifest(root: string, manifest: UsageManifest, intervals: Intervals): TaskUsageReport {
   const file = taskUsageManifestPath(root, manifest.taskId);
   const text = `${JSON.stringify(manifest, null, 2)}\n`;
-  const report = reportFromBytes(Buffer.from(text), file, false, closedAt);
+  const report = reportFromBytes(Buffer.from(text), file, false, intervals);
   mkdirSync(path.dirname(file), { recursive: true, mode: PACK_DIR_MODE });
   writeJson(file, manifest);
   return report;
@@ -150,7 +153,7 @@ function parseManifest(parsed: unknown): UsageManifest {
   const manifest = record(parsed, ["version", "taskId", "coverage", "sources"]);
   if (manifest.version !== 1) throw new Error("Unsupported usage manifest version");
   const taskId = text(manifest.taskId, 240);
-  if (!/^task_[A-Za-z0-9_-]+$/u.test(taskId)) throw new Error("Usage manifest requires a Task Passport id");
+  if (!/^task_[A-Za-z0-9][A-Za-z0-9._-]*$/u.test(taskId)) throw new Error("Usage manifest requires a Task Passport id");
   const coverage = record(manifest.coverage, ["status", "note"]);
   if (coverage.status !== "partial" && coverage.status !== "declared-complete") throw new Error("Invalid usage coverage status");
   const note = text(coverage.note, 2000);
@@ -166,8 +169,11 @@ function parseManifest(parsed: unknown): UsageManifest {
   return { version: 1, taskId, coverage: { status: coverage.status, note }, sources };
 }
 
-/** closedAt, when given, excludes requests after the task closed so continuing sessions are not counted twice. */
-function reportFromBytes(bytes: Buffer, resolved: string, byTurn: boolean, closedAt: string | null = null): TaskUsageReport {
+/**
+ * Linked task reports pass the task's active intervals so a session shared by
+ * several tasks is split by when each task was current, never counted twice.
+ */
+function reportFromBytes(bytes: Buffer, resolved: string, byTurn: boolean, intervals: Intervals | null = null): TaskUsageReport {
   let parsed: unknown;
   try { parsed = JSON.parse(bytes.toString("utf8")); }
   catch { throw new Error("Usage manifest must contain valid JSON"); }
@@ -178,7 +184,7 @@ function reportFromBytes(bytes: Buffer, resolved: string, byTurn: boolean, close
   let requests = 0;
   for (const { client, file: sourceFile, phase, turns } of sources) {
     const { report, requestIds } = readUsageReport({ client, files: [sourceFile], byTurn,
-      ...(turns !== undefined ? { turns } : {}), ...(closedAt ? { to: closedAt } : {}) }, path.dirname(resolved));
+      ...(turns !== undefined ? { turns } : {}), ...(intervals ? { intervals } : {}) }, path.dirname(resolved));
     for (const id of requestIds) {
       if (seen.has(id)) throw new Error("Overlapping usage selections; a request appears in more than one manifest source");
       seen.add(id);
@@ -195,7 +201,7 @@ function reportFromBytes(bytes: Buffer, resolved: string, byTurn: boolean, close
   return { kind: "task-usage-report", version: 1, taskId, manifest: { path: resolved, sha256: sha256(bytes) },
     coverage, requests, totals, slices, billedUsd: null,
     warnings: [...new Set(["Coverage is declared by the manifest author; it is not independently verified.",
-      ...(closedAt ? [`Requests after the task closed (${closedAt}) are excluded.`] : []),
+      ...(intervals ? ["Only requests made while the task was the current Passport are counted; sessions shared with other tasks are split by those periods."] : []),
       "Session monetary estimates are not combined into task monetary cost.",
       ...slices.flatMap(slice => slice.report.warnings)])] };
 }
