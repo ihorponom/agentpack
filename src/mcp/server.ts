@@ -646,7 +646,7 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
   {
     name: "checkpoint",
     annotations: UPDATING_TOOL_ANNOTATIONS,
-    description: "Save a durable progress checkpoint under .agentpack/checkpoints, capturing summary, git state (branch, commit, diff) and the open current task id, and updating the pack-level status and next actions that seed the next session's load_context. Call after meaningful progress, before ending a session, or before risky changes — not after every small step.",
+    description: "Save a durable progress checkpoint under .agentpack/checkpoints, capturing summary, git state (branch, commit, diff) and the current task id when that task is active, blocked or verifying, and updating the pack-level status and next actions that seed the next session's load_context. Call after meaningful progress, before ending a session, or before risky changes — not after every small step.",
     inputSchema: {
       type: "object",
       properties: {

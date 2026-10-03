@@ -5,7 +5,7 @@
 switching the current task: task details, task-scoped timeline, linked
 verification evidence, repository checkpoints, ledger health, and task usage
 are available from one screen. Checkpoints are one repository list; those
-taken while the selected task was open are marked `[this task]`, those of
+taken while the selected task was current are marked `[this task]`, those of
 other tasks `[other task]`, and older ones stay unmarked because they carry no
 task link. Decisions are not joined to a task: the ledger schema does not
 encode that relationship.

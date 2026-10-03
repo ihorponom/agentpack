@@ -225,6 +225,10 @@ export function runTuiSession(model: TuiModel, runtime: TuiRuntime): () => void 
     cachedUsage = { taskId: task.passport.id, value: loaded };
     return loaded;
   };
+  // The bounded event log links most checkpoints; an opened checkpoint's
+  // manifest also counts, so list, status line and detail agree.
+  const linkedTask = (id: string): string | undefined =>
+    (cachedCheckpoint?.id === id ? cachedCheckpoint.value.taskId : undefined) || model.checkpointTasks.get(id);
   const draw = () => {
     const tasks = visible();
     navigation.selected = Math.max(0, Math.min(navigation.selected, Math.max(0, tasks.length - 1)));
@@ -249,7 +253,7 @@ export function runTuiSession(model: TuiModel, runtime: TuiRuntime): () => void 
         body = [
           `Repository checkpoints; [this task] marks those taken during ${task ? task.passport.id : "the selected task"}, unmarked ones have no task link:`,
           ...(model.checkpoints.length
-            ? model.checkpoints.map((id, index) => selectableLine(`${id}${checkpointTaskLabel(model, id, task)}`, index === navigation.itemSelected))
+            ? model.checkpoints.map((id, index) => selectableLine(`${id}${checkpointTaskLabel(linkedTask(id), task)}`, index === navigation.itemSelected))
             : ["No checkpoints."])
         ];
       }
@@ -293,7 +297,7 @@ export function runTuiSession(model: TuiModel, runtime: TuiRuntime): () => void 
       return index === navigation.view ? paint(tab, colors, ANSI.bold, ANSI.cyan) : paint(tab, colors, ANSI.dim);
     }).join("  ");
     const selected = navigation.view === 4 && model.checkpoints[navigation.itemSelected]
-      ? paint(displayLine(`Selected checkpoint: ${model.checkpoints[navigation.itemSelected]} (${model.checkpointTasks.get(model.checkpoints[navigation.itemSelected]!) ? `task ${model.checkpointTasks.get(model.checkpoints[navigation.itemSelected]!)}` : "global repository artifact"})`), colors, ANSI.dim)
+      ? paint(displayLine(`Selected checkpoint: ${model.checkpoints[navigation.itemSelected]} (${linkedTask(model.checkpoints[navigation.itemSelected]!) ? `task ${linkedTask(model.checkpoints[navigation.itemSelected]!)}` : "global repository artifact"})`), colors, ANSI.dim)
       : navigation.view === 3 && task && evidence[navigation.itemSelected]
         ? paint(displayLine(`Selected evidence: ${evidence[navigation.itemSelected]?.id} · Task: ${task.passport.id}`), colors, ANSI.dim)
         : task
@@ -751,8 +755,7 @@ function evidenceDetailLines(task: TuiTask, evidence: TuiEvidence, warnings: str
   ];
 }
 
-function checkpointTaskLabel(model: TuiModel, id: string, task: TuiTask | undefined): string {
-  const taskId = model.checkpointTasks.get(id);
+function checkpointTaskLabel(taskId: string | undefined, task: TuiTask | undefined): string {
   return !taskId ? "" : taskId === task?.passport.id ? " [this task]" : " [other task]";
 }
 
