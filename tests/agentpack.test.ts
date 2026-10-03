@@ -242,10 +242,22 @@ test("checkpoints record the open Task Passport and stay global otherwise", () =
   const model = buildTuiModel(root);
   assert.equal(model.checkpointTasks.get(linked || ""), taskId);
   assert.equal(model.checkpointTasks.has(legacy || ""), false);
+  writeFileSync(path.join(root, ".agentpack", "events.jsonl"), readFileSync(path.join(root, ".agentpack", "events.jsonl"), "utf8")
+    .split("\n").filter((line) => !line.includes(`"checkpointId":"${linked}"`)).join("\n"));
+  const withoutEvent = buildTuiModel(root);
+  assert.equal(withoutEvent.checkpointTasks.has(linked || ""), false);
+  assert.equal(loadTuiCheckpointDetails(withoutEvent, linked || "").taskId, taskId, "detail falls back to the manifest link");
+  run(root, ["task", "park"]);
+  run(root, ["checkpoint", "-m", "while parked"]);
+  const parked = readdirSync(path.join(root, ".agentpack", "checkpoints")).sort().at(-1);
+  assert.equal(manifest(parked).taskId, undefined, "a parked task is not current, matching usage attribution");
+  run(root, ["task", "switch", taskId]);
   run(root, ["task", "finalize", "--status", "accepted"]);
   run(root, ["checkpoint", "-m", "after close"]);
   const after = readdirSync(path.join(root, ".agentpack", "checkpoints")).sort().at(-1);
   assert.equal(manifest(after).taskId, undefined, "closed tasks do not claim later checkpoints");
+  writeFileSync(path.join(root, ".agentpack", "tasks", "current"), "task_deleted_one\n");
+  assert.match(run(root, ["checkpoint", "-m", "stale pointer"]), /^Created checkpoint [^ ]+\n$/, "a stale current pointer still saves a global checkpoint");
 });
 
 test("TUI drills into bounded evidence and global checkpoint details without mutation", () => {

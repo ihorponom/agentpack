@@ -54,7 +54,7 @@ export interface TuiEvidence {
 export interface TuiTask { passport: TaskPassport; current: boolean }
 export interface TuiTaskDetails { timeline: AgentpackEvent[]; evidence: TuiEvidence[]; warnings: string[] }
 export interface TuiCheckpointFile { name: string; preview: string; warning?: string }
-export interface TuiCheckpointDetails { id: string; files: TuiCheckpointFile[]; warnings: string[] }
+export interface TuiCheckpointDetails { id: string; files: TuiCheckpointFile[]; warnings: string[]; taskId?: string }
 interface EventLogRead { events: AgentpackEvent[]; evidenceById: Map<string, AgentpackEvent> }
 export interface TuiHealth { taskCount: number; eventCount: number; evidenceEventCount: number; eventBytes: number; checkpointCount: number }
 export interface TuiModel {
@@ -166,7 +166,13 @@ export function loadTuiCheckpointDetails(model: TuiModel, id: string): TuiCheckp
     }
   }
   if (!files.length) pushWarning(warnings, "No readable checkpoint files found.");
-  return { id, files, warnings };
+  // The manifest also records the task link, beyond the bounded event read.
+  let taskId: string | undefined;
+  try {
+    const manifest = JSON.parse(files.find((file) => file.name === "checkpoint.json")?.preview || "") as { taskId?: unknown };
+    if (typeof manifest.taskId === "string") taskId = manifest.taskId;
+  } catch { /* truncated or unreadable preview: rely on the event link */ }
+  return { id, files, warnings, ...(taskId ? { taskId } : {}) };
 }
 
 export function renderTuiSnapshot(model: TuiModel, query = ""): string {
@@ -751,7 +757,7 @@ function checkpointTaskLabel(model: TuiModel, id: string, task: TuiTask | undefi
 }
 
 function checkpointDetailLines(details: TuiCheckpointDetails, checkpointTasks: Map<string, string>): string[] {
-  const taskId = checkpointTasks.get(details.id);
+  const taskId = details.taskId || checkpointTasks.get(details.id);
   return [
     taskId ? `Checkpoint ${details.id} taken during task ${taskId}:` : `Global repository checkpoint ${details.id} (no task link is encoded):`,
     ...details.files.flatMap((file) => [

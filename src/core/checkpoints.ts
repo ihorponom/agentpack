@@ -41,10 +41,14 @@ export function createCheckpoint(root: string, options: CheckpointOptions = {}) 
     const id = checkpointId();
     const checkpointPath = getPackPath(root, "checkpoints", id);
     const summary = redactForRoot(root, options.summary || "Checkpoint created.");
-    // Link only checkpoints taken while a task is open; earlier and task-less
-    // checkpoints stay global repository checkpoints.
-    const task = getCurrentPassport(root);
-    const taskId = task && task.status !== "completed" && task.status !== "abandoned" ? task.id : undefined;
+    // Link only checkpoints taken while a task is current (active, blocked or
+    // verifying, matching usage attribution); others stay global. A broken
+    // current pointer must not stop saving progress.
+    let taskId: string | undefined;
+    try {
+      const task = getCurrentPassport(root);
+      if (task && (task.status === "active" || task.status === "blocked" || task.status === "verifying")) taskId = task.id;
+    } catch { /* fall back to a global checkpoint */ }
 
     mkdirSync(checkpointPath, { recursive: true, mode: PACK_DIR_MODE });
 
