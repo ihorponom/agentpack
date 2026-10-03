@@ -610,7 +610,7 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
         constraints: {
           type: "array",
           items: { type: "string" },
-          description: "Constraints to append."
+          description: "Constraints to append, or the full replacement list when replaceConstraints is true."
         },
         writeScope: {
           type: "array",
@@ -1259,10 +1259,13 @@ function callTool(root: string, name: string, args: Record<string, unknown>, war
     if (risk) {
       updateOptions.risk = risk;
     }
-    if (booleanValue(args.clearNextActions, false)) {
+    for (const key of ["clearNextActions", "replaceConstraints"]) {
+      if (args[key] !== undefined && typeof args[key] !== "boolean") throw new Error(`${key} requires a boolean`);
+    }
+    if (args.clearNextActions === true) {
       updateOptions.clearNextActions = true;
     }
-    if (booleanValue(args.replaceConstraints, false)) {
+    if (args.replaceConstraints === true) {
       updateOptions.replaceConstraints = true;
     }
     const passport = updateCurrentTaskPassport(root, updateOptions);

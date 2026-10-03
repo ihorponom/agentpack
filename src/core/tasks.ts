@@ -1169,7 +1169,7 @@ function patchCurrentTask(
     }
 
     writePassport(root, passport);
-    const removedConstraints = existing.constraints.filter((item) => !passport.constraints.includes(item));
+    const removedConstraints = existing.constraints.filter((item) => !passport.constraints.some((kept) => kept.trim() === item.trim()));
     appendTaskEvent(root, passport.id, eventType, {
       ...(removedConstraints.length > 0 ? { removedConstraints } : {}),
       status: passport.status,

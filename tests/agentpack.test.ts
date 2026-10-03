@@ -3039,6 +3039,7 @@ test("manages a current task passport", () => {
     .trim().split("\n").map((line) => JSON.parse(line)).filter((event) => event.removedConstraints);
   assert.deepEqual(updateEvents.at(-1)?.removedConstraints, constraintsBefore, "replaced constraints stay in task history");
   assert.match(runExpectError(dir, ["task", "update", "--replace-constraints", "--constraint", "Commit allowed after review"]), /did not change/);
+  assert.match(runExpectError(dir, ["task", "update", "--replace-constraints", "yes", "--constraint", "Other"]), /--replace-constraints requires true or false/);
 
   run(dir, ["source", "add", "src/index.ts", "--summary", "Task passport fixture source."]);
   writeFileSync(path.join(dir, "src", "index.ts"), "export const value = 2;\n", "utf8");

@@ -883,10 +883,11 @@ function taskCommand(root: string, rest: string[]): void {
     if (optionValue(parsed.options, "risk")) {
       updateOptions.risk = taskRiskOption(parsed.options.risk);
     }
-    if (parsed.options["clear-next-actions"] === true) {
+    // Replacement flags must not silently fall back to appending on a malformed value.
+    if (booleanOption(parsed.options["clear-next-actions"], "--clear-next-actions")) {
       updateOptions.clearNextActions = true;
     }
-    if (parsed.options["replace-constraints"] === true) {
+    if (booleanOption(parsed.options["replace-constraints"], "--replace-constraints")) {
       updateOptions.replaceConstraints = true;
     }
     const passport = updateCurrentTaskPassport(root, updateOptions);
