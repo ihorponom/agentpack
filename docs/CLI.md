@@ -342,7 +342,9 @@ No account connections, background collection or telemetry are required.
 agentpack usage report --manifest .agentpack/usage/task-example.json --by-turn
 ```
 
-`--manifest` is exclusive with `--client`, `--file`, `--task`, `--from`, `--to`
+`--manifest` reports the selections exactly as written, without Passport
+attribution; `--task` applies the task's current periods to its linked
+manifest. `--manifest` is exclusive with `--client`, `--file`, `--task`, `--from`, `--to`
 and `--turns`. It accepts `--json` and `--by-turn`.
 
 Task mapping uses an explicit local manifest:

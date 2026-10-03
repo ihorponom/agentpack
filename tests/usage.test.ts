@@ -9,7 +9,7 @@ import { PassThrough } from "node:stream";
 import { startMcpServer, TOOL_DEFINITIONS } from "../src/mcp/server.js";
 import { initPack } from "../src/core/store.js";
 import { buildUsageReport, formatUsageReport } from "../src/core/usage.js";
-import { buildLinkedTaskUsageReport, buildTaskUsageReport, formatTaskUsageReport, linkTaskUsage, taskUsageManifestPath } from "../src/core/usage-manifest.js";
+import { buildLinkedTaskUsageReport, buildTaskUsageReport, formatTaskUsageReport, linkTaskUsage, taskUsageManifestPath, unlinkTaskUsage } from "../src/core/usage-manifest.js";
 import { findUsageCandidates } from "../src/core/usage-discovery.js";
 import { closeCurrentTask, parkCurrentTask, readTaskActiveIntervals, startTask } from "../src/core/tasks.js";
 import { buildTuiModel, loadTuiTaskUsage } from "../src/core/tui.js";
@@ -446,4 +446,19 @@ test("Tasks sharing one session split it by the periods each task was current", 
   assert.equal(first.requests, 2, "m1 and m3; m0 predates the task");
   assert.equal(second.requests, 2, "m2 at the boundary belongs to the task that became current, plus m4");
   assert.equal(first.requests + second.requests, buildUsageReport({ client: "claude", files: [session] }, dir).requests - 1);
+
+  const copy = path.join(dir, "copy", "shared.jsonl");
+  mkdirSync(path.dirname(copy));
+  writeFileSync(copy, JSON.stringify(claude("m9", 20, at(6))) + "\n");
+  linkTaskUsage(dir, a.id, [{ client: "claude", file: copy, phase: "copy" }], dir);
+  assert.throws(() => unlinkTaskUsage(dir, a.id, "shared", dir), /matches 2 linked sources; unlink by path/);
+  assert.equal(unlinkTaskUsage(dir, a.id, copy, dir), 1);
+
+  parkCurrentTask(dir);
+  const imported = startTask(dir, { title: "Imported" });
+  parkCurrentTask(dir);
+  writeFileSync(path.join(dir, ".agentpack", "tasks", imported.id, "events.jsonl"), JSON.stringify({ type: "task-import", ts: at(50) }) + "\n");
+  assert.deepEqual(readTaskActiveIntervals(dir, imported.id), [], "a task that was never current owns no period");
+  assert.throws(() => linkTaskUsage(dir, imported.id, [{ client: "claude", file: session, phase: "main" }], dir), /never been the current Task Passport/);
+  assert.match(findUsageCandidates(dir, imported.id, { CLAUDE_CONFIG_DIR: dir, CODEX_HOME: dir }).warnings.join(" "), /never been the current/);
 });

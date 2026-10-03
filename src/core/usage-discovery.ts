@@ -68,6 +68,12 @@ export function findUsageCandidates(root: string, taskId: string, env: NodeJS.Pr
   const passport = readPassport(root, taskId);
   const intervals = readTaskActiveIntervals(root, taskId);
   const periods = intervals.map(interval => [Date.parse(interval.from), interval.to === null ? null : Date.parse(interval.to)] as const);
+  const linked = new Set(readLinkedSourceFiles(root, taskId));
+  const warnings: string[] = [];
+  if (!periods.length) {
+    warnings.push("This task has never been the current Task Passport here, so no usage can be attributed to it; switch to it first.");
+    return { kind: "task-usage-candidates", taskId, linked: linked.size > 0, intervals, searched: [], warnings, candidates: [] };
+  }
   const from = periods[0]![0];
   const to = periods[periods.length - 1]![1];
   const worktree = path.resolve(passport.worktree);
@@ -76,8 +82,6 @@ export function findUsageCandidates(root: string, taskId: string, env: NodeJS.Pr
   // non-alphanumeric character replaced by "-".
   const claudeDir = path.join(env.CLAUDE_CONFIG_DIR || path.join(home, ".claude"), "projects", worktree.replace(/[^A-Za-z0-9]/gu, "-"));
   const codexDir = path.join(env.CODEX_HOME || path.join(home, ".codex"), "sessions");
-  const linked = new Set(readLinkedSourceFiles(root, taskId));
-  const warnings: string[] = [];
   const found: Array<Omit<UsageCandidate, "number">> = [];
   const sources = [
     ["claude", claudeFiles(claudeDir, from, warnings)],
@@ -151,8 +155,8 @@ export function formatUsageCandidates(result: UsageCandidates): string {
   const lines = [
     `Task usage: ${result.taskId}`,
     result.linked ? "Linked sources exist; candidates marked [linked] are already included." : "No usage sources linked yet.",
-    `Task was current: ${result.intervals.map(interval => `${interval.from} to ${interval.to || "now"}`).join("; ")}`,
-    `Searched: ${result.searched.map(display).join(", ")}`,
+    `Task was current: ${result.intervals.map(interval => `${interval.from} to ${interval.to || "now"}`).join("; ") || "never"}`,
+    ...(result.searched.length ? [`Searched: ${result.searched.map(display).join(", ")}`] : []),
     ...result.warnings.map(warning => `Warning: ${warning}`),
     ""
   ];

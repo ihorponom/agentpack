@@ -73,7 +73,7 @@ export function hasLinkedTaskUsage(root: string, taskId: string): boolean {
 
 /** Report the sources explicitly linked to a Task Passport; never sums unlinked sessions. */
 export function buildLinkedTaskUsageReport(root: string, taskId: string, byTurn = false): TaskUsageReport {
-  const intervals = readTaskActiveIntervals(root, taskId);
+  const intervals = attributableIntervals(root, taskId);
   if (!hasLinkedTaskUsage(root, taskId)) throw new Error(`No usage sources linked to ${taskId}`);
   const file = resolveRegularFileWithin(getPackPath(root), path.join("usage", `${taskId}.json`), "usage manifest");
   if (statSync(file).size > MAX_MANIFEST_BYTES) throw new Error("Linked usage manifest exceeds 1 MiB");
@@ -82,13 +82,19 @@ export function buildLinkedTaskUsageReport(root: string, taskId: string, byTurn 
   return report;
 }
 
+function attributableIntervals(root: string, taskId: string): Intervals {
+  const intervals = readTaskActiveIntervals(root, taskId);
+  if (!intervals.length) throw new Error(`${taskId} has never been the current Task Passport here, so no usage can be attributed to it; switch to it first`);
+  return intervals;
+}
+
 export function readLinkedSourceFiles(root: string, taskId: string): string[] {
   return hasLinkedTaskUsage(root, taskId) ? readLinkedManifest(root, taskId).sources.map(source => source.file) : [];
 }
 
 /** Add or replace (by resolved file) explicit task sources after validating the combined report. */
 export function linkTaskUsage(root: string, taskId: string, links: UsageSourceLink[], cwd: string, coverage?: UsageCoverage): TaskUsageReport {
-  const intervals = readTaskActiveIntervals(root, taskId);
+  const intervals = attributableIntervals(root, taskId);
   return withPackWriteLock(root, () => {
     const manifest = hasLinkedTaskUsage(root, taskId)
       ? readLinkedManifest(root, taskId)
@@ -109,21 +115,25 @@ export function linkTaskUsage(root: string, taskId: string, links: UsageSourceLi
 
 /** Remove one linked source by path or session id; returns the remaining source count. */
 export function unlinkTaskUsage(root: string, taskId: string, file: string, cwd: string): number {
-  const intervals = readTaskActiveIntervals(root, taskId);
+  readPassport(root, taskId);
   return withPackWriteLock(root, () => {
     if (!hasLinkedTaskUsage(root, taskId)) throw new Error(`No usage sources linked to ${taskId}`);
     const manifest = readLinkedManifest(root, taskId);
     const absolute = path.resolve(cwd, file);
     let resolved = absolute;
     try { resolved = realpathSync(absolute); } catch { /* a deleted transcript can still be unlinked by its recorded path */ }
-    const remaining = manifest.sources.filter(source => source.file !== resolved && source.file !== absolute
-      && path.basename(source.file, ".jsonl") !== file);
+    const byPath = manifest.sources.filter(source => source.file === resolved || source.file === absolute);
+    const byId = manifest.sources.filter(source => path.basename(source.file, ".jsonl") === file);
+    if (!byPath.length && byId.length > 1) throw new Error(`Session id ${file} matches ${byId.length} linked sources; unlink by path`);
+    const removed = new Set(byPath.length ? byPath : byId);
+    const remaining = manifest.sources.filter(source => !removed.has(source));
     if (remaining.length === manifest.sources.length) throw new Error(`Usage source is not linked to ${taskId}: ${file}`);
     if (!remaining.length) {
       rmSync(taskUsageManifestPath(root, taskId));
       return 0;
     }
-    writeLinkedManifest(root, { ...manifest, sources: remaining }, intervals);
+    // Removing sources cannot create overlap, so the remaining selection needs no revalidation.
+    writeJson(taskUsageManifestPath(root, taskId), { ...manifest, sources: remaining });
     return remaining.length;
   });
 }

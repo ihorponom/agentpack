@@ -303,8 +303,10 @@ const MAX_TASK_EVENT_BYTES = 2_000_000;
 
 /**
  * Periods while the task was the current Passport, from its lifecycle events:
- * start/switch begin one; park/close/finalize end it. Falls back to
- * createdAt..closedAt when no lifecycle events are readable. An open end is null.
+ * start/switch begin one; park/close/finalize end it. An open end is null.
+ * Without lifecycle events, a closed or current legacy task falls back to
+ * createdAt..closedAt; any other task (e.g. imported and never switched to)
+ * has never been current and gets no interval.
  */
 export function readTaskActiveIntervals(root: string, taskId: string): Array<{ from: string; to: string | null }> {
   const passport = readPassport(root, taskId);
@@ -327,7 +329,9 @@ export function readTaskActiveIntervals(root: string, taskId: string): Array<{ f
     }
   }
   if (open !== null) intervals.push({ from: open, to: passport.closedAt });
-  return intervals.length ? intervals : [{ from: passport.createdAt, to: passport.closedAt }];
+  if (intervals.length) return intervals;
+  const legacyCurrent = passport.status !== "parked" && readCurrentTaskId(root) === taskId;
+  return passport.closedAt || legacyCurrent ? [{ from: passport.createdAt, to: passport.closedAt }] : [];
 }
 
 export function switchTask(root: string, taskId: string, options: { parkCurrent?: boolean } = {}): TaskPassport {
