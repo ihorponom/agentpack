@@ -121,6 +121,7 @@ jobs:
           "
 
       - name: Publish to MCP Registry
+        timeout-minutes: 15
         run: |
           ./mcp-publisher login github-oidc
-          ./mcp-publisher publish
+          node scripts/publish-mcp-registry.mjs

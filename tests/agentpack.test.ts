@@ -844,8 +844,10 @@ test("keeps MCP Registry publication retryable after npm publish", () => {
   const npmJob = workflow.slice(0, registryJobAt);
   const registryJob = workflow.slice(registryJobAt);
   assert.match(registryJob, /needs: publish/);
-  assert.match(registryJob, /mcp-publisher publish/);
-  assert.doesNotMatch(npmJob, /mcp-publisher/, "retrying Registry metadata must not repeat npm publication");
+  assert.match(registryJob, /node scripts\/publish-mcp-registry\.mjs/);
+  assert.match(registryJob, /timeout-minutes: 15/);
+  assert.doesNotMatch(npmJob, /mcp-publisher|publish-mcp-registry/, "npm publication must not invoke the Registry helper");
+  assert.doesNotMatch(registryJob, /npm publish/, "retrying Registry metadata must not repeat npm publication");
 
   const releaseDocs = readFileSync(path.join(sourceRoot, "docs", "RELEASING.md"), "utf8");
   assert.match(releaseDocs, /Re-run failed jobs/);

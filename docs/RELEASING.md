@@ -81,6 +81,10 @@ the Actions tab:
 2. Pick the tag (or `main`) and choose `dry-run: true` first to verify.
 3. Re-run with `dry-run: false`.
 
+Registry publication retries known npm version-propagation 404 errors up to
+five times, with delays of 15, 30, 60, 120, and 240 seconds. Authentication,
+schema, and other errors fail immediately.
+
 If the separate `Publish MCP Registry metadata` job fails after npm succeeds,
 do **not** start the workflow again: npm versions are immutable. In Actions,
 use **Re-run failed jobs** to retry only that Registry job. The Registry is
