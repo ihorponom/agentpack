@@ -459,6 +459,10 @@ test("Tasks sharing one session split it by the periods each task was current", 
   parkCurrentTask(dir);
   writeFileSync(path.join(dir, ".agentpack", "tasks", imported.id, "events.jsonl"), JSON.stringify({ type: "task-import", ts: at(50) }) + "\n");
   assert.deepEqual(readTaskActiveIntervals(dir, imported.id), [], "a task that was never current owns no period");
+  const legacyPark = new Date(Date.parse(imported.createdAt) + 60_000).toISOString();
+  writeFileSync(path.join(dir, ".agentpack", "tasks", imported.id, "events.jsonl"), JSON.stringify({ type: "task-park", ts: legacyPark }) + "\n");
+  assert.deepEqual(readTaskActiveIntervals(dir, imported.id), [{ from: imported.createdAt, to: legacyPark }], "a legacy task parked before lifecycle events was current from creation");
+  writeFileSync(path.join(dir, ".agentpack", "tasks", imported.id, "events.jsonl"), JSON.stringify({ type: "task-import", ts: at(50) }) + "\n");
   assert.throws(() => linkTaskUsage(dir, imported.id, [{ client: "claude", file: session, phase: "main" }], dir), /never been the current Task Passport/);
   assert.match(findUsageCandidates(dir, imported.id, { CLAUDE_CONFIG_DIR: dir, CODEX_HOME: dir }).warnings.join(" "), /never been the current/);
 });

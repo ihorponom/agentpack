@@ -312,6 +312,7 @@ export function readTaskActiveIntervals(root: string, taskId: string): Array<{ f
   const passport = readPassport(root, taskId);
   const intervals: Array<{ from: string; to: string | null }> = [];
   let open: string | null = null;
+  let started = false;
   let text = "";
   if (existsSync(taskEventsPath(root, taskId))) {
     const file = resolveRegularFileWithin(getPackPath(root), path.join("tasks", taskId, "events.jsonl"), "task events");
@@ -322,10 +323,16 @@ export function readTaskActiveIntervals(root: string, taskId: string): Array<{ f
     let event: { type?: unknown; ts?: unknown };
     try { event = JSON.parse(line) as { type?: unknown; ts?: unknown }; } catch { continue; }
     if (typeof event.ts !== "string" || !Number.isFinite(Date.parse(event.ts))) continue;
-    if ((event.type === "task-start" || event.type === "task-switch") && open === null) open = event.ts;
-    if ((event.type === "task-park" || event.type === "task-close" || event.type === "task-finalize") && open !== null) {
-      intervals.push({ from: open, to: event.ts });
+    if ((event.type === "task-start" || event.type === "task-switch") && open === null) {
+      open = event.ts;
+      started = true;
+    }
+    if (event.type === "task-park" || event.type === "task-close" || event.type === "task-finalize") {
+      // Legacy tasks started before lifecycle events were current from createdAt.
+      if (open === null && !started) open = passport.createdAt;
+      if (open !== null) intervals.push({ from: open, to: event.ts });
       open = null;
+      started = true;
     }
   }
   if (open !== null) intervals.push({ from: open, to: passport.closedAt });
