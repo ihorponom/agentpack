@@ -25,6 +25,7 @@ interface RequestUsage {
   model: string;
   tokens: Tokens;
   turnKey: string | null;
+  at: number | null;
 }
 
 interface UsageTurn {
@@ -154,13 +155,20 @@ export function buildUsageReport(options: UsageOptions, cwd: string): UsageRepor
   return parseUsageReport(options, cwd).report;
 }
 
+/** Request times and source-local turns for one source, without request identities or content. */
+export function readUsageTimeline(client: UsageOptions["client"], file: string, cwd: string): { report: UsageReport; requests: Array<{ at: number | null; turn: number | null }> } {
+  const { report, requests, turnGroups } = parseUsageReport({ client, files: [file], byTurn: true }, cwd);
+  return { report, requests: [...requests.values()].map(request => ({ at: request.at,
+    turn: request.turnKey ? turnGroups.get(request.turnKey)?.turn ?? null : null })) };
+}
+
 /** Internal request identities allow manifest aggregation to reject overlap. */
 export function readUsageReport(options: UsageOptions, cwd: string): { report: UsageReport; requestIds: string[] } {
   const { report, requests } = parseUsageReport(options, cwd);
   return { report, requestIds: [...requests.keys()].map(key => `${options.client}:${key}`) };
 }
 
-function parseUsageReport(options: UsageOptions, cwd: string): { report: UsageReport; requests: Map<string, RequestUsage> } {
+function parseUsageReport(options: UsageOptions, cwd: string): { report: UsageReport; requests: Map<string, RequestUsage>; turnGroups: Map<string, UsageTurn> } {
   if (options.client !== "codex" && options.client !== "claude") throw new Error("Usage supports codex or claude JSONL sources");
   if (!options.files.length) throw new Error("Usage requires at least one --file");
   const from = boundary(options.from, "--from");
@@ -169,11 +177,11 @@ function parseUsageReport(options: UsageOptions, cwd: string): { report: UsageRe
   const bounded = from !== null || to !== null;
   let turnRange: [number, number] | null = null;
   if (options.turns !== undefined) {
-    const match = /^([1-9]\d*)(?::([1-9]\d*))?$/u.exec(options.turns);
-    if (!match || options.files.length !== 1) throw new Error("--turns requires N or N:M and exactly one source file");
+    const match = /^([1-9]\d*)(:([1-9]\d*)?)?$/u.exec(options.turns);
+    if (!match || options.files.length !== 1) throw new Error("--turns requires N, N: or N:M and exactly one source file");
     const first = Number(match[1]);
-    const last = Number(match[2] || match[1]);
-    if (!Number.isSafeInteger(last) || first > last) throw new Error("Invalid turn range");
+    const last = match[2] && !match[3] ? Number.POSITIVE_INFINITY : Number(match[3] || match[1]);
+    if (!Number.isSafeInteger(first) || (last !== Number.POSITIVE_INFINITY && !Number.isSafeInteger(last)) || first > last) throw new Error("Invalid turn range");
     turnRange = [first, last];
   }
   const turnGroups = new Map<string, UsageTurn>();
@@ -291,7 +299,7 @@ function parseUsageReport(options: UsageOptions, cwd: string): { report: UsageRe
         existing.tokens.reasoning = existing.tokens.reasoning === null || tokens.reasoning === null
           ? null : Math.max(existing.tokens.reasoning, tokens.reasoning);
       } else {
-        requests.set(key, { model: requestModel, tokens, turnKey });
+        requests.set(key, { model: requestModel, tokens, turnKey, at: time });
       }
     }
     if (turnRange) source.cumulativeCheck = "turn-filtered";
@@ -341,7 +349,7 @@ function parseUsageReport(options: UsageOptions, cwd: string): { report: UsageRe
     turnSelection: options.turns || null, unassignedRequests,
     ...(options.byTurn ? { turns: [...turnGroups.values()].filter(turn => turn.requests > 0) } : {})
   };
-  return { report, requests };
+  return { report, requests, turnGroups };
 }
 
 function printable(text: string): string {

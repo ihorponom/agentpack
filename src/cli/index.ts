@@ -81,7 +81,14 @@ import { evaluateGate, formatGateReport, type GateOptions, type GateReport } fro
 import { startMcpServer } from "../mcp/server.js";
 import { startTui } from "../core/tui.js";
 import { buildUsageReport, formatUsageReport } from "../core/usage.js";
-import { buildTaskUsageReport, formatTaskUsageReport } from "../core/usage-manifest.js";
+import {
+  buildLinkedTaskUsageReport,
+  buildTaskUsageReport,
+  formatTaskUsageReport,
+  hasLinkedTaskUsage,
+  usageTaskId
+} from "../core/usage-manifest.js";
+import { findUsageCandidates, formatUsageCandidates, formatUsageLinkResult, runUsageLink, type UsageLinkRequest } from "../core/usage-discovery.js";
 
 export type ArgValue = string | boolean | string[];
 
@@ -128,50 +135,7 @@ export async function runCli(argv: string[], cwd: string): Promise<void> {
   }
 
   if (command === "usage") {
-    if (rest[0] !== "report" || isHelpRequest(rest[1])) {
-      if (isHelpRequest(rest[0]) || (rest[0] === "report" && isExplicitHelpRequest(rest[1]))) {
-        printCommandHelp("usage");
-        return;
-      }
-      throw new Error("Usage requires report --client codex|claude --file <jsonl>");
-    }
-    const inputArgs = rest.slice(1);
-    // parseArgs coalesces repeated flags; validate every file occurrence before
-    // a missing value can disappear during that coalescing.
-    if (inputArgs.some((arg, index) => (arg === "--file" || arg === "-file")
-      && (!inputArgs[index + 1] || inputArgs[index + 1]?.startsWith("-")))) {
-      throw new Error("Every --file requires a path");
-    }
-    const parsed = parseArgs(inputArgs);
-    const allowed = new Set(["client", "file", "task", "from", "to", "json", "by-turn", "turns", "manifest"]);
-    if (parsed.positionals.length || Object.keys(parsed.options).some(key => !allowed.has(key))) {
-      throw new Error("Unknown usage report argument; see agentpack usage --help");
-    }
-    for (const key of ["client", "task", "from", "to", "turns", "manifest"]) {
-      const value = parsed.options[key];
-      if (value !== undefined && (typeof value !== "string" || !value.trim())) throw new Error(`--${key} requires one value`);
-    }
-    if (parsed.options.manifest !== undefined) {
-      if (["client", "file", "task", "from", "to", "turns"].some(key => parsed.options[key] !== undefined)) {
-        throw new Error("--manifest cannot be combined with direct source options");
-      }
-      const report = buildTaskUsageReport(stringOption(parsed.options.manifest), cwd, booleanOption(parsed.options["by-turn"], "--by-turn"));
-      process.stdout.write(`${booleanOption(parsed.options.json, "--json") ? JSON.stringify(report, null, 2) : formatTaskUsageReport(report)}\n`);
-      return;
-    }
-    const files = toArray(parsed.options.file);
-    if (!files.length || files.some(file => !file.trim())) throw new Error("Usage requires at least one --file <jsonl>");
-    const client = stringOption(parsed.options.client);
-    if (client !== "codex" && client !== "claude") throw new Error("Supported usage clients: codex and claude (Claude Code)");
-    const report = buildUsageReport({
-      client, files,
-      byTurn: booleanOption(parsed.options["by-turn"], "--by-turn"),
-      ...(parsed.options.turns !== undefined ? { turns: stringOption(parsed.options.turns) } : {}),
-      ...(parsed.options.task !== undefined ? { task: stringOption(parsed.options.task) } : {}),
-      ...(parsed.options.from !== undefined ? { from: stringOption(parsed.options.from) } : {}),
-      ...(parsed.options.to !== undefined ? { to: stringOption(parsed.options.to) } : {})
-    }, cwd);
-    process.stdout.write(`${booleanOption(parsed.options.json, "--json") ? JSON.stringify(report, null, 2) : formatUsageReport(report)}\n`);
+    usageCommand(cwd, rest);
     return;
   }
 
@@ -367,6 +331,8 @@ Task Passport:
   agentpack task --help
 
 Inspect and export:
+  agentpack usage report [--task <id>] [--by-turn] [--json]
+  agentpack usage link [--task <id>] [--pick <n>]
   agentpack usage report --client codex|claude --file <jsonl> [--file <jsonl>] [--task <label>] [--json]
   agentpack tui
   agentpack resume --preset agent [--query <text>]
@@ -414,10 +380,21 @@ function printCommandHelp(command: string): boolean {
 
 function commandHelpText(command: string): string {
   if (command === "usage") {
-    return `agentpack usage report --manifest <json> [--by-turn] [--json]
-agentpack usage report --client codex|claude --file <jsonl> [--file <jsonl>] [--task <label>] [--from <ISO>] [--to <ISO>] [--by-turn] [--turns N|N:M] [--json]
+    return `agentpack usage report [--task <id>] [--by-turn] [--json]
+agentpack usage link [--task <id>] [--pick <n|session-id>[,...]] [--phase <name>] [--coverage partial|declared-complete --note <text>]
+agentpack usage link [--task <id>] --client codex|claude --file <jsonl> [--turns N|N:|N:M] [--phase <name>]
+agentpack usage unlink [--task <id>] --file <jsonl>
+agentpack usage report --manifest <json> [--by-turn] [--json]
+agentpack usage report --client codex|claude --file <jsonl> [--file <jsonl>] [--task <label>] [--from <ISO>] [--to <ISO>] [--by-turn] [--turns N|N:|N:M] [--json]
 
-Read explicit local transcripts and print aggregate token usage by model.
+Task usage: --task defaults to the current Task Passport. Sources are linked once per task
+in .agentpack/usage/<id>.json. Without linked sources, report and link list candidate
+Claude Code/Codex sessions of the task worktree with requests in the Passport window;
+nothing is counted until you link them with --pick or --file. N: selects turn N to the end.
+Reports for a closed task exclude requests after it closed. Session ids are stable; numbers
+can shift when sessions change, so prefer ids in scripts.
+
+Direct reports read explicit local transcripts and print aggregate token usage by model.
 No initialized pack is needed; no files or ledger state are written.
 --from is inclusive and --to exclusive; timestamps require a timezone.
 Costs are client-session estimates when present, never guessed tariffs or verified charges.
@@ -1189,6 +1166,95 @@ function ledgerCommand(root: string, rest: string[]): void {
   }
 
   throw new Error("ledger command supports `status` and `compact`");
+}
+
+function usageCommand(cwd: string, rest: string[]): void {
+  const action = rest[0];
+  if (!["report", "link", "unlink"].includes(action || "") || isExplicitHelpRequest(rest[1])) {
+    if (isHelpRequest(action) || isExplicitHelpRequest(rest[1])) {
+      printCommandHelp("usage");
+      return;
+    }
+    throw new Error("Usage requires report, link or unlink; see agentpack usage --help");
+  }
+  const inputArgs = rest.slice(1);
+  // parseArgs coalesces repeated flags; validate every file occurrence before
+  // a missing value can disappear during that coalescing.
+  if (inputArgs.some((arg, index) => (arg === "--file" || arg === "-file")
+    && (!inputArgs[index + 1] || inputArgs[index + 1]?.startsWith("-")))) {
+    throw new Error("Every --file requires a path");
+  }
+  const parsed = parseArgs(inputArgs);
+  const allowed = new Set(action === "report" ? ["client", "file", "task", "from", "to", "json", "by-turn", "turns", "manifest"]
+    : action === "link" ? ["task", "pick", "client", "file", "turns", "phase", "coverage", "note", "json"]
+    : ["task", "file", "json"]);
+  if (parsed.positionals.length || Object.keys(parsed.options).some(key => !allowed.has(key))) {
+    throw new Error(`Unknown usage ${action} argument; see agentpack usage --help`);
+  }
+  for (const key of ["client", "task", "from", "to", "turns", "manifest", "pick", "phase", "coverage", "note"]) {
+    const value = parsed.options[key];
+    if (value !== undefined && (typeof value !== "string" || !value.trim())) throw new Error(`--${key} requires one value`);
+  }
+  const json = booleanOption(parsed.options.json, "--json");
+  const task = parsed.options.task !== undefined ? stringOption(parsed.options.task) : undefined;
+  if (action === "link" || action === "unlink") {
+    const root = requirePackRoot(cwd);
+    const taskId = usageTaskId(root, task);
+    if (toArray(parsed.options.file).length > 1) throw new Error(`usage ${action} accepts one --file`);
+    const request: UsageLinkRequest = {};
+    if (action === "unlink") {
+      if (parsed.options.file === undefined) throw new Error("usage unlink requires --file <jsonl>");
+      request.remove = stringOption(parsed.options.file);
+    } else {
+      for (const key of ["client", "file", "turns", "phase", "coverage", "note"] as const) {
+        if (parsed.options[key] !== undefined) request[key] = stringOption(parsed.options[key]);
+      }
+      if (parsed.options.pick !== undefined) {
+        request.pick = toArray(parsed.options.pick).flatMap(value => value.split(",")).map(value => value.trim())
+          .map(value => /^[1-9]\d*$/u.test(value) ? Number(value) : value);
+        if (request.pick.some(value => value === "")) throw new Error("--pick requires candidate numbers or session ids such as 1,3");
+      }
+    }
+    const result = runUsageLink(root, taskId, request, cwd);
+    process.stdout.write(`${json ? JSON.stringify(result, null, 2) : formatUsageLinkResult(result)}\n`);
+    return;
+  }
+  const byTurn = booleanOption(parsed.options["by-turn"], "--by-turn");
+  if (parsed.options.manifest !== undefined) {
+    if (["client", "file", "task", "from", "to", "turns"].some(key => parsed.options[key] !== undefined)) {
+      throw new Error("--manifest cannot be combined with direct source options");
+    }
+    const report = buildTaskUsageReport(stringOption(parsed.options.manifest), cwd, byTurn);
+    process.stdout.write(`${json ? JSON.stringify(report, null, 2) : formatTaskUsageReport(report)}\n`);
+    return;
+  }
+  if (parsed.options.client === undefined && parsed.options.file === undefined) {
+    if (["from", "to", "turns"].some(key => parsed.options[key] !== undefined)) {
+      throw new Error("Task usage reports use the turns linked to the task; --from, --to and --turns require --client and --file");
+    }
+    const root = requirePackRoot(cwd);
+    const taskId = usageTaskId(root, task);
+    if (hasLinkedTaskUsage(root, taskId)) {
+      const report = buildLinkedTaskUsageReport(root, taskId, byTurn);
+      process.stdout.write(`${json ? JSON.stringify(report, null, 2) : formatTaskUsageReport(report)}\n`);
+      return;
+    }
+    const candidates = findUsageCandidates(root, taskId);
+    process.stdout.write(`${json ? JSON.stringify(candidates, null, 2) : formatUsageCandidates(candidates)}\n`);
+    return;
+  }
+  const files = toArray(parsed.options.file);
+  if (!files.length || files.some(file => !file.trim())) throw new Error("Usage requires at least one --file <jsonl>");
+  const client = stringOption(parsed.options.client);
+  if (client !== "codex" && client !== "claude") throw new Error("Supported usage clients: codex and claude (Claude Code)");
+  const report = buildUsageReport({
+    client, files, byTurn,
+    ...(parsed.options.turns !== undefined ? { turns: stringOption(parsed.options.turns) } : {}),
+    ...(task !== undefined ? { task } : {}),
+    ...(parsed.options.from !== undefined ? { from: stringOption(parsed.options.from) } : {}),
+    ...(parsed.options.to !== undefined ? { to: stringOption(parsed.options.to) } : {})
+  }, cwd);
+  process.stdout.write(`${json ? JSON.stringify(report, null, 2) : formatUsageReport(report)}\n`);
 }
 
 function releaseCommand(cwd: string, rest: string[]): void {

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -9,7 +9,10 @@ import { PassThrough } from "node:stream";
 import { startMcpServer, TOOL_DEFINITIONS } from "../src/mcp/server.js";
 import { initPack } from "../src/core/store.js";
 import { buildUsageReport, formatUsageReport } from "../src/core/usage.js";
-import { buildTaskUsageReport, formatTaskUsageReport } from "../src/core/usage-manifest.js";
+import { buildTaskUsageReport, formatTaskUsageReport, taskUsageManifestPath } from "../src/core/usage-manifest.js";
+import { findUsageCandidates } from "../src/core/usage-discovery.js";
+import { closeCurrentTask, startTask } from "../src/core/tasks.js";
+import { buildTuiModel, loadTuiTaskUsage } from "../src/core/tui.js";
 
 const cli = fileURLToPath(new URL("../src/agentpack.js", import.meta.url));
 const time = "2026-10-02T12:00:00Z";
@@ -176,7 +179,9 @@ test("Codex turn rows reconcile with total requests and retain incomplete turns"
   assert.equal(selected.turns?.[0]?.turn, 2);
   assert.equal(selected.sources[0]?.cumulativeCheck, "turn-filtered");
   assert.equal(buildUsageReport({ client: "codex", files: [file], turns: "1:2" }, dir).requests, 2);
-  for (const turns of ["0", "2:1", "1,2", "9007199254740992"]) assert.throws(() => buildUsageReport({ client: "codex", files: [file], turns }, dir), /turn/i);
+  assert.equal(buildUsageReport({ client: "codex", files: [file], turns: "2:" }, dir).requests, 1);
+  assert.equal(buildUsageReport({ client: "codex", files: [file], turns: "1:" }, dir).turnSelection, "1:");
+  for (const turns of ["0", "2:1", "1,2", ":2", "9007199254740992", "9007199254740992:"]) assert.throws(() => buildUsageReport({ client: "codex", files: [file], turns }, dir), /turn/i);
   assert.throws(() => buildUsageReport({ client: "codex", files: [file, file], turns: "1" }, dir), /one source/);
 });
 
@@ -302,4 +307,117 @@ test("Task usage validates bounded manifests without leaking malformed content",
   writeFileSync(file, " ".repeat(1024 * 1024 + 1));
   assert.throws(() => buildTaskUsageReport(file, dir), /at most 1 MiB/);
   assert.throws(() => buildTaskUsageReport(dir, dir), /regular local JSON/);
+});
+
+test("Task usage links suggested sessions once and reports by Task Passport id across CLI, MCP and TUI", async t => {
+  const dir = realpathSync(mkdtempSync(path.join(os.tmpdir(), "agentpack-task-usage-")));
+  const home = mkdtempSync(path.join(os.tmpdir(), "agentpack-usage-home-"));
+  t.after(() => { rmSync(dir, { recursive: true, force: true }); rmSync(home, { recursive: true, force: true }); });
+  initPack(dir);
+  const passport = startTask(dir, { title: "Usage task" });
+  const created = Date.parse(passport.createdAt);
+  const before = new Date(created - 3_600_000).toISOString();
+  const after = new Date(created + 60_000).toISOString();
+  const user = (id: string, at: string) => ({ type: "user", promptId: id, timestamp: at, message: { content: "PRIVATE_USER" } });
+  const write = (file: string, rows: unknown[]) => {
+    mkdirSync(path.dirname(file), { recursive: true });
+    writeFileSync(file, rows.map(row => JSON.stringify(row)).join("\n") + "\n");
+    return file;
+  };
+  const project = path.join(home, "claude", "projects", path.resolve(passport.worktree).replace(/[^A-Za-z0-9]/gu, "-"));
+  const main = write(path.join(project, "main.jsonl"), [user("p1", before), claude("a1", 20, before), user("p2", before),
+    claude("a2", 20, after), user("p3", after), claude("a3", 20, after)]);
+  const child = write(path.join(project, "main", "subagents", "agent-x.jsonl"), [claude("b1", 20, after)]);
+  write(path.join(project, "old.jsonl"), [user("p0", before), claude("c1", 20, before)]);
+  const day = new Date(created);
+  const codexDay = path.join(home, "codex", "sessions", String(day.getFullYear()), String(day.getMonth() + 1).padStart(2, "0"), String(day.getDate()).padStart(2, "0"));
+  const meta = (cwd: string) => ({ type: "session_meta", timestamp: after, payload: { id: "session", cwd } });
+  const codexFile = write(path.join(codexDay, "rollout-a.jsonl"), [meta(dir), started("turn1", after), context, codex("r1", usage, after), completed("turn1")]);
+  write(path.join(codexDay, "rollout-other.jsonl"), [meta(home), started("turn1", after), context, codex("r9", usage, after)]);
+  const env = { ...process.env, CLAUDE_CONFIG_DIR: path.join(home, "claude"), CODEX_HOME: path.join(home, "codex") };
+  const run = (...args: string[]) => spawnSync(process.execPath, [cli, "usage", ...args], { cwd: dir, encoding: "utf8", env });
+
+  const found = findUsageCandidates(dir, passport.id, env);
+  assert.deepEqual(found.candidates.map(c => [c.client, path.basename(c.file), c.subagent, c.windowRequests, c.requests, c.turns]), [
+    ["claude", "main.jsonl", false, 2, 3, "2:"],
+    ["codex", "rollout-a.jsonl", false, 1, 1, null],
+    ["claude", "agent-x.jsonl", true, 1, 1, null]
+  ]);
+
+  const listed = run("report");
+  assert.equal(listed.status, 0);
+  assert.match(listed.stdout, /No usage sources linked yet/);
+  assert.match(listed.stdout, /1\. main \(claude\)/);
+  assert.match(listed.stdout, /suggested: turns 2:/);
+  assert.doesNotMatch(listed.stdout, /old\.jsonl|rollout-other|PRIVATE/);
+  assert.equal(JSON.parse(run("report", "--json").stdout).kind, "task-usage-candidates");
+  assert.match(run("link", "--coverage", "partial", "--note", "Main only").stderr, /link sources before declaring coverage/);
+  assert.equal(existsSync(taskUsageManifestPath(dir, passport.id)), false, "listing does not link");
+
+  const linked = run("link", "--pick", "main,2", "--phase", "implementation");
+  assert.equal(linked.status, 0, linked.stderr);
+  assert.match(linked.stdout, /Linked to task_.*: main\.jsonl, rollout-a\.jsonl/);
+  const manifest = JSON.parse(readFileSync(taskUsageManifestPath(dir, passport.id), "utf8"));
+  assert.deepEqual(manifest.sources.map((source: { file: string; turns?: string }) => [source.file, source.turns]), [[realpathSync(main), "2:"], [realpathSync(codexFile), undefined]]);
+  const report = JSON.parse(run("report", "--task", passport.id, "--json").stdout);
+  assert.equal(report.kind, "task-usage-report");
+  assert.equal(report.taskId, passport.id);
+  assert.equal(report.requests, 3);
+  assert.equal(report.coverage.status, "partial");
+  assert.deepEqual(JSON.parse(run("report", "--json").stdout), report, "current task is the default");
+
+  assert.equal(run("link", "--client", "claude", "--file", main, "--turns", "3").status, 0);
+  assert.equal(JSON.parse(run("report", "--json").stdout).requests, 2, "re-linking a file replaces its selection");
+  assert.match(run("unlink", "--file", main).stdout, /1 linked source\(s\) remain/);
+  for (const args of [["link", "--pick", "9"], ["link", "--pick", "unknown-session"], ["link", "--pick", "1", "--turns", "2"],
+    ["link", "--coverage", "declared-complete"], ["link", "--phase", "review"], ["link", "--client", "claude", "--file", main, "--file", child],
+    ["report", "--turns", "1"], ["report", "--task", "task_missing"], ["unlink", "--file", main]]) {
+    const failed = run(...args);
+    assert.equal(failed.status, 1, args.join(" "));
+  }
+  assert.match(run("report", "--task", "Fix retries").stderr, /descriptive label use --client\/--file/);
+
+  const savedEnv = { claude: process.env.CLAUDE_CONFIG_DIR, codex: process.env.CODEX_HOME };
+  process.env.CLAUDE_CONFIG_DIR = env.CLAUDE_CONFIG_DIR;
+  process.env.CODEX_HOME = env.CODEX_HOME;
+  const input = new PassThrough();
+  const output = new PassThrough();
+  t.after(() => {
+    input.destroy(); output.destroy();
+    if (savedEnv.claude === undefined) delete process.env.CLAUDE_CONFIG_DIR; else process.env.CLAUDE_CONFIG_DIR = savedEnv.claude;
+    if (savedEnv.codex === undefined) delete process.env.CODEX_HOME; else process.env.CODEX_HOME = savedEnv.codex;
+  });
+  startMcpServer(dir, input, output);
+  let id = 0;
+  const call = (name: string, args: Record<string, unknown>): Promise<{ result?: { content: Array<{ text: string }> }; error?: unknown }> => new Promise(resolve => {
+    output.once("data", data => resolve(JSON.parse(data.toString())));
+    input.write(JSON.stringify({ jsonrpc: "2.0", id: ++id, method: "tools/call", params: { name, arguments: args } }) + "\n");
+  });
+  const candidates = await call("usage_link", { json: true });
+  assert.deepEqual(JSON.parse(candidates.result!.content[0]!.text).candidates.map((c: { linked: boolean }) => c.linked), [false, true, false]);
+  const pickedChild = await call("usage_link", { pick: ["agent-x"], phase: "subagent" });
+  assert.match(pickedChild.result!.content[0]!.text, /Linked to task_.*: agent-x\.jsonl/);
+  assert.ok((await call("usage_link", { coverage: "declared-complete", note: "Main, Codex and subagent sessions" })).result);
+  const mcpReport = JSON.parse((await call("usage_report", { task: passport.id, json: true })).result!.content[0]!.text);
+  assert.deepEqual(mcpReport, JSON.parse(run("report", "--json").stdout));
+  assert.equal(mcpReport.requests, 2);
+  assert.equal(mcpReport.coverage.status, "declared-complete");
+  for (const [name, args] of [["usage_report", { from: time }], ["usage_link", { pick: [1], file: main }], ["usage_link", { remove: child, phase: "x" }], ["usage_link", { coverage: "partial" }]] as const) {
+    assert.ok((await call(name, args)).error, JSON.stringify(args));
+  }
+  assert.match((await call("usage_link", { remove: child })).result!.content[0]!.text, /1 linked source/);
+
+  closeCurrentTask(dir);
+  const passportFile = path.join(dir, ".agentpack", "tasks", passport.id, "passport.json");
+  const closedAt = new Date(created + 120_000).toISOString();
+  writeFileSync(passportFile, JSON.stringify({ ...JSON.parse(readFileSync(passportFile, "utf8")), closedAt }));
+  writeFileSync(codexFile, readFileSync(codexFile, "utf8") + JSON.stringify(codex("r2", usage, new Date(created + 180_000).toISOString())) + "\n");
+  const closed = JSON.parse(run("report", "--task", passport.id, "--json").stdout);
+  assert.equal(closed.requests, 1, "requests after the task closed are excluded");
+  assert.ok(closed.warnings.some((warning: string) => warning.includes(closedAt)));
+
+  const tui = loadTuiTaskUsage(buildTuiModel(dir), { passport, current: false }).join("\n");
+  assert.match(tui, new RegExp(`Task usage: ${passport.id}`));
+  assert.match(tui, /Requests: 1/);
+  assert.doesNotMatch(tui, /PRIVATE/);
 });

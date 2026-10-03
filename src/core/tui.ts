@@ -4,6 +4,8 @@ import { resolveRegularFileWithin } from "./hash.js";
 import { redactForRoot } from "./redaction.js";
 import { getPackPath } from "./store.js";
 import { readPassport } from "./tasks.js";
+import { findUsageCandidates, formatUsageCandidates } from "./usage-discovery.js";
+import { buildLinkedTaskUsageReport, formatTaskUsageReport, hasLinkedTaskUsage } from "./usage-manifest.js";
 import type { AgentpackEvent, TaskPassport } from "./types.js";
 
 const PREVIEW_BYTES = 12_000;
@@ -123,6 +125,19 @@ export function loadTuiTaskDetails(model: TuiModel, task: TuiTask): TuiTaskDetai
   return { timeline, evidence, warnings };
 }
 
+/** Read-only usage for the selected task: its linked report, or candidate sessions to link from the CLI. */
+export function loadTuiTaskUsage(model: TuiModel, task: TuiTask): string[] {
+  const id = task.passport.id;
+  try {
+    const text = hasLinkedTaskUsage(model.root, id)
+      ? formatTaskUsageReport(buildLinkedTaskUsageReport(model.root, id))
+      : formatUsageCandidates(findUsageCandidates(model.root, id));
+    return text.split("\n");
+  } catch (error) {
+    return [`Usage unavailable: ${message(error)}`, `Inspect: agentpack usage report --task ${id}`];
+  }
+}
+
 /** Loads bounded content from the selected global checkpoint without inferring a task relationship. */
 export function loadTuiCheckpointDetails(model: TuiModel, id: string): TuiCheckpointDetails {
   const warnings: string[] = [];
@@ -175,6 +190,7 @@ export function runTuiSession(model: TuiModel, runtime: TuiRuntime): () => void 
   const colors = terminalColorsEnabled();
   let cachedDetails: { taskId: string; value: TuiTaskDetails } | undefined;
   let cachedCheckpoint: { id: string; value: TuiCheckpointDetails } | undefined;
+  let cachedUsage: { taskId: string; value: string[] } | undefined;
   const visible = () => visibleTasks(model, navigation.query);
   const detailFor = (task: TuiTask): TuiTaskDetails => {
     if (cachedDetails?.taskId === task.passport.id) return cachedDetails.value;
@@ -186,6 +202,12 @@ export function runTuiSession(model: TuiModel, runtime: TuiRuntime): () => void 
     if (cachedCheckpoint?.id === id) return cachedCheckpoint.value;
     const loaded = loadTuiCheckpointDetails(model, id);
     cachedCheckpoint = { id, value: loaded };
+    return loaded;
+  };
+  const usageFor = (task: TuiTask): string[] => {
+    if (cachedUsage?.taskId === task.passport.id) return cachedUsage.value;
+    const loaded = loadTuiTaskUsage(model, task);
+    cachedUsage = { taskId: task.passport.id, value: loaded };
     return loaded;
   };
   const draw = () => {
@@ -201,7 +223,7 @@ export function runTuiSession(model: TuiModel, runtime: TuiRuntime): () => void 
     if ((navigation.view === 3 || navigation.view === 4) && !navigation.drillDown && itemCount > 0) {
       navigation.offset = visibleOffset(itemBodyIndex(navigation.itemSelected, itemPrefixRows), navigation.offset);
     }
-    const labels = ["Tasks", "Passport", "Timeline", "Evidence", "Checkpoints", "Health"];
+    const labels = ["Tasks", "Passport", "Timeline", "Evidence", "Checkpoints", "Health", "Usage"];
     let body: string[];
     if (navigation.view === 0) {
       body = tasks.length ? tasks.map((item, index) => taskListLine(item, index === navigation.selected, false)) : ["No matching task."];
@@ -225,6 +247,8 @@ export function runTuiSession(model: TuiModel, runtime: TuiRuntime): () => void 
     } else if (navigation.view === 2) {
       const loaded = detailFor(task);
       body = [...(loaded.timeline.length ? loaded.timeline.map(eventLine) : ["No task timeline events."]), ...loaded.warnings.map((warning) => `[warning] ${warning}`)];
+    } else if (navigation.view === 6) {
+      body = usageFor(task);
     } else if (navigation.drillDown && evidence[navigation.itemSelected]) {
       body = evidenceDetailLines(task, evidence[navigation.itemSelected]!, loadedTask?.warnings || []);
     } else {
@@ -296,6 +320,11 @@ export function runTuiSession(model: TuiModel, runtime: TuiRuntime): () => void 
           : navigation.view === 4 ? model.checkpoints.length : 0;
         const itemPrefixRows = navigation.view === 3 ? warningSummaryLines(loaded?.warnings || []).length : navigation.view === 4 ? 1 : 0;
         navigation = reduceTuiNavigation(navigation, key, tasks.length, itemCount, itemPrefixRows);
+      }
+      const usageTask = navigation.view === 6 ? visible()[navigation.selected] : undefined;
+      if (usageTask && cachedUsage?.taskId !== usageTask.passport.id) {
+        // Discovery reads local transcripts synchronously; show progress before it blocks.
+        runtime.stdout.write(`\x1b[H\x1b[2J${displayLine(`Loading usage for ${usageTask.passport.id}…`)}`);
       }
       draw();
     } catch {
@@ -370,13 +399,13 @@ export function reduceTuiNavigation(state: TuiNavigation, key: string, taskCount
       next.offset = visibleOffset(itemBodyIndex(next.itemSelected, itemPrefixRows), next.offset);
     } else next.offset = Math.max(0, next.offset - 1);
   } else if (key === "\t") {
-    next.view = (next.view + 1) % 6;
+    next.view = (next.view + 1) % 7;
     next.itemSelected = 0;
     next.drillDown = false;
     next.offset = 0;
   } else if (key === "\r") {
     if ((next.view === 3 || next.view === 4) && itemCount > 0) next.drillDown = true;
-    else next.view = Math.min(next.view + 1, 5);
+    else next.view = Math.min(next.view + 1, 6);
     next.offset = 0;
   } else if (key === "\u001b" || key === "\u007f") {
     if (next.drillDown) next.drillDown = false;

@@ -88,6 +88,7 @@ try {
   assertMatch(invalidPresetError, /Unknown budget preset: small/, "load_context rejects unknown presets");
 
   assertIncludes(toolNames, "usage_report", "tools/list includes usage_report");
+  assertIncludes(toolNames, "usage_link", "tools/list includes usage_link");
   writeFileSync(path.join(workspace, "usage.jsonl"), [
     { type: "event_msg", timestamp: "2026-10-03T10:00:00Z", payload: { type: "task_started", turn_id: "turn1" } },
     { type: "turn_context", payload: { turn_id: "turn1", model: "smoke-model" } },

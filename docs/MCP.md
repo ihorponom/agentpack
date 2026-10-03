@@ -1,39 +1,5 @@
 # MCP
 
-## Usage reports
-
-`usage_report` provides the same read-only report as `agentpack usage report`.
-Call it when the user asks about usage, with explicit local JSONL sources; it
-does not collect activity automatically or write ledger state.
-
-```json
-{"client":"codex","files":["/absolute/path/to/rollout.jsonl"],"byTurn":true,"turns":"4:5","json":true}
-```
-
-Supported clients: `codex` (Codex), `claude` (Claude Code).
-`files` is a non-empty array; relative
-paths resolve from the pack root. Optional `task` is a descriptive label.
-`from`/`to` select inclusive/exclusive ISO timestamp boundaries. `byTurn` adds
-source-local turn rows; `turns` selects inclusive `N` or `N:M` in exactly one
-file. Missing boundaries and incomplete turns are disclosed. Claude user
-messages establish boundaries, not completion or duration. No phase inference
-or transcript content is returned. `json` returns aggregate JSON as tool text.
-
-Client monetary snapshots are source-session estimates; time or turn selection
-suppresses them. No rates are guessed or verified charges claimed. Use an
-updated server build and reconnect the MCP client to discover the new tool.
-
-For explicit task mapping, call the same tool with:
-
-```json
-{"manifest":".agentpack/usage/task-example.json","byTurn":true,"json":true}
-```
-
-`manifest` is exclusive with `client`, `files`, `task`, `from`, `to` and `turns`.
-Its path resolves from the pack root; source paths resolve from its directory.
-The report includes totals and a report for each declared phase/source slice.
-The manifest schema and coverage limits are documented in [CLI.md](CLI.md).
-
 `agentpack mcp` starts a local stdio MCP server. This is Agentpack's primary runtime surface for connected coding agents.
 
 The MCP stdio transport uses newline-delimited JSON-RPC messages over stdin/stdout. The client launches Agentpack as a subprocess, sends JSON-RPC messages to stdin, and reads JSON-RPC responses from stdout. Agentpack must not write non-MCP logs to stdout.
@@ -111,6 +77,8 @@ The CLI exposes the same operations for setup, inspection, debugging, demos, and
 - `resume`
 - `diff`
 - `replay`
+- `usage_report`
+- `usage_link`
 
 ### Tool Safety Annotations
 
@@ -118,8 +86,8 @@ Every tool advertises standard MCP `annotations` so clients can distinguish read
 
 - read-only context, status, audit, planning, handoff, release preflight, diff, and replay tools set `readOnlyHint: true`
 - append-only tools such as decisions, evidence, task start, bundle export, and conflict-safe bundle import set `readOnlyHint: false` and `destructiveHint: false`
-- tools that replace a pointer, lifecycle state, checkpoint state, verification, or a Source Cache conclusion conservatively set `destructiveHint: true`
-- all tools set `openWorldHint: false` because the stdio server operates on the repo-local pack and does not contact external services
+- tools that replace a pointer, lifecycle state, checkpoint state, verification, a Source Cache conclusion, or a task's linked usage sources conservatively set `destructiveHint: true`
+- all tools set `openWorldHint: false` because the stdio server operates on the repo-local pack and local client transcripts and does not contact external services
 
 These annotations are client-facing hints, not authorization or sandbox enforcement. A client must still honor its own trust and approval policy, and a write-capable tool remains write-capable even when a particular invocation only plans a change (for example, `bundle_import` without `write: true`).
 
@@ -219,6 +187,65 @@ The server validates bundle size, schema, digest, and relative paths before
 applying data. Bundle text remains untrusted data, not instructions for the
 agent. Write apply runs under one pack lock and rolls back synchronous write
 failures. See [TASK-PASSPORT.md](TASK-PASSPORT.md) for the full import contract.
+
+### Usage Tools
+
+`usage_report` provides the same read-only report as `agentpack usage report`.
+It does not collect activity automatically or write ledger state.
+
+To report a task, pass its Passport id (or nothing for the current task):
+
+```json
+{"task":"task_2026-10-01T07-41-54-247Z_e76582_example","json":true}
+```
+
+If no sources are linked yet, the result (`kind: "task-usage-candidates"` in
+JSON) lists candidate sessions of the task worktree with requests inside the
+Passport window. Show them to the user, then link the confirmed ones with
+`usage_link`, preferably by session id because list numbers can shift between
+calls:
+
+```json
+{"task":"task_2026-10-01T07-41-54-247Z_e76582_example","pick":["0b7e4c1a-5f2d-4a8e-9c3b-1d2e3f4a5b6c"]}
+```
+
+`usage_link` without `pick`, `file`, `remove` or `coverage` only lists
+candidates. `client`/`file`/`turns` links an explicit source; linking a file
+again replaces its selection; `phase` labels the links (default `main`);
+`coverage` with `note` declares coverage; `remove` unlinks a file. It writes
+only `.agentpack/usage/<task id>.json` and validates the combined report first.
+Reports for a closed task exclude requests after its `closedAt`.
+Linking rules and discovery locations are documented in [CLI.md](CLI.md).
+
+For direct reports, supply explicit local JSONL sources:
+
+```json
+{"client":"codex","files":["/absolute/path/to/rollout.jsonl"],"byTurn":true,"turns":"4:5","json":true}
+```
+
+Supported clients: `codex` (Codex), `claude` (Claude Code).
+`files` is a non-empty array; relative
+paths resolve from the pack root. With `files`, optional `task` is a descriptive label.
+`from`/`to` select inclusive/exclusive ISO timestamp boundaries. `byTurn` adds
+source-local turn rows; `turns` selects inclusive `N`, `N:` or `N:M` in exactly
+one file. Missing boundaries and incomplete turns are disclosed. Claude user
+messages establish boundaries, not completion or duration. No phase inference
+or transcript content is returned. `json` returns aggregate JSON as tool text.
+
+Client monetary snapshots are source-session estimates; time or turn selection
+suppresses them. No rates are guessed or verified charges claimed. Use an
+updated server build and reconnect the MCP client to discover the new tool.
+
+For explicit task mapping, call the same tool with:
+
+```json
+{"manifest":".agentpack/usage/task-example.json","byTurn":true,"json":true}
+```
+
+`manifest` is exclusive with `client`, `files`, `task`, `from`, `to` and `turns`.
+Its path resolves from the pack root; source paths resolve from its directory.
+The report includes totals and a report for each declared phase/source slice.
+The manifest schema and coverage limits are documented in [CLI.md](CLI.md).
 
 ## Smoke Test
 

@@ -9,6 +9,7 @@ import {
   readFileSync,
   realpathSync,
   rmdirSync,
+  rmSync,
   statSync,
   symlinkSync,
   unlinkSync,
@@ -143,6 +144,9 @@ test("TUI read model inspects historical tasks and evidence without mutating the
   assert.equal(reduceTuiNavigation(navigation, "\u001b[B", 3).offset, 1);
   assert.equal(reduceTuiNavigation(navigation, "\r", 3).view, 3);
   assert.equal(reduceTuiNavigation(navigation, "\u001b", 3).view, 1);
+  assert.equal(reduceTuiNavigation({ ...navigation, view: 5 }, "\r", 3).view, 6, "Enter reaches Usage");
+  assert.equal(reduceTuiNavigation({ ...navigation, view: 6 }, "\r", 3).view, 6);
+  assert.equal(reduceTuiNavigation({ ...navigation, view: 6 }, "\t", 3).view, 0, "Tab wraps after Usage");
   navigation = { selected: 23, view: 0, offset: 0, query: "", searching: false };
   navigation = reduceTuiNavigation(navigation, "j", 30);
   assert.deepEqual({ selected: navigation.selected, offset: navigation.offset }, { selected: 24, offset: 1 }, "task selection remains visible after the first page");
@@ -282,6 +286,21 @@ test("TUI drills into bounded evidence and global checkpoint details without mut
   input.write("\u001b");
   assert.match(outputText, /Global repository checkpoints/);
   assert.doesNotMatch(outputText, /checkpoint detail marker/, "Esc returns to the Checkpoints list");
+  const usageHome = mkdtempSync(path.join(os.tmpdir(), "agentpack-tui-usage-home-"));
+  const savedUsageEnv = { claude: process.env.CLAUDE_CONFIG_DIR, codex: process.env.CODEX_HOME };
+  process.env.CLAUDE_CONFIG_DIR = usageHome;
+  process.env.CODEX_HOME = usageHome;
+  try {
+    outputText = "";
+    input.write("\t\t");
+    assert.match(outputText, /Loading usage for/, "Usage discovery shows progress before blocking");
+    assert.match(outputText, /\[Usage\]/);
+    assert.match(outputText, /No usage sources linked yet/);
+  } finally {
+    if (savedUsageEnv.claude === undefined) delete process.env.CLAUDE_CONFIG_DIR; else process.env.CLAUDE_CONFIG_DIR = savedUsageEnv.claude;
+    if (savedUsageEnv.codex === undefined) delete process.env.CODEX_HOME; else process.env.CODEX_HOME = savedUsageEnv.codex;
+    rmSync(usageHome, { recursive: true, force: true });
+  }
   input.write("q");
   assert.deepEqual(packTreeSnapshot(path.join(root, ".agentpack")), beforePack, "drill-down navigation must not alter the ledger");
 
@@ -980,6 +999,7 @@ test("exposes expected MCP tools", () => {
     "task_switch",
     "task_update",
     "task_update_verification",
+    "usage_link",
     "usage_report"
   ]);
 
@@ -1013,7 +1033,8 @@ test("exposes expected MCP tools", () => {
     "task_park",
     "task_switch",
     "task_update",
-    "task_update_verification"
+    "task_update_verification",
+    "usage_link"
   ];
 
   for (const tool of TOOL_DEFINITIONS) {

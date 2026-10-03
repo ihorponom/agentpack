@@ -1,6 +1,13 @@
 import { appendEvent, requirePackRoot } from "../core/store.js";
 import { buildUsageReport, formatUsageReport } from "../core/usage.js";
-import { buildTaskUsageReport, formatTaskUsageReport } from "../core/usage-manifest.js";
+import {
+  buildLinkedTaskUsageReport,
+  buildTaskUsageReport,
+  formatTaskUsageReport,
+  hasLinkedTaskUsage,
+  usageTaskId
+} from "../core/usage-manifest.js";
+import { findUsageCandidates, formatUsageCandidates, formatUsageLinkResult, runUsageLink, type UsageLinkRequest } from "../core/usage-discovery.js";
 import { buildResume } from "../core/resume.js";
 import { createCheckpoint, diffCheckpoints } from "../core/checkpoints.js";
 import {
@@ -116,14 +123,14 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
   {
     name: "usage_report",
     annotations: READ_ONLY_TOOL_ANNOTATIONS,
-    description: "Report local Codex/Claude Code usage from explicitly supplied JSONL files when the user asks about work usage. Supply manifest for explicit task/phase selections and declared coverage, or client/files for a direct report. Same read-only report as CLI usage report; no collection, rates or ledger writes. Optional byTurn shows boundaries and turns selects N or N:M in one file. Monetary snapshots are source-session estimates, unavailable for filtered ranges. Missing child sources are not discovered. Supported clients: Codex and Claude Code.",
+    description: "Report local Codex/Claude Code usage when the user asks about work usage. Pass task (Task Passport id; omit for the current task) to report the sources linked to it; if none are linked, the result lists candidate sessions of the task worktree in the Passport window to link with usage_link. Alternatively supply manifest, or client/files for a direct report. Same read-only report as CLI usage report; no collection, rates or ledger writes. Optional byTurn shows boundaries and turns selects N, N: or N:M in one file. Monetary snapshots are source-session estimates, unavailable for filtered ranges. Supported clients: Codex and Claude Code.",
     inputSchema: {
       type: "object", additionalProperties: false,
       properties: {
         manifest: { type: "string", minLength: 1, description: "Local task usage manifest; exclusive with direct source options. Paths inside it resolve from its directory." },
         client: { type: "string", enum: ["codex", "claude"] },
         files: { type: "array", minItems: 1, items: { type: "string", minLength: 1 }, description: "Explicit local JSONL paths; relative paths resolve from the pack root." },
-        task: { type: "string", description: "Descriptive label; does not modify a Passport." },
+        task: { type: "string", description: "Task Passport id whose linked sources to report (omit for the current task). With client/files it is only a descriptive label." },
         from: { type: "string", description: "Inclusive ISO timestamp with timezone." },
         to: { type: "string", description: "Exclusive ISO timestamp with timezone." },
         byTurn: { type: "boolean", description: "Include source-local turn rows." },
@@ -131,8 +138,29 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
         json: { type: "boolean", description: "Return aggregate report JSON as text instead of human-readable text." }
       }, oneOf: [
         { required: ["manifest"], not: { anyOf: ["client", "files", "task", "from", "to", "turns"].map(key => ({ required: [key] })) } },
-        { required: ["client", "files"], not: { required: ["manifest"] } }
+        { required: ["client", "files"], not: { required: ["manifest"] } },
+        { not: { anyOf: ["manifest", "client", "files", "from", "to", "turns"].map(key => ({ required: [key] })) } }
       ]
+    }
+  },
+  {
+    name: "usage_link",
+    annotations: UPDATING_TOOL_ANNOTATIONS,
+    description: "Link Codex/Claude Code session transcripts to a Task Passport so usage_report can report the task by id. Without pick, file, remove or coverage it only lists candidate sessions of the task worktree with requests in the Passport window. Show candidates to the user and link only what they confirm: pick links suggested selections by session id (numbers can shift between calls); client/file/turns links an explicit one. Re-linking a file replaces its selection; remove unlinks a file. Writes .agentpack/usage/<task id>.json only.",
+    inputSchema: {
+      type: "object", additionalProperties: false,
+      properties: {
+        task: { type: "string", minLength: 1, description: "Task Passport id; omit for the current task." },
+        pick: { type: "array", minItems: 1, items: { oneOf: [{ type: "string", minLength: 1 }, { type: "integer", minimum: 1 }] }, description: "Candidate session ids (preferred) or numbers from the listing to link with their suggested selection." },
+        client: { type: "string", enum: ["codex", "claude"] },
+        file: { type: "string", minLength: 1, description: "Explicit local JSONL path; relative paths resolve from the pack root." },
+        turns: { type: "string", description: "Inclusive N, N: (to the end) or N:M turn selection for file." },
+        phase: { type: "string", minLength: 1, description: "Phase label for the linked sources. Default main." },
+        coverage: { type: "string", enum: ["partial", "declared-complete"], description: "Declared coverage; requires note." },
+        note: { type: "string", minLength: 1, description: "Coverage note; requires coverage." },
+        remove: { type: "string", minLength: 1, description: "Linked JSONL path to unlink; exclusive with other link options." },
+        json: { type: "boolean", description: "Return JSON instead of human-readable text." }
+      }
     }
   },
   {
@@ -932,7 +960,32 @@ function isImplementation(value: unknown): boolean {
   return isObject(value) && typeof value.name === "string" && typeof value.version === "string";
 }
 
+function usageLinkTool(root: string, args: Record<string, unknown>): unknown {
+  const allowed = new Set(["task", "pick", "client", "file", "turns", "phase", "coverage", "note", "remove", "json"]);
+  if (Object.keys(args).some(key => !allowed.has(key))) throw new Error("Unknown usage_link argument");
+  const request: UsageLinkRequest = {};
+  for (const key of ["client", "file", "turns", "phase", "coverage", "note", "remove"] as const) {
+    const value = args[key];
+    if (value === undefined) continue;
+    if (typeof value !== "string" || !value.trim()) throw new Error(`${key} requires a non-empty string`);
+    request[key] = value;
+  }
+  if (args.task !== undefined && (typeof args.task !== "string" || !args.task.trim())) throw new Error("task requires a non-empty string");
+  if (args.json !== undefined && typeof args.json !== "boolean") throw new Error("json requires a boolean");
+  if (args.pick !== undefined) {
+    if (!Array.isArray(args.pick) || !args.pick.length || args.pick.some(value => !(Number.isSafeInteger(value) && (value as number) >= 1) && !(typeof value === "string" && value.trim()))) {
+      throw new Error("pick requires candidate numbers or session ids");
+    }
+    request.pick = args.pick as Array<number | string>;
+  }
+  const result = runUsageLink(root, usageTaskId(root, args.task as string | undefined), request, root);
+  return toolText(args.json ? JSON.stringify(result, null, 2) : formatUsageLinkResult(result));
+}
+
 function callTool(root: string, name: string, args: Record<string, unknown>, warnings: McpWarningState): unknown {
+  if (name === "usage_link") {
+    return usageLinkTool(root, args);
+  }
   if (name === "usage_report") {
     const allowed = new Set(["client", "files", "task", "from", "to", "byTurn", "turns", "json", "manifest"]);
     if (Object.keys(args).some(key => !allowed.has(key))) throw new Error("Unknown usage_report argument");
@@ -942,6 +995,17 @@ function callTool(root: string, name: string, args: Record<string, unknown>, war
       if (["client", "files", "task", "from", "to", "turns"].some(key => args[key] !== undefined)) throw new Error("manifest cannot be combined with direct source options");
       const report = buildTaskUsageReport(args.manifest, root, args.byTurn === true);
       return toolText(args.json ? JSON.stringify(report, null, 2) : formatTaskUsageReport(report));
+    }
+    if (args.client === undefined && args.files === undefined) {
+      if (["from", "to", "turns"].some(key => args[key] !== undefined)) throw new Error("Task usage reports use linked turns; from, to and turns require client and files");
+      if (args.task !== undefined && (typeof args.task !== "string" || !args.task.trim())) throw new Error("task requires a non-empty string");
+      const taskId = usageTaskId(root, args.task as string | undefined);
+      if (hasLinkedTaskUsage(root, taskId)) {
+        const report = buildLinkedTaskUsageReport(root, taskId, args.byTurn === true);
+        return toolText(args.json ? JSON.stringify(report, null, 2) : formatTaskUsageReport(report));
+      }
+      const candidates = findUsageCandidates(root, taskId);
+      return toolText(args.json ? JSON.stringify(candidates, null, 2) : formatUsageCandidates(candidates));
     }
     if (args.client !== "codex" && args.client !== "claude") throw new Error("usage_report requires client codex or claude");
     if (!Array.isArray(args.files) || !args.files.length || args.files.some(file => typeof file !== "string" || !file.trim())) throw new Error("usage_report requires explicit files");

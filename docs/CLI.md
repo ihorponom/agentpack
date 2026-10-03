@@ -1,101 +1,5 @@
 # Manual CLI and Fallback
 
-## Local usage reports
-
-```bash
-agentpack usage report --client codex --file /path/to/rollout.jsonl --task "Fix retries"
-agentpack usage report --client claude --file /path/to/session.jsonl --json
-agentpack usage report --client codex --file /path/to/rollout.jsonl --by-turn
-agentpack usage report --client codex --file /path/to/rollout.jsonl --turns 4:5 --by-turn
-agentpack usage report --client codex --file /path/to/session.jsonl \
-  --from 2026-10-02T09:00:00Z --to 2026-10-02T10:00:00Z
-```
-
-This read-only command works without `agentpack init`. It reads only explicitly
-supplied local JSONL files (maximum 64 MiB each), prints aggregate usage and
-provenance, and writes no files or ledger records. Repeat `--file` for additional
-sources from the same client, including explicitly identified child sessions.
-The task label is descriptive; it does not activate or modify a Task Passport.
-
-`--by-turn` adds source-local turn rows: start time, request count, token
-categories, completion and available duration. `--turns N` or `--turns N:M`
-selects an inclusive range and requires exactly one source file. A turn is a
-user interaction, not an individual model request or an automatically inferred
-work phase. Codex boundaries use client start/complete records; Claude uses
-recorded user-message boundaries, excluding tool results and metadata messages.
-Missing boundaries are disclosed. Incomplete Codex turns have no duration;
-Claude completion/duration remain unknown. Durations include tools and waits,
-and are suppressed when timestamp filters select only a portion of a turn.
-Session monetary estimates are also suppressed for turn selection.
-
-Connected agents can request the same report using the read-only `usage_report`
-MCP tool with `client`, `files`, `byTurn`, `turns`, `from`, `to`, `task`, and
-`json`. CLI and MCP use the same calculation and formatting functions.
-
-Supported records are Codex `token_usage_record` and Claude Code assistant
-messages with usage counters. Repeated request/message identifiers are
-deduplicated; conflicting counters fail rather than inventing totals. Claude
-content-block snapshots retain the highest output count for a message. Codex
-cumulative counters are not added again; unbounded source totals are checked
-against the final available thread counter, including reasoning. Missing
-reasoning counters make the full comparison unavailable. Counter resets or
-incomplete sources are reported as mismatches. Reports expose malformed/invalid record
-counts without copying their contents.
-
-Input includes cache read/write; reasoning, when supplied, is a subset of
-output. The report preserves these categories and groups requests by model.
-Missing reasoning counters remain unknown. `--from` is inclusive and `--to`
-exclusive, using usage-record timestamps with an explicit timezone. Records
-without usable timestamps are omitted and counted when a boundary is supplied.
-These timestamps select request records, not continuous execution-time billing.
-
-Claude `cost-state` snapshots are shown separately per source as client-session
-estimates when pricing is known. They can cover more work than the visible
-message counters and must not be summed across overlapping sessions. A time
-filter suppresses session estimates because the importer cannot attribute
-cumulative cost to that range. Actual charges remain unknown. No model rates
-are guessed or requested from the user.
-
-Supply the sources that define your work boundary: a transcript alone does not
-prove whole-task coverage or completion. Child sessions and other clients are
-not discovered automatically. Supported clients: Codex and Claude Code.
-No account connections, background collection or telemetry are required.
-
-```bash
-agentpack usage report --manifest .agentpack/usage/task-example.json --by-turn
-```
-
-`--manifest` is exclusive with `--client`, `--file`, `--task`, `--from`, `--to`
-and `--turns`. It accepts `--json` and `--by-turn`.
-
-Task mapping uses an explicit local manifest:
-
-```json
-{
-  "version": 1,
-  "taskId": "task_example",
-  "coverage": { "status": "partial", "note": "Main session only; separate reviews excluded" },
-  "sources": [
-    { "client": "codex", "file": "/absolute/path/to/rollout.jsonl", "turns": "4:5", "phase": "implementation" },
-    { "client": "claude", "file": "/absolute/path/to/review.jsonl", "phase": "review" }
-  ]
-}
-```
-
-Each source selects one file and optionally inclusive `N` or `N:M` turns.
-Omitting `turns` selects the whole source. Relative source paths resolve from
-the manifest directory. Use separate entries for disjoint ranges or phases;
-requests appearing in multiple entries are rejected, including copied exports.
-The manifest accepts up to 32 selections and 1 MiB. Sources retain the existing
-64 MiB limit. Source hashes identify the bytes read; reports never include
-transcript content or request identities.
-
-Coverage is the author's declaration: `partial` or `declared-complete`, with a
-required explanatory note. It is not proof of completeness, task completion,
-or quality. No boundaries are inferred from Passport dates;
-`taskId` is an explicit identity and does not read or modify the Passport.
-Session monetary estimates remain separate and are not summed as task cost.
-
 ## Default workflow
 
 Agentpack's default workflow is MCP-connected: generated project instructions guide Codex, Claude Code, Cursor, and other MCP clients to load context, record durable task state, and checkpoint progress while they work.
@@ -157,8 +61,8 @@ agentpack source remove docs/old-file.md
 `ledger status [--json]` prints a read-only hygiene inventory: task counts, event/evidence/checkpoint/export sizes, referenced evidence counts, and source-cache status counts. It does not delete, compact, archive, or refresh anything. When conservative observable patterns merit human attention, its additive `ceremonyDiagnostics` output lists bounded review candidates; malformed retained event lines are skipped individually and reported in `warnings`.
 
 `tui` opens the dependency-free read-only Inspector for Tasks, Passport,
-task-scoped Timeline, linked Evidence, global Checkpoints, and ledger Health. It does
-not switch the current task or change ledger files. In a non-TTY it prints a
+task-scoped Timeline, linked Evidence, global Checkpoints, ledger Health, and
+task Usage. It does not switch the current task or change ledger files. In a non-TTY it prints a
 static snapshot and exits. Its initial inventory is bounded, and task Timeline
 and Evidence are loaded lazily. Health is an Inspector summary; use `ledger status`
 for exhaustive hygiene. See [TUI.md](TUI.md) for controls and safety bounds.
@@ -320,3 +224,147 @@ security boundaries, and collision behavior.
 - `16000`: large debugging session or review
 
 `--query` locally filters Source Cache: matched sources keep full summaries/snippets, and query-unrelated sources stay visible as compact path/status/topic/guidance stubs. Changed or missing query-unrelated records are warning stubs, not trusted conclusions; run `agentpack source status --changed --missing` for full stale details. If nothing matches, Agentpack keeps compact stubs for all recorded sources and tells you to rerun without `--query` when the full Source Cache is needed.
+
+## Local Usage Reports
+
+### By task
+
+```bash
+agentpack usage report                      # current task
+agentpack usage report --task <task-id>     # any Task Passport
+agentpack usage link --task <task-id>       # list candidate sessions
+agentpack usage link --task <task-id> --pick 1,3      # or session ids
+```
+
+`--task` defaults to the current Task Passport. Sources are linked once per
+task and stored in `.agentpack/usage/<task-id>.json`; after that the report
+needs only the id. While nothing is linked, `usage report` and `usage link`
+list candidate sessions: Claude Code transcripts (including subagents) and
+Codex rollouts recorded in the task worktree that have requests inside the
+Passport window (created to closed, or now while open). Each candidate shows a
+stable session id, its requests in the window and a suggested selection: the
+whole session, or the turns with requests in the window (`N:` means through the
+end of the session for an open task). Candidates are suggestions only; nothing
+is counted until `--pick` links them. `--pick` accepts list numbers or session
+ids; numbers can shift when sessions change between calls, so prefer ids in
+scripts. `--json` output carries `kind`: `task-usage-candidates` or
+`task-usage-report`.
+
+Discovery reads `$CLAUDE_CONFIG_DIR` (default `~/.claude`) and `$CODEX_HOME`
+(default `~/.codex`), parses only sessions updated after the task started,
+inspects at most 200 sessions per client and Codex day directories for at most
+the last 120 days of the window, and warns when a limit applies. Text output
+shortens the home directory to `~`; `--json` keeps absolute paths.
+
+```bash
+agentpack usage link --task <task-id> --client claude --file /path/to/session.jsonl --turns 4: --phase review
+agentpack usage link --task <task-id> --coverage declared-complete --note "Main and review sessions"
+agentpack usage unlink --task <task-id> --file /path/to/session.jsonl
+```
+
+Explicit `--client`/`--file`/`--turns` links one source. Linking a file again
+replaces its selection. `--phase` labels linked sources (default `main`).
+Coverage starts as `partial`; `--coverage` with `--note` declares it once
+sources are linked. Every link is validated against the combined report, so
+overlapping selections are rejected before the file is written. Reports for a
+closed task exclude requests after its `closedAt`, so a session that continues
+into the next task is not counted twice. `agentpack tui` shows the same report, or
+the candidates, in its Usage tab.
+
+### Direct sources
+
+```bash
+agentpack usage report --client codex --file /path/to/rollout.jsonl --task "Fix retries"
+agentpack usage report --client claude --file /path/to/session.jsonl --json
+agentpack usage report --client codex --file /path/to/rollout.jsonl --by-turn
+agentpack usage report --client codex --file /path/to/rollout.jsonl --turns 4:5 --by-turn
+agentpack usage report --client codex --file /path/to/session.jsonl \
+  --from 2026-10-02T09:00:00Z --to 2026-10-02T10:00:00Z
+```
+
+This read-only command works without `agentpack init`. It reads only explicitly
+supplied local JSONL files (maximum 64 MiB each), prints aggregate usage and
+provenance, and writes no files or ledger records. Repeat `--file` for additional
+sources from the same client, including explicitly identified child sessions.
+The task label is descriptive; it does not activate or modify a Task Passport.
+
+`--by-turn` adds source-local turn rows: start time, request count, token
+categories, completion and available duration. `--turns N`, `--turns N:` or
+`--turns N:M` selects an inclusive range (`N:` runs to the last turn) and
+requires exactly one source file. A turn is a
+user interaction, not an individual model request or an automatically inferred
+work phase. Codex boundaries use client start/complete records; Claude uses
+recorded user-message boundaries, excluding tool results and metadata messages.
+Missing boundaries are disclosed. Incomplete Codex turns have no duration;
+Claude completion/duration remain unknown. Durations include tools and waits,
+and are suppressed when timestamp filters select only a portion of a turn.
+Session monetary estimates are also suppressed for turn selection.
+
+Connected agents can request the same report using the read-only `usage_report`
+MCP tool with `client`, `files`, `byTurn`, `turns`, `from`, `to`, `task`, and
+`json`. With `client`/`files`, `task` is only a descriptive label. CLI and MCP use the same calculation and formatting functions.
+
+Supported records are Codex `token_usage_record` and Claude Code assistant
+messages with usage counters. Repeated request/message identifiers are
+deduplicated; conflicting counters fail rather than inventing totals. Claude
+content-block snapshots retain the highest output count for a message. Codex
+cumulative counters are not added again; unbounded source totals are checked
+against the final available thread counter, including reasoning. Missing
+reasoning counters make the full comparison unavailable. Counter resets or
+incomplete sources are reported as mismatches. Reports expose malformed/invalid record
+counts without copying their contents.
+
+Input includes cache read/write; reasoning, when supplied, is a subset of
+output. The report preserves these categories and groups requests by model.
+Missing reasoning counters remain unknown. `--from` is inclusive and `--to`
+exclusive, using usage-record timestamps with an explicit timezone. Records
+without usable timestamps are omitted and counted when a boundary is supplied.
+These timestamps select request records, not continuous execution-time billing.
+
+Claude `cost-state` snapshots are shown separately per source as client-session
+estimates when pricing is known. They can cover more work than the visible
+message counters and must not be summed across overlapping sessions. A time
+filter suppresses session estimates because the importer cannot attribute
+cumulative cost to that range. Actual charges remain unknown. No model rates
+are guessed or requested from the user.
+
+Supply the sources that define your work boundary: a transcript alone does not
+prove whole-task coverage or completion. Child sessions and other clients are
+not discovered automatically. Supported clients: Codex and Claude Code.
+No account connections, background collection or telemetry are required.
+
+```bash
+agentpack usage report --manifest .agentpack/usage/task-example.json --by-turn
+```
+
+`--manifest` is exclusive with `--client`, `--file`, `--task`, `--from`, `--to`
+and `--turns`. It accepts `--json` and `--by-turn`.
+
+Task mapping uses an explicit local manifest:
+
+```json
+{
+  "version": 1,
+  "taskId": "task_example",
+  "coverage": { "status": "partial", "note": "Main session only; separate reviews excluded" },
+  "sources": [
+    { "client": "codex", "file": "/absolute/path/to/rollout.jsonl", "turns": "4:5", "phase": "implementation" },
+    { "client": "claude", "file": "/absolute/path/to/review.jsonl", "phase": "review" }
+  ]
+}
+```
+
+Each source selects one file and optionally inclusive `N`, `N:` or `N:M` turns.
+Omitting `turns` selects the whole source. Relative source paths resolve from
+the manifest directory. Use separate entries for disjoint ranges or phases;
+requests appearing in multiple entries are rejected, including copied exports.
+The manifest accepts up to 32 selections and 1 MiB. Sources retain the existing
+64 MiB limit. Source hashes identify the bytes read; reports never include
+transcript content or request identities.
+
+Coverage is the author's declaration: `partial` or `declared-complete`, with a
+required explanatory note. It is not proof of completeness, task completion,
+or quality. Reports never infer boundaries from Passport dates; only
+`usage link` candidates use them as suggestions. `--manifest` does not read or
+modify the Passport.
+Session monetary estimates remain separate and are not summed as task cost.
