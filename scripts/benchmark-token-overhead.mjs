@@ -738,7 +738,7 @@ function externalReviewWaitScenario() {
       directionalMustInclude("objective", "external-review objective", "Preserve a commit-bound local PASS while an independent reviewer evaluates the same HEAD."),
       directionalMustInclude("constraints", "frozen-edit constraint", "Do not edit while the external review is pending"),
       directionalMustInclude("verification", "frozen passed verdict", "Verification: passed - Local commit-bound verification passed; independent review remains external."),
-      directionalMustInclude("verification", "verification evidence", `Evidence: ${evidenceId}`),
+      directionalMustInclude("verification", "verification evidence", `Verification evidence: ${evidenceId}`),
       directionalMustInclude("next_safe_action", "external-review resume action", "Resume after the independent review verdict"),
       directionalMustInclude("development_state", "parked lifecycle state", "Wait for independent verification [parked]")
     ]

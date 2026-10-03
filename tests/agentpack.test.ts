@@ -3018,6 +3018,16 @@ test("manages a current task passport", () => {
   assert.match(run(dir, ["task", "update", "--clear-next-actions", "--next", "Wire CLI", "--next", "Document task update flow"]), /Updated task .*/);
   assert.deepEqual(JSON.parse(run(dir, ["task", "passport"])).nextActions, ["Wire CLI", "Document task update flow"]);
 
+  const constraintsBefore = JSON.parse(run(dir, ["task", "passport"])).constraints as string[];
+  assert.ok(constraintsBefore.length > 0);
+  assert.match(run(dir, ["task", "update", "--replace-constraints", "--constraint", "Commit allowed after review"]), /Updated task .*/);
+  const replaced = JSON.parse(run(dir, ["task", "passport"]));
+  assert.deepEqual(replaced.constraints, ["Commit allowed after review"], "--replace-constraints replaces instead of appending");
+  const updateEvents = readFileSync(path.join(dir, ".agentpack", "tasks", replaced.id, "events.jsonl"), "utf8")
+    .trim().split("\n").map((line) => JSON.parse(line)).filter((event) => event.removedConstraints);
+  assert.deepEqual(updateEvents.at(-1)?.removedConstraints, constraintsBefore, "replaced constraints stay in task history");
+  assert.match(runExpectError(dir, ["task", "update", "--replace-constraints", "--constraint", "Commit allowed after review"]), /did not change/);
+
   run(dir, ["source", "add", "src/index.ts", "--summary", "Task passport fixture source."]);
   writeFileSync(path.join(dir, "src", "index.ts"), "export const value = 2;\n", "utf8");
   const staleAudit = run(dir, ["task", "audit"]);
@@ -3065,7 +3075,7 @@ test("manages a current task passport", () => {
   assert.doesNotMatch(run(dir, ["task", "audit"]), /Verification is/);
   const verifiedHandoff = run(dir, ["task", "handoff"]);
   assert.match(verifiedHandoff, /Verification: passed - Focused task passport checks passed\./);
-  assert.match(verifiedHandoff, /Evidence: evt_task_test/);
+  assert.match(verifiedHandoff, /Verification evidence: evt_task_test/);
   assert.match(verifiedHandoff, /Audit: No action-required task warnings\./);
 
   assert.match(run(dir, ["task", "finalize"]), /Finalized task .* \(passed\)/);
@@ -3231,7 +3241,8 @@ test("MCP inspection keeps actual-current gate context and redaction in legacy a
     assert.ok(output.includes(`Actual current task: ${current.id}`));
     assert.match(output, /Waiting for selected input/);
     assert.match(output, /Drift: none/);
-    assert.match(output, /## Gate Warnings \(actual current task\)/);
+    assert.match(output, /## Gate Warnings \(actual current task\)\nThese gate editing under the actual current task; this read-only inspection is not blocked\./);
+    assert.match(output, /Verification evidence: \(none linked\)/);
     assert.match(output, /Current task is parked/);
     assert.match(output, /Branch drift: task .*current branch is inspection-branch/);
     assert.doesNotMatch(output, /Branch drift unchanged|secret-inspection-token/);

@@ -69,6 +69,8 @@ export interface TaskUpdateOptions {
   writeScope?: string[];
   nextActions?: string[];
   clearNextActions?: boolean;
+  /** Replace constraints with the provided list; removed ones stay in the task-update event. */
+  replaceConstraints?: boolean;
   tags?: string[];
   risk?: TaskRisk;
 }
@@ -423,7 +425,7 @@ export function updateCurrentTaskPassport(root: string, options: TaskUpdateOptio
     const nextActions = uniqueStrings(options.nextActions || []);
     const tags = uniqueStrings(options.tags || []);
 
-    if (!options.clearNextActions && !hasTaskUpdate({ objective, constraints, writeScope, nextActions, tags }, options.risk)) {
+    if (!options.clearNextActions && !options.replaceConstraints && !hasTaskUpdate({ objective, constraints, writeScope, nextActions, tags }, options.risk)) {
       throw new Error("task update requires at least one non-empty field");
     }
 
@@ -431,7 +433,9 @@ export function updateCurrentTaskPassport(root: string, options: TaskUpdateOptio
     if (objective) {
       patch.objective = objective;
     }
-    if (constraints.length > 0) {
+    if (options.replaceConstraints) {
+      patch.constraints = constraints;
+    } else if (constraints.length > 0) {
       patch.constraints = mergeStringLists(existing.constraints, constraints);
     }
     if (writeScope.length > 0) {
@@ -953,7 +957,7 @@ export function formatTaskStatus(root: string, id?: string): string {
     `Worktree: ${passport.worktree}`,
     `Risk: ${passport.risk}`,
     `Verification: ${passport.verification.status}${passport.verification.summary ? ` - ${passport.verification.summary}` : ""}`,
-    `Evidence: ${passport.verification.evidence.join(", ") || "(none)"}`,
+    `Verification evidence: ${passport.verification.evidence.join(", ") || "(none linked)"}`,
     `Blocked reason: ${passport.blockedReason || "(none)"}`,
     "Constraints:",
     ...formatList(passport.constraints),
@@ -1040,7 +1044,7 @@ export function formatTaskPassportHandoff(root: string, passport: TaskPassport, 
     `HEAD: ${git.head || passport.currentHead || "(unknown)"}`,
     `Risk: ${passport.risk || "unknown"}`,
     `Verification: ${verification.status}${verification.summary ? ` - ${verification.summary}` : ""}`,
-    `Evidence: ${verification.evidence.length > 0 ? verification.evidence.join(", ") : "(none)"}`,
+    `Verification evidence: ${verification.evidence.length > 0 ? verification.evidence.join(", ") : "(none linked)"}`,
     "Constraints:",
     ...formatList(passport.constraints),
     "Write scope:",
@@ -1161,7 +1165,9 @@ function patchCurrentTask(
     }
 
     writePassport(root, passport);
+    const removedConstraints = existing.constraints.filter((item) => !passport.constraints.includes(item));
     appendTaskEvent(root, passport.id, eventType, {
+      ...(removedConstraints.length > 0 ? { removedConstraints } : {}),
       status: passport.status,
       objective: passport.objective,
       writeScope: passport.writeScope,

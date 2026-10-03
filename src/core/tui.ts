@@ -770,7 +770,9 @@ function previewLines(preview: string): string[] {
 }
 
 function eventLine(event: AgentpackEvent): string {
-  return `${event.ts || "unknown time"} [${event.type || "unknown"}] ${String(event.text || event.summary || event.status || event.checkpointId || "")}`;
+  const removed = Array.isArray(event.removedConstraints) && event.removedConstraints.length
+    ? ` · removed constraints: ${event.removedConstraints.map(String).join("; ")}` : "";
+  return `${event.ts || "unknown time"} [${event.type || "unknown"}] ${String(event.text || event.summary || event.status || event.checkpointId || "")}${removed}`;
 }
 
 function healthLines(model: TuiModel): string[] {

@@ -599,7 +599,7 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
   {
     name: "task_update",
     annotations: UPDATING_TOOL_ANNOTATIONS,
-    description: "Patch the current Task Passport without changing lifecycle status. List fields (constraints, writeScope, nextActions, tags) append and deduplicate; omitted fields are preserved; empty or no-op updates fail. Pass clearNextActions to replace the next-actions list instead of appending, e.g. to clear a stale plan before finalizing.",
+    description: "Patch the current Task Passport without changing lifecycle status. List fields (constraints, writeScope, nextActions, tags) append and deduplicate; omitted fields are preserved; empty or no-op updates fail. Pass clearNextActions to replace the next-actions list instead of appending, e.g. to clear a stale plan before finalizing. Pass replaceConstraints to replace constraints that are obsolete or superseded; removed constraints stay in the task history.",
     inputSchema: {
       type: "object",
       properties: {
@@ -625,6 +625,10 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
         clearNextActions: {
           type: "boolean",
           description: "Replace the next actions with the provided nextActions (or clear them) instead of appending."
+        },
+        replaceConstraints: {
+          type: "boolean",
+          description: "Replace the constraints with the provided constraints (or clear them) instead of appending; removed ones are recorded in the task-update event."
         },
         tags: {
           type: "array",
@@ -1168,7 +1172,8 @@ function callTool(root: string, name: string, args: Record<string, unknown>, war
     }
     const id = args.id as string | undefined;
     return toolText(redactForRoot(root, appendGateWarnings(root, formatTaskStatus(root, id), warnings, id === undefined,
-      id === undefined ? "Gate Warnings" : "Gate Warnings (actual current task)")));
+      id === undefined ? "Gate Warnings" : "Gate Warnings (actual current task)",
+      id === undefined ? undefined : "These gate editing under the actual current task; this read-only inspection is not blocked.")));
   }
 
   if (name === "task_list") {
@@ -1257,6 +1262,9 @@ function callTool(root: string, name: string, args: Record<string, unknown>, war
     if (booleanValue(args.clearNextActions, false)) {
       updateOptions.clearNextActions = true;
     }
+    if (booleanValue(args.replaceConstraints, false)) {
+      updateOptions.replaceConstraints = true;
+    }
     const passport = updateCurrentTaskPassport(root, updateOptions);
     return toolText(`Updated task ${passport.id}.`);
   }
@@ -1285,7 +1293,7 @@ function callTool(root: string, name: string, args: Record<string, unknown>, war
 
 // MCP-warn layer: state-reading tools carry current gate findings so any MCP client sees
 // lifecycle/drift warnings without needing client-specific hooks.
-function appendGateWarnings(root: string, body: string, warnings: McpWarningState, compactRepeatedBranch = false, heading = "Gate Warnings"): string {
+function appendGateWarnings(root: string, body: string, warnings: McpWarningState, compactRepeatedBranch = false, heading = "Gate Warnings", note?: string): string {
   try {
     const report = evaluateGate(root, {});
     const branch = report.findings.find((finding) => finding.code === "branch-drift");
@@ -1300,7 +1308,7 @@ function appendGateWarnings(root: string, body: string, warnings: McpWarningStat
       compactRepeatedBranch && repeated && finding.code === "branch-drift"
         ? "Branch drift unchanged; see Drift above. Resolve before editing."
         : finding.message}`);
-    return `${body}\n\n## ${heading}\n${lines.join("\n")}`;
+    return `${body}\n\n## ${heading}\n${note ? `${note}\n` : ""}${lines.join("\n")}`;
   } catch {
     delete warnings.branchWarningKey;
     return body;

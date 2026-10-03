@@ -104,7 +104,7 @@ The common workflow is:
 
 1. `task start` declares the work.
 2. `task status` gives a quick current-task view. `task status --id <id>` inspects a selected Passport without switching or changing any ledger bytes. It shows the objective, constraints, all next actions, blocked reason, verification summary/evidence, bound HEAD and selected-task diagnostics, with the actual current task labeled separately.
-3. `task update` keeps objective, scope, risk, or next actions current. List flags append; `--clear-next-actions` replaces the next actions with the provided `--next` items (or empties the list) when the plan went stale.
+3. `task update` keeps objective, scope, risk, or next actions current. List flags append; `--clear-next-actions` replaces the next actions with the provided `--next` items (or empties the list) when the plan went stale; `--replace-constraints` does the same for constraints that were superseded, and records the removed ones in the task history.
 4. Keep `task verify` pending through the active fix loop; aggregate intermediate checks as evidence/checkpoints, then record a final result and its bound HEAD only when edits end.
 5. `task handoff` prints the compact summary for another chat, client, worktree, or agent.
 6. `task finalize` closes the task after verification is final. It prints advisories when hygiene gaps remain — uncommitted changes inside the write scope, remaining next actions, no checkpoint since the task started, or missing risk-proportional adversarial evidence; advisories never block.

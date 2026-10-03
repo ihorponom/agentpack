@@ -557,7 +557,7 @@ handoff context, and lifecycle status.
 Common workflow:
   agentpack task start <title> [--objective <text>] [--write-scope <path>] [--next <item>] [--risk low|medium|high]
   agentpack task status [--id <id>]
-  agentpack task update [--objective <text>] [--write-scope <path>] [--next <item>] [--clear-next-actions] [--risk low|medium|high]
+  agentpack task update [--objective <text>] [--constraint <text>] [--replace-constraints] [--write-scope <path>] [--next <item>] [--clear-next-actions] [--risk low|medium|high]
   agentpack task verify [--status pending|passed|failed|accepted] [--evidence <id>] [--summary <text>]
   agentpack task handoff
   agentpack task finalize [--status passed|failed|accepted] [--evidence <id>] [--summary <text>] [--force]
@@ -885,6 +885,9 @@ function taskCommand(root: string, rest: string[]): void {
     }
     if (parsed.options["clear-next-actions"] === true) {
       updateOptions.clearNextActions = true;
+    }
+    if (parsed.options["replace-constraints"] === true) {
+      updateOptions.replaceConstraints = true;
     }
     const passport = updateCurrentTaskPassport(root, updateOptions);
     process.stdout.write(`Updated task ${passport.id}\n`);
