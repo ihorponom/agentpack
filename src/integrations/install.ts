@@ -25,7 +25,8 @@ const CURSOR_READ_ONLY_MCP_TOOLS = [
   "task_audit",
   "task_handoff",
   "task_list",
-  "task_status"
+  "task_status",
+  "usage_report"
 ] as const;
 
 export function formatClientGateCommand(

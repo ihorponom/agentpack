@@ -168,16 +168,13 @@ function checkReleasingDocs(root: string): ReleaseCheck {
 
   const content = readFileSync(docsPath, "utf8");
   const issues: string[] = [];
-  if (!content.includes("weekly release cadence")) {
-    issues.push("weekly release cadence is not documented");
-  }
   if (!content.includes("Pre-flight checklist")) {
     issues.push("pre-flight checklist is not documented");
   }
 
   return issues.length
     ? { status: "warn", name: "Release docs", detail: issues.join("; ") }
-    : { status: "ok", name: "Release docs", detail: "weekly cadence and pre-flight checklist are documented" };
+    : { status: "ok", name: "Release docs", detail: "pre-flight checklist is documented" };
 }
 
 function renderReleasePreflight(checks: ReleaseCheck[]): ReleasePreflightReport {

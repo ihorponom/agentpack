@@ -1,5 +1,68 @@
 # Manual CLI and Fallback
 
+## Local usage reports
+
+```bash
+agentpack usage report --client codex --file /path/to/rollout.jsonl --task "Fix retries"
+agentpack usage report --client claude --file /path/to/session.jsonl --json
+agentpack usage report --client codex --file /path/to/rollout.jsonl --by-turn
+agentpack usage report --client codex --file /path/to/rollout.jsonl --turns 4:5 --by-turn
+agentpack usage report --client codex --file /path/to/session.jsonl \
+  --from 2026-10-02T09:00:00Z --to 2026-10-02T10:00:00Z
+```
+
+This read-only command works without `agentpack init`. It reads only explicitly
+supplied local JSONL files (maximum 64 MiB each), prints aggregate usage and
+provenance, and writes no files or ledger records. Repeat `--file` for additional
+sources from the same client, including explicitly identified child sessions.
+The task label is descriptive; it does not activate or modify a Task Passport.
+
+`--by-turn` adds source-local turn rows: start time, request count, token
+categories, completion and available duration. `--turns N` or `--turns N:M`
+selects an inclusive range and requires exactly one source file. A turn is a
+user interaction, not an individual model request or an automatically inferred
+work phase. Codex boundaries use client start/complete records; Claude uses
+recorded user-message boundaries, excluding tool results and metadata messages.
+Missing boundaries are disclosed. Incomplete Codex turns have no duration;
+Claude completion/duration remain unknown. Durations include tools and waits,
+and are suppressed when timestamp filters select only a portion of a turn.
+Session monetary estimates are also suppressed for turn selection.
+
+Connected agents can request the same report using the read-only `usage_report`
+MCP tool with `client`, `files`, `byTurn`, `turns`, `from`, `to`, `task`, and
+`json`. CLI and MCP use the same calculation and formatting functions.
+
+Supported records are Codex `token_usage_record` and Claude Code assistant
+messages with usage counters. Repeated request/message identifiers are
+deduplicated; conflicting counters fail rather than inventing totals. Claude
+content-block snapshots retain the highest output count for a message. Codex
+cumulative counters are not added again; unbounded source totals are checked
+against the final available thread counter, including reasoning. Missing
+reasoning counters make the full comparison unavailable. Counter resets or
+incomplete sources are reported as mismatches. Reports expose malformed/invalid record
+counts without copying their contents.
+
+Input includes cache read/write; reasoning, when supplied, is a subset of
+output. The report preserves these categories and groups requests by model.
+Missing reasoning counters remain unknown. `--from` is inclusive and `--to`
+exclusive, using usage-record timestamps with an explicit timezone. Records
+without usable timestamps are omitted and counted when a boundary is supplied.
+These timestamps select request records, not continuous execution-time billing.
+
+Claude `cost-state` snapshots are shown separately per source as client-session
+estimates when pricing is known. They can cover more work than the visible
+message counters and must not be summed across overlapping sessions. A time
+filter suppresses session estimates because the importer cannot attribute
+cumulative cost to that range. Actual charges remain unknown. No model rates
+are guessed or requested from the user.
+
+Supply the sources that define your work boundary: a transcript alone does not
+prove whole-task coverage or completion. Child sessions and other clients are
+not discovered automatically. Supported clients: Codex and Claude Code.
+No account connections, background collection or telemetry are required.
+
+## Default workflow
+
 Agentpack's default workflow is MCP-connected: generated project instructions guide Codex, Claude Code, Cursor, and other MCP clients to load context, record durable task state, and checkpoint progress while they work.
 
 Use the CLI directly when you want to inspect state yourself, debug an MCP setup, run a demo, or create a manual handoff for a web chat that cannot connect to local stdio MCP.

@@ -1,5 +1,28 @@
 # MCP
 
+## Usage reports
+
+`usage_report` provides the same read-only report as `agentpack usage report`.
+Call it when the user asks about usage, with explicit local JSONL sources; it
+does not collect activity automatically or write ledger state.
+
+```json
+{"client":"codex","files":["/absolute/path/to/rollout.jsonl"],"byTurn":true,"turns":"4:5","json":true}
+```
+
+Supported clients: `codex` (Codex), `claude` (Claude Code).
+`files` is a non-empty array; relative
+paths resolve from the pack root. Optional `task` is a descriptive label.
+`from`/`to` select inclusive/exclusive ISO timestamp boundaries. `byTurn` adds
+source-local turn rows; `turns` selects inclusive `N` or `N:M` in exactly one
+file. Missing boundaries and incomplete turns are disclosed. Claude user
+messages establish boundaries, not completion or duration. No phase inference
+or transcript content is returned. `json` returns aggregate JSON as tool text.
+
+Client monetary snapshots are source-session estimates; time or turn selection
+suppresses them. No rates are guessed or verified charges claimed. Use an
+updated server build and reconnect the MCP client to discover the new tool.
+
 `agentpack mcp` starts a local stdio MCP server. This is Agentpack's primary runtime surface for connected coding agents.
 
 The MCP stdio transport uses newline-delimited JSON-RPC messages over stdin/stdout. The client launches Agentpack as a subprocess, sends JSON-RPC messages to stdin, and reads JSON-RPC responses from stdout. Agentpack must not write non-MCP logs to stdout.

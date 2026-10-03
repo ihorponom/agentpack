@@ -20,29 +20,40 @@ Default rule:
 - a repo may keep many completed or parked passports over time
 - worktrees can carry different active passports
 - the shared repo source cache remains repo-level
-- decisions, dead ends, evidence, checkpoints, and next actions become passport-scoped
+- each passport owns its objective, constraints, write scope, next actions,
+  lifecycle events, and verification references
+- source records, decisions, dead ends, evidence files, and checkpoints remain
+  pack-level; a passport can reference evidence by id
 
-This keeps source knowledge reusable while preventing unrelated work from mixing task state.
+This keeps shared knowledge reusable while separating each task's plan and
+verification state. Pack-level records and checkpoints are not automatically
+isolated by task.
 
 ## File Shape
 
-Target local layout:
+Main files used by the current implementation:
 
 ```text
 .agentpack/
   config.json
+  state.json
   sources.json
+  events.jsonl
+  checkpoints/
+  evidence/
+  exports/
   tasks/
     current
     task_20260518_source_cleanup/
       passport.json
       events.jsonl
-      checkpoints/
-      evidence/
-      exports/
 ```
 
-`tasks/current` is a small pointer to the active task id for this worktree. If it is missing, Agentpack can fall back to the current v0 repo-level state.
+`tasks/current` is a small pointer to the active task id for this worktree.
+Without it, resume can use legacy pack-level state. Checkpoint files remain in
+`.agentpack/checkpoints/`; their manifests do not carry a task id. Evidence
+files remain in `.agentpack/evidence/` and are referenced by id from task
+verification.
 
 ## Passport Schema
 
@@ -423,17 +434,11 @@ Agentpack should not try to resolve code conflicts. It should point the user tow
 
 ## Migration
 
-Existing v0 packs should remain valid.
-
-When task support is introduced, Agentpack can create an initial passport from the current repo-level state:
-
-- `goal` becomes `objective`
-- `currentStatus` becomes a summary or active status note
-- `nextActions` copy into the passport
-- existing events remain readable as legacy repo-level events
-- `sources.json` stays repo-level
-
-This avoids breaking existing users while moving new work into passport-scoped ledgers.
+Legacy pack-level state and events remain readable without a current Passport.
+Task Passports are created explicitly with `agentpack task start`; there is no
+automatic conversion of pack-level goals or checkpoints into task state.
+`sources.json`, recorded decisions, dead ends, and existing checkpoints remain
+shared at the pack level.
 
 ## Advisory verification evidence
 

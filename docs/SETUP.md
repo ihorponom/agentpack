@@ -7,7 +7,7 @@ Agentpack is a TypeScript/Node project with a conservative npm setup. The npm pa
 - Node.js 22 LTS recommended
 - npm 10+
 
-The runtime package has zero third-party dependencies in v0. Development uses TypeScript and Node type definitions only.
+The runtime package has zero third-party dependencies. Development uses TypeScript and Node type definitions only.
 
 ## macOS Setup With fnm
 
@@ -53,4 +53,5 @@ npm run smoke
 
 ## Publishing Security Notes
 
-For future public releases, prefer npm trusted publishing and provenance over long-lived npm tokens.
+The release workflow uses npm Trusted Publishing through GitHub Actions OIDC
+and includes provenance. See [RELEASING.md](RELEASING.md) for the release flow.

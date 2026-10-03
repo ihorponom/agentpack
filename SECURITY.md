@@ -2,7 +2,7 @@
 
 Agentpack is designed as a local-first developer tool. The default threat model assumes task state may contain source paths, command output, stack traces, and implementation notes that should stay on the developer machine.
 
-## v0 Security Commitments
+## Security Commitments
 
 - No telemetry.
 - No network calls in normal CLI or MCP operation.
@@ -11,7 +11,7 @@ Agentpack is designed as a local-first developer tool. The default threat model 
 - No shell hooks installed silently.
 - No source upload or hosted sync.
 - No full repository copy in `.agentpack/` by default.
-- Runtime package has zero third-party dependencies in v0.
+- Runtime package has zero third-party dependencies.
 
 ## npm Supply Chain
 

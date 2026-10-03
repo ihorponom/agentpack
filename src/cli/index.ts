@@ -80,6 +80,7 @@ import { installIntegration } from "../integrations/install.js";
 import { evaluateGate, formatGateReport, type GateOptions, type GateReport } from "../core/gate.js";
 import { startMcpServer } from "../mcp/server.js";
 import { startTui } from "../core/tui.js";
+import { buildUsageReport, formatUsageReport } from "../core/usage.js";
 
 export type ArgValue = string | boolean | string[];
 
@@ -122,6 +123,46 @@ export async function runCli(argv: string[], cwd: string): Promise<void> {
     const report = buildDoctorReport(cwd);
     process.stdout.write(`${report.text}\n`);
     process.exitCode = report.ok ? 0 : 1;
+    return;
+  }
+
+  if (command === "usage") {
+    if (rest[0] !== "report" || isHelpRequest(rest[1])) {
+      if (isHelpRequest(rest[0]) || (rest[0] === "report" && isExplicitHelpRequest(rest[1]))) {
+        printCommandHelp("usage");
+        return;
+      }
+      throw new Error("Usage requires report --client codex|claude --file <jsonl>");
+    }
+    const inputArgs = rest.slice(1);
+    // parseArgs coalesces repeated flags; validate every file occurrence before
+    // a missing value can disappear during that coalescing.
+    if (inputArgs.some((arg, index) => (arg === "--file" || arg === "-file")
+      && (!inputArgs[index + 1] || inputArgs[index + 1]?.startsWith("-")))) {
+      throw new Error("Every --file requires a path");
+    }
+    const parsed = parseArgs(inputArgs);
+    const allowed = new Set(["client", "file", "task", "from", "to", "json", "by-turn", "turns"]);
+    if (parsed.positionals.length || Object.keys(parsed.options).some(key => !allowed.has(key))) {
+      throw new Error("Unknown usage report argument; see agentpack usage --help");
+    }
+    for (const key of ["client", "task", "from", "to", "turns"]) {
+      const value = parsed.options[key];
+      if (value !== undefined && (typeof value !== "string" || !value.trim())) throw new Error(`--${key} requires one value`);
+    }
+    const files = toArray(parsed.options.file);
+    if (!files.length || files.some(file => !file.trim())) throw new Error("Usage requires at least one --file <jsonl>");
+    const client = stringOption(parsed.options.client);
+    if (client !== "codex" && client !== "claude") throw new Error("Supported usage clients: codex and claude (Claude Code)");
+    const report = buildUsageReport({
+      client, files,
+      byTurn: booleanOption(parsed.options["by-turn"], "--by-turn"),
+      ...(parsed.options.turns !== undefined ? { turns: stringOption(parsed.options.turns) } : {}),
+      ...(parsed.options.task !== undefined ? { task: stringOption(parsed.options.task) } : {}),
+      ...(parsed.options.from !== undefined ? { from: stringOption(parsed.options.from) } : {}),
+      ...(parsed.options.to !== undefined ? { to: stringOption(parsed.options.to) } : {})
+    }, cwd);
+    process.stdout.write(`${booleanOption(parsed.options.json, "--json") ? JSON.stringify(report, null, 2) : formatUsageReport(report)}\n`);
     return;
   }
 
@@ -317,6 +358,7 @@ Task Passport:
   agentpack task --help
 
 Inspect and export:
+  agentpack usage report --client codex|claude --file <jsonl> [--file <jsonl>] [--task <label>] [--json]
   agentpack tui
   agentpack resume --preset agent [--query <text>]
   agentpack source status [--json] [--changed] [--missing]
@@ -362,6 +404,18 @@ function printCommandHelp(command: string): boolean {
 }
 
 function commandHelpText(command: string): string {
+  if (command === "usage") {
+    return `agentpack usage report --client codex|claude --file <jsonl> [--file <jsonl>] [--task <label>] [--from <ISO>] [--to <ISO>] [--by-turn] [--turns N|N:M] [--json]
+
+Read explicit local transcripts and print aggregate token usage by model.
+No initialized pack is needed; no files or ledger state are written.
+--from is inclusive and --to exclusive; timestamps require a timezone.
+Costs are client-session estimates when present, never guessed tariffs or verified charges.
+Session costs are unavailable for time- or turn-filtered reports. Missing child sessions are not discovered.
+--by-turn shows source-local turn numbers; --turns selects an inclusive range in exactly one file.
+Turns require recorded client/user-message boundaries; no automatic phase classification.
+Supported clients: Codex and Claude Code.`;
+  }
   if (command === "init") {
     return `agentpack init
 

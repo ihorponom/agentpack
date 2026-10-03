@@ -1,4 +1,5 @@
 import { appendEvent, requirePackRoot } from "../core/store.js";
+import { buildUsageReport, formatUsageReport } from "../core/usage.js";
 import { buildResume } from "../core/resume.js";
 import { createCheckpoint, diffCheckpoints } from "../core/checkpoints.js";
 import {
@@ -111,6 +112,24 @@ const UPDATING_TOOL_ANNOTATIONS: ToolAnnotations = {
 };
 
 export const TOOL_DEFINITIONS: ToolDefinition[] = [
+  {
+    name: "usage_report",
+    annotations: READ_ONLY_TOOL_ANNOTATIONS,
+    description: "Report local Codex/Claude Code usage from explicitly supplied JSONL files when the user asks about work usage. Same read-only report as CLI usage report; no collection, rates or ledger writes. Optional byTurn shows boundaries and turns selects N or N:M in one file. Monetary snapshots are source-session estimates, unavailable for filtered ranges. Missing child sources are not discovered. Supported clients: Codex and Claude Code.",
+    inputSchema: {
+      type: "object", additionalProperties: false,
+      properties: {
+        client: { type: "string", enum: ["codex", "claude"] },
+        files: { type: "array", minItems: 1, items: { type: "string", minLength: 1 }, description: "Explicit local JSONL paths; relative paths resolve from the pack root." },
+        task: { type: "string", description: "Descriptive label; does not modify a Passport." },
+        from: { type: "string", description: "Inclusive ISO timestamp with timezone." },
+        to: { type: "string", description: "Exclusive ISO timestamp with timezone." },
+        byTurn: { type: "boolean", description: "Include source-local turn rows." },
+        turns: { type: "string", description: "Inclusive N or N:M turn selection; exactly one file required." },
+        json: { type: "boolean", description: "Return aggregate report JSON as text instead of human-readable text." }
+      }, required: ["client", "files"]
+    }
+  },
   {
     name: "load_context",
     annotations: READ_ONLY_TOOL_ANNOTATIONS,
@@ -909,6 +928,24 @@ function isImplementation(value: unknown): boolean {
 }
 
 function callTool(root: string, name: string, args: Record<string, unknown>, warnings: McpWarningState): unknown {
+  if (name === "usage_report") {
+    const allowed = new Set(["client", "files", "task", "from", "to", "byTurn", "turns", "json"]);
+    if (Object.keys(args).some(key => !allowed.has(key))) throw new Error("Unknown usage_report argument");
+    if (args.client !== "codex" && args.client !== "claude") throw new Error("usage_report requires client codex or claude");
+    if (!Array.isArray(args.files) || !args.files.length || args.files.some(file => typeof file !== "string" || !file.trim())) throw new Error("usage_report requires explicit files");
+    for (const key of ["task", "from", "to", "turns"]) {
+      if (args[key] !== undefined && (typeof args[key] !== "string" || !args[key].trim())) throw new Error(`${key} requires a non-empty string`);
+    }
+    for (const key of ["byTurn", "json"]) if (args[key] !== undefined && typeof args[key] !== "boolean") throw new Error(`${key} requires a boolean`);
+    const report = buildUsageReport({ client: args.client, files: args.files as string[],
+      ...(typeof args.task === "string" ? { task: args.task } : {}),
+      ...(typeof args.from === "string" ? { from: args.from } : {}),
+      ...(typeof args.to === "string" ? { to: args.to } : {}),
+      ...(typeof args.turns === "string" ? { turns: args.turns } : {}),
+      ...(typeof args.byTurn === "boolean" ? { byTurn: args.byTurn } : {})
+    }, root);
+    return toolText(args.json ? JSON.stringify(report, null, 2) : formatUsageReport(report));
+  }
   if ((name === "record_decision" || name === "record_dead_end")
       && (typeof args.text !== "string" || !args.text.trim())) {
     return { ...toolText(`${name} requires non-empty text.`), isError: true };

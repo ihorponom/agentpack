@@ -19,12 +19,6 @@ npm provenance via a Trusted Publisher. No `NPM_TOKEN` is stored in the repo.
 
 ## Cutting a release
 
-Cadence and branching:
-
-- Use a weekly release cadence for normal releases. Collect finished feature,
-  fix, docs, and polish commits during the week, then cut one coherent release
-  with release notes.
-
 Release discipline:
 
 - A normal push to `main` never publishes to npm.
@@ -38,9 +32,6 @@ Release discipline:
 - After a release is published, new commits on `main` are next-release
   candidates. Do not describe unreleased commands or behavior as available in
   the already-published npm version.
-- The agent may create the GitHub Release when asked, but the human owner can
-  check GitHub Actions and npm status manually. Do not add extra workflow/npm
-  polling unless explicitly requested.
 
 ```bash
 # 1. After feature/code commits are reviewed and pushed, create a separate release-prep commit for the version bump.
@@ -106,7 +97,7 @@ Before `npm version`:
   health should show zero changed or missing records; review any source-cache
   warnings with `agentpack source status --changed --missing`.
 - `npm pack --dry-run` shows the expected set of files and a reasonable
-  tarball size (~150 kB at the time of writing).
+  tarball size.
 - README and docs reflect the version about to ship.
 - `package.json` `mcpName` and `server.json` name match, and the release
   workflow can publish the Registry metadata separately from npm.

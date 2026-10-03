@@ -87,6 +87,20 @@ try {
   }
   assertMatch(invalidPresetError, /Unknown budget preset: small/, "load_context rejects unknown presets");
 
+  assertIncludes(toolNames, "usage_report", "tools/list includes usage_report");
+  writeFileSync(path.join(workspace, "usage.jsonl"), [
+    { type: "event_msg", timestamp: "2026-10-03T10:00:00Z", payload: { type: "task_started", turn_id: "turn1" } },
+    { type: "turn_context", payload: { turn_id: "turn1", model: "smoke-model" } },
+    { type: "token_usage_record", timestamp: "2026-10-03T10:00:01Z", payload: { turn_id: "turn1", response_id: "request1", usage: { input_tokens: 100, cached_input_tokens: 80, output_tokens: 10, total_tokens: 110 } } },
+    { type: "event_msg", payload: { type: "task_complete", turn_id: "turn1", duration_ms: 1000 } }
+  ].map(row => JSON.stringify(row)).join("\n"));
+  const usageStateBefore = readFileSync(path.join(workspace, ".agentpack", "state.json"), "utf8");
+  const usageResponse = await client.request("tools/call", { name: "usage_report", arguments: { client: "codex", files: ["usage.jsonl"], byTurn: true, turns: "1", json: true } });
+  const usageReport = JSON.parse(usageResponse.result.content[0].text);
+  assertEqual(usageReport.totals.uncachedInput, 20, "usage_report counts uncached tokens");
+  assertEqual(usageReport.turns[0].durationMs, 1000, "usage_report returns turn metadata");
+  assertEqual(readFileSync(path.join(workspace, ".agentpack", "state.json"), "utf8"), usageStateBefore, "usage_report is read-only");
+
   await client.request("tools/call", {
     name: "record_decision",
     arguments: {

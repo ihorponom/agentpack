@@ -22,6 +22,7 @@ import test from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { resolveMcpStartDir } from "../src/cli/index.js";
 import { buildDoctorReport } from "../src/core/doctor.js";
+import { buildReleasePreflightReport } from "../src/core/release.js";
 import { findCeremonyDiagnostics } from "../src/core/ledger.js";
 import { getGitInfo } from "../src/core/git.js";
 import { sha256 } from "../src/core/hash.js";
@@ -976,10 +977,12 @@ test("exposes expected MCP tools", () => {
     "task_status",
     "task_switch",
     "task_update",
-    "task_update_verification"
+    "task_update_verification",
+    "usage_report"
   ]);
 
   const readOnlyTools = [
+    "usage_report",
     "bundle_import_plan",
     "bundle_inspect",
     "diff",
@@ -2237,6 +2240,8 @@ test("release preflight is read-only and checks release prep basics", async () =
 
   const dir = mkdtempSync(path.join(os.tmpdir(), "agentpack-release-test-"));
   writeReleaseFixture(dir);
+  writeFileSync(path.join(dir, "docs", "RELEASING.md"),
+    readFileSync(path.join(repoRoot, "..", "docs", "RELEASING.md")));
   runGit(dir, ["init"]);
   run(dir, ["init"]);
   runGit(dir, ["add", ".gitignore", ".github", "docs", "package.json", "package-lock.json"]);
@@ -2260,7 +2265,8 @@ test("release preflight is read-only and checks release prep basics", async () =
   assert.match(preflight, /\[ok\] package-lock\.json: version matches 1\.2\.3/);
   assert.match(preflight, /\[ok\] Git: main @ [0-9a-f]+, in sync with origin\/main/);
   assert.match(preflight, /\[ok\] Publish workflow: Trusted Publisher release workflow is present/);
-  assert.match(preflight, /\[ok\] Release docs: weekly cadence and pre-flight checklist are documented/);
+  assert.match(preflight, /\[ok\] Release docs: pre-flight checklist is documented/);
+  assert.doesNotMatch(preflight, /weekly|cadence/i);
   assert.match(preflight, /Release actions are intentionally manual/);
   assert.match(preflight, /Result: ready for release-prep checks/);
 
@@ -2276,6 +2282,23 @@ test("release preflight is read-only and checks release prep basics", async () =
   });
   assert.match(releasePreflight.result.content[0].text, /Agentpack release preflight/);
   assert.match(releasePreflight.result.content[0].text, /Release actions are intentionally manual/);
+  assert.match(releasePreflight.result.content[0].text, /\[ok\] Release docs: pre-flight checklist is documented/);
+  assert.doesNotMatch(releasePreflight.result.content[0].text, /weekly|cadence/i);
+});
+
+test("release preflight retains warnings for missing documentation or checklist", () => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), "agentpack-release-docs-test-"));
+  writeReleaseFixture(dir);
+  const docs = path.join(dir, "docs", "RELEASING.md");
+  const checklist = readFileSync(docs, "utf8");
+  assert.match(buildReleasePreflightReport(dir).text, /\[ok\] Release docs: pre-flight checklist is documented/);
+  writeFileSync(docs, "# Releasing\n");
+  assert.match(buildReleasePreflightReport(dir).text, /\[warn\] Release docs: pre-flight checklist is not documented/);
+  assert.equal(readFileSync(docs, "utf8"), "# Releasing\n");
+  unlinkSync(docs);
+  assert.match(buildReleasePreflightReport(dir).text, /\[warn\] Release docs: docs\/RELEASING\.md is missing/);
+  assert.equal(existsSync(docs), false);
+  writeFileSync(docs, checklist);
 });
 
 test("release preflight blocks upstream drift and token-based npm auth", () => {
@@ -6307,8 +6330,6 @@ function writeReleaseFixture(dir: string, publishWorkflow?: string): void {
   ].join("\n"), "utf8");
   writeFileSync(path.join(dir, "docs", "RELEASING.md"), [
     "# Releasing",
-    "",
-    "Use a weekly release cadence for normal releases.",
     "",
     "## Pre-flight checklist",
     "",

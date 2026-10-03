@@ -74,14 +74,21 @@ agentpack task start "Fix token expiry in API" \
   --next "Fix TTL conversion and cover it with a focused test"
 ```
 
-3. Work normally. The native pre-tool gate checks every edit against the scope before it happens; simulate the boundary manually with:
+3. The installed native gate checks paths reported by supported edit tools:
+Claude Code `Edit|Write|MultiEdit|NotebookEdit`, Codex `apply_patch`, and Cursor
+`Write|Delete`. Codex hooks must also be reviewed and trusted in the client.
+Check a boundary manually with:
 
 ```bash
 agentpack task gate --file api/auth/token.ts        # inside the scope: silent
 agentpack task gate --file frontend/utils/token.ts  # outside: warning
 ```
 
-In the default `warn` mode the finding lands in the agent's context as feedback it can act on; with `gateMode: "block"` in `.agentpack/config.json`, the native Claude Code, Codex, and Cursor hooks deny the edit outright.
+In the default `warn` mode, Claude Code and Codex receive warning feedback;
+Cursor allows the action silently. With `gateMode: "block"`, installed and
+enabled hooks deny supported edits that violate the task boundary. These hooks
+are not a filesystem sandbox: shell commands, other tools, and edits outside
+the hooked client can bypass them.
 
 4. Finish the slice, then start the next scoped task when the work moves to another part:
 
@@ -92,7 +99,10 @@ agentpack task start "Dedupe token utils" --write-scope frontend
 agentpack task list
 ```
 
-Expected takeaway: `task list` shows which part each short task owned via its scope, and the gate keeps a session focused on one folder — enforcement, not convention. The ledger stays whole, and per-task context stays small instead of accumulating the entire monorepo.
+Expected takeaway: `task list` shows which part each task owns via its scope.
+The gate checks that boundary for supported edit tools, with warnings or denial
+depending on the client and mode. The ledger stays whole, and per-task context
+stays small instead of accumulating the entire monorepo.
 
 ## Handoff Continuity Smoke
 

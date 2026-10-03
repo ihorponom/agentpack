@@ -37,30 +37,16 @@ npm_config_cache=/private/tmp/agentpack-npm-cache npm install ../agentpack-cli-*
 
 Record only durable context. Agentpack is not an activity logger, and it should not log every thought, file read, or edit.
 
-Default cadence:
+Use a Task Passport to define the objective, constraints, write scope, and
+next actions. Inspect its lifecycle and branch before continuing an existing
+task. Keep verification pending while changes are still being made; attach
+evidence before recording a final result. Park unfinished work when switching
+to another task, and finalize completed work.
 
-- At task start, load Agentpack context.
-- Before implementation, confirm the current Task Passport is the right active task for this phase and branch.
-- If the current task is verifying, blocked, closed, or has unexplained branch/head drift, resolve that lifecycle state before editing code.
-- Treat review requests as verification for the current task when they match its active/verifying scope; use a separate review task only for an unrelated objective, materially different authorization boundary, or a review that needs its own frozen snapshot.
-- Call source status only when you need a full stale-source check beyond the loaded context.
-- During normal coding, keep working locally; record only durable decisions, dead ends, source conclusions, and evidence.
-- Sequence state-changing Agentpack calls; do not run them in parallel with audit, status, or checkpoint calls.
-- Keep verification pending during a coherent fix loop; record aggregated intermediate evidence and checkpoints, then record a final verdict only after edits end.
-- For low-risk work, one short evidence note or useful test output should explain the check, result, and relevant limits. Code scopes still record the Passport-bound `Reviewed HEAD`. Save the full review template for medium/high work.
-- For risky changes and releases, record important findings as they happen and follow the verification policy.
-- Park deferred work before switching to an unrelated task. Do not use accepted
-  finalization as a pause; finalization means the task is complete or
-  intentionally accepted as-is.
-
-Load context once, then save what the next session will need. Task start,
-evidence, and finalization may need separate calls. A read-only question does
-not need a new Passport. Store verification output once and reference it in the
-checkpoint and final verdict.
-
-Before final verification, external review, or a release, read
-`.agentpack/instructions/verification.md`. For builder setup and usage, see
-[Optional Builder](INTEGRATIONS.md#optional-builder).
+See [Task Passport](TASK-PASSPORT.md) for lifecycle and verification behavior,
+and [Optional Builder](INTEGRATIONS.md#optional-builder) for builder setup.
+The recording tools below preserve reusable conclusions and verification
+output for later inspection:
 
 ```text
 record_source(path, summary)
@@ -99,12 +85,10 @@ Git still owns code history. Agentpack owns task memory.
 
 While dogfooding, look for friction:
 
-- Did the agent call `load_context` early enough without repeating status checks unnecessarily?
-- Were unchanged sources avoided when recorded conclusions were enough?
-- Did `record_source` capture only reusable source conclusions instead of one event per changed file?
-- Were state-changing Agentpack calls sequenced so audits read the latest state?
-- Were decisions and dead ends recorded at useful moments?
-- Was evidence too noisy or too thin?
-- Was the checkpoint useful to the next session?
+- Could a fresh session recover the objective, constraints, and next action?
+- Were stale source conclusions and changed task boundaries visible?
+- Did recorded decisions and dead ends prevent repeated mistakes?
+- Did evidence make the verification result understandable?
+- Did the checkpoint provide useful context for continuing the work?
 
 If the answer is no, improve the tool contract or the project instructions before adding larger features.
