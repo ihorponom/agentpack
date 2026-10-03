@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -328,6 +328,8 @@ test("Task usage links suggested sessions once and reports by Task Passport id a
   const main = write(path.join(project, "main.jsonl"), [user("p1", before), claude("a1", 20, before), user("p2", before),
     claude("a2", 20, after), user("p3", after), claude("a3", 20, after)]);
   const child = write(path.join(project, "main", "subagents", "agent-x.jsonl"), [claude("b1", 20, after)]);
+  // Coarse filesystem clocks can stamp a just-written file slightly before the task start.
+  for (const file of [main, child]) utimesSync(file, new Date(created - 5), new Date(created - 5));
   write(path.join(project, "old.jsonl"), [user("p0", before), claude("c1", 20, before)]);
   const day = new Date(created);
   const codexDay = path.join(home, "codex", "sessions", String(day.getFullYear()), String(day.getMonth() + 1).padStart(2, "0"), String(day.getDate()).padStart(2, "0"));

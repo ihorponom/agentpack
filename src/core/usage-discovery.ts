@@ -59,6 +59,9 @@ const MAX_CODEX_DAYS = 120;
 const MAX_FILE_BYTES = 64 * 1024 * 1024;
 const MAX_META_BYTES = 1024 * 1024;
 const DAY_MS = 24 * 60 * 60 * 1000;
+// File mtimes can lag the wall clock (coarse filesystem timestamps); the mtime
+// check only skips clearly older files, request times decide attribution.
+const MTIME_SLACK_MS = 60 * 1000;
 
 /**
  * Suggest Claude Code/Codex sessions recorded in the task worktree that have
@@ -234,7 +237,7 @@ function recent(files: SourceFile[], from: number, warnings: string[], label: st
   for (const source of files) {
     try {
       const stat = statSync(source.file);
-      if (!stat.isFile() || stat.mtimeMs < from) continue;
+      if (!stat.isFile() || stat.mtimeMs < from - MTIME_SLACK_MS) continue;
       if (stat.size > MAX_FILE_BYTES) warnings.push(`Skipped ${label} session ${path.basename(source.file, ".jsonl")}: larger than 64 MiB.`);
       else stats.push({ ...source, mtime: stat.mtimeMs });
     } catch { /* unreadable transcripts are not candidates */ }
