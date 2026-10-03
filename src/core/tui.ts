@@ -61,6 +61,8 @@ export interface TuiModel {
   root: string;
   tasks: TuiTask[];
   checkpoints: string[];
+  /** Task links recorded by checkpoint events; checkpoints absent here are global. */
+  checkpointTasks: Map<string, string>;
   warnings: string[];
   health: TuiHealth;
   evidenceById: Map<string, AgentpackEvent>;
@@ -96,10 +98,17 @@ export function buildTuiModel(root: string): TuiModel {
   const evidenceById = global.evidenceById;
   const tasks = readTaskInventory(root, current, warnings);
   const checkpoints = listBoundedDirectories(getPackPath(root, "checkpoints"), MAX_CHECKPOINTS, warnings, "checkpoints");
+  const checkpointTasks = new Map<string, string>();
+  for (const event of global.events) {
+    if (event.type === "checkpoint" && typeof event.checkpointId === "string" && typeof event.taskId === "string") {
+      checkpointTasks.set(event.checkpointId, event.taskId);
+    }
+  }
   return {
     root,
     tasks,
     checkpoints,
+    checkpointTasks,
     warnings,
     evidenceById,
     health: {
@@ -229,12 +238,12 @@ export function runTuiSession(model: TuiModel, runtime: TuiRuntime): () => void 
       body = tasks.length ? tasks.map((item, index) => taskListLine(item, index === navigation.selected, false)) : ["No matching task."];
     } else if (navigation.view === 4) {
       if (navigation.drillDown && model.checkpoints[navigation.itemSelected]) {
-        body = checkpointDetailLines(checkpointFor(model.checkpoints[navigation.itemSelected] || ""));
+        body = checkpointDetailLines(checkpointFor(model.checkpoints[navigation.itemSelected] || ""), model.checkpointTasks);
       } else {
         body = [
-          "Global repository checkpoints (the current schema has no task-to-checkpoint link):",
+          `Repository checkpoints; [this task] marks those taken during ${task ? task.passport.id : "the selected task"}, unmarked ones have no task link:`,
           ...(model.checkpoints.length
-            ? model.checkpoints.map((id, index) => selectableLine(id, index === navigation.itemSelected))
+            ? model.checkpoints.map((id, index) => selectableLine(`${id}${checkpointTaskLabel(model, id, task)}`, index === navigation.itemSelected))
             : ["No checkpoints."])
         ];
       }
@@ -278,7 +287,7 @@ export function runTuiSession(model: TuiModel, runtime: TuiRuntime): () => void 
       return index === navigation.view ? paint(tab, colors, ANSI.bold, ANSI.cyan) : paint(tab, colors, ANSI.dim);
     }).join("  ");
     const selected = navigation.view === 4 && model.checkpoints[navigation.itemSelected]
-      ? paint(displayLine(`Selected checkpoint: ${model.checkpoints[navigation.itemSelected]} (global repository artifact)`), colors, ANSI.dim)
+      ? paint(displayLine(`Selected checkpoint: ${model.checkpoints[navigation.itemSelected]} (${model.checkpointTasks.get(model.checkpoints[navigation.itemSelected]!) ? `task ${model.checkpointTasks.get(model.checkpoints[navigation.itemSelected]!)}` : "global repository artifact"})`), colors, ANSI.dim)
       : navigation.view === 3 && task && evidence[navigation.itemSelected]
         ? paint(displayLine(`Selected evidence: ${evidence[navigation.itemSelected]?.id} · Task: ${task.passport.id}`), colors, ANSI.dim)
         : task
@@ -736,9 +745,15 @@ function evidenceDetailLines(task: TuiTask, evidence: TuiEvidence, warnings: str
   ];
 }
 
-function checkpointDetailLines(details: TuiCheckpointDetails): string[] {
+function checkpointTaskLabel(model: TuiModel, id: string, task: TuiTask | undefined): string {
+  const taskId = model.checkpointTasks.get(id);
+  return !taskId ? "" : taskId === task?.passport.id ? " [this task]" : " [other task]";
+}
+
+function checkpointDetailLines(details: TuiCheckpointDetails, checkpointTasks: Map<string, string>): string[] {
+  const taskId = checkpointTasks.get(details.id);
   return [
-    `Global repository checkpoint ${details.id} (no task link is encoded):`,
+    taskId ? `Checkpoint ${details.id} taken during task ${taskId}:` : `Global repository checkpoint ${details.id} (no task link is encoded):`,
     ...details.files.flatMap((file) => [
       "",
       `${file.name}:`,

@@ -227,6 +227,27 @@ test("TUI terminal session restores raw mode and alternate screen", () => {
   assert.ok(failingWrites.includes("\x1b[?25h\x1b[?1049l"), "draw failure restores the alternate screen");
 });
 
+test("checkpoints record the open Task Passport and stay global otherwise", () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), "agentpack-checkpoint-task-"));
+  run(root, ["init"]);
+  assert.match(run(root, ["checkpoint", "-m", "before any task"]), /^Created checkpoint [^ ]+\n$/);
+  run(root, ["task", "start", "linked work"]);
+  const taskId = readFileSync(path.join(root, ".agentpack", "tasks", "current"), "utf8").trim();
+  assert.match(run(root, ["checkpoint", "-m", "during task"]), new RegExp(`for task ${taskId}`));
+  const [legacy, linked] = readdirSync(path.join(root, ".agentpack", "checkpoints")).sort();
+  const manifest = (id: string | undefined) => JSON.parse(readFileSync(path.join(root, ".agentpack", "checkpoints", id || "", "checkpoint.json"), "utf8"));
+  assert.equal(manifest(legacy).taskId, undefined);
+  assert.equal(manifest(linked).taskId, taskId);
+  assert.match(run(root, ["diff"]), new RegExp(`- From: none \\(global checkpoint\\)\n- To: ${taskId}`));
+  const model = buildTuiModel(root);
+  assert.equal(model.checkpointTasks.get(linked || ""), taskId);
+  assert.equal(model.checkpointTasks.has(legacy || ""), false);
+  run(root, ["task", "finalize", "--status", "accepted"]);
+  run(root, ["checkpoint", "-m", "after close"]);
+  const after = readdirSync(path.join(root, ".agentpack", "checkpoints")).sort().at(-1);
+  assert.equal(manifest(after).taskId, undefined, "closed tasks do not claim later checkpoints");
+});
+
 test("TUI drills into bounded evidence and global checkpoint details without mutation", () => {
   const root = mkdtempSync(path.join(os.tmpdir(), "agentpack-tui-drill-"));
   run(root, ["init"]);
@@ -275,16 +296,16 @@ test("TUI drills into bounded evidence and global checkpoint details without mut
 
   outputText = "";
   input.write("\t");
-  assert.match(outputText, /Global repository checkpoints/);
-  assert.match(outputText, new RegExp(checkpointId));
+  assert.match(outputText, /Repository checkpoints/);
+  assert.match(outputText, new RegExp(`${checkpointId} \\[this task\\]`), "checkpoints taken during the task are marked");
   assert.match(outputText, new RegExp(`> ${checkpointId}`), "Checkpoint selection remains visible without relying on color");
   outputText = "";
   input.write("\r");
-  assert.match(outputText, /no task link is encoded/);
+  assert.match(outputText, /taken during task task_/);
   assert.match(outputText, /checkpoint detail marker/);
   outputText = "";
   input.write("\u001b");
-  assert.match(outputText, /Global repository checkpoints/);
+  assert.match(outputText, /Repository checkpoints/);
   assert.doesNotMatch(outputText, /checkpoint detail marker/, "Esc returns to the Checkpoints list");
   const usageHome = mkdtempSync(path.join(os.tmpdir(), "agentpack-tui-usage-home-"));
   const savedUsageEnv = { claude: process.env.CLAUDE_CONFIG_DIR, codex: process.env.CODEX_HOME };
@@ -480,7 +501,7 @@ test("TUI global views remain reachable without a matching task and Passport sho
   input.write("j".repeat(100));
   assert.match(outputText, /Next actions:/, "detail scrolling clamps at the final non-empty page");
   input.write("\u001b/does-not-exist\r\t\t\t\t");
-  assert.match(outputText, /Global repository checkpoints/);
+  assert.match(outputText, /Repository checkpoints/);
   input.write("\t");
   assert.match(outputText, /Bounded TUI inventory/);
   input.write("q");

@@ -15,6 +15,7 @@ import {
   writeState
 } from "./store.js";
 import { redactForRoot } from "./redaction.js";
+import { getCurrentPassport } from "./tasks.js";
 import type { AgentpackConfig, GitInfo } from "./types.js";
 
 interface CheckpointOptions {
@@ -28,6 +29,7 @@ interface CheckpointManifest {
   id?: string;
   summary?: string;
   status?: string;
+  taskId?: string;
   git?: Partial<GitInfo>;
 }
 
@@ -39,6 +41,10 @@ export function createCheckpoint(root: string, options: CheckpointOptions = {}) 
     const id = checkpointId();
     const checkpointPath = getPackPath(root, "checkpoints", id);
     const summary = redactForRoot(root, options.summary || "Checkpoint created.");
+    // Link only checkpoints taken while a task is open; earlier and task-less
+    // checkpoints stay global repository checkpoints.
+    const task = getCurrentPassport(root);
+    const taskId = task && task.status !== "completed" && task.status !== "abandoned" ? task.id : undefined;
 
     mkdirSync(checkpointPath, { recursive: true, mode: PACK_DIR_MODE });
 
@@ -60,6 +66,7 @@ export function createCheckpoint(root: string, options: CheckpointOptions = {}) 
       summary,
       status: state.currentStatus,
       nextActions: state.nextActions || [],
+      ...(taskId ? { taskId } : {}),
       git: {
         available: git.available,
         branch: git.branch,
@@ -80,7 +87,8 @@ export function createCheckpoint(root: string, options: CheckpointOptions = {}) 
     appendEvent(root, "checkpoint", {
       checkpointId: id,
       summary,
-      status: state.currentStatus
+      status: state.currentStatus,
+      ...(taskId ? { taskId } : {})
     });
 
     return { id, path: checkpointPath, manifest };
@@ -116,6 +124,10 @@ export function diffCheckpoints(root: string, fromId?: string, toId?: string): s
     "## Status",
     `- From: ${fromManifest.status || "No status"}`,
     `- To: ${toManifest.status || "No status"}`,
+    "",
+    "## Task",
+    `- From: ${fromManifest.taskId || "none (global checkpoint)"}`,
+    `- To: ${toManifest.taskId || "none (global checkpoint)"}`,
     "",
     "## Git",
     `- From: ${formatGitRef(fromManifest.git)}`,

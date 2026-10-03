@@ -51,7 +51,11 @@ Main files used by the current implementation:
 
 `tasks/current` is a small pointer to the active task id for this worktree.
 Without it, resume can use legacy pack-level state. Checkpoint files remain in
-`.agentpack/checkpoints/`; their manifests do not carry a task id. Evidence
+`.agentpack/checkpoints/`. A checkpoint created while the current Passport is
+open records its `taskId` in `checkpoint.json` and in the `checkpoint` event;
+older checkpoints and those taken without an open task carry no task id and
+stay global. The link is informational: it is not migrated, not exported in
+bundles and not used by handoff. Evidence
 files remain in `.agentpack/evidence/` and are referenced by id from task
 verification.
 

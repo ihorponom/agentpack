@@ -231,7 +231,7 @@ export async function runCli(argv: string[], cwd: string): Promise<void> {
       status: stringOption(parsed.options.status),
       nextActions: toArray(parsed.options.next)
     });
-    process.stdout.write(`Created checkpoint ${checkpoint.id}\n`);
+    process.stdout.write(`Created checkpoint ${checkpoint.id}${checkpoint.manifest.taskId ? ` for task ${checkpoint.manifest.taskId}` : ""}\n`);
     return;
   }
 

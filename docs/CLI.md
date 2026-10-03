@@ -61,7 +61,7 @@ agentpack source remove docs/old-file.md
 `ledger status [--json]` prints a read-only hygiene inventory: task counts, event/evidence/checkpoint/export sizes, referenced evidence counts, and source-cache status counts. It does not delete, compact, archive, or refresh anything. When conservative observable patterns merit human attention, its additive `ceremonyDiagnostics` output lists bounded review candidates; malformed retained event lines are skipped individually and reported in `warnings`.
 
 `tui` opens the dependency-free read-only Inspector for Tasks, Passport,
-task-scoped Timeline, linked Evidence, global Checkpoints, ledger Health, and
+task-scoped Timeline, linked Evidence, repository Checkpoints, ledger Health, and
 task Usage. It does not switch the current task or change ledger files. In a non-TTY it prints a
 static snapshot and exits. Its initial inventory is bounded, and task Timeline
 and Evidence are loaded lazily. Health is an Inspector summary; use `ledger status`

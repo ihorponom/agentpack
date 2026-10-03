@@ -3,17 +3,18 @@
 `agentpack tui` is a small keyboard-driven terminal browser for the canonical
 `.agentpack` ledger. It is for inspecting an historical Task Passport without
 switching the current task: task details, task-scoped timeline, linked
-verification evidence, global repository checkpoints, ledger health, and task
-usage are available from one screen. Checkpoints are shown as a clearly labeled global repository
-list and decisions are not joined to a task: the current ledger schema does
-not reliably encode either relationship.
+verification evidence, repository checkpoints, ledger health, and task usage
+are available from one screen. Checkpoints are one repository list; those
+taken while the selected task was open are marked `[this task]`, those of
+other tasks `[other task]`, and older ones stay unmarked because they carry no
+task link. Decisions are not joined to a task: the ledger schema does not
+encode that relationship.
 
 Controls: `j`/`k` or arrows move or scroll, `Enter` advances through task views
 and opens the selected Evidence or Checkpoint, `Tab` changes the primary view,
 `/` filters Tasks, `Esc` or backspace returns from a detail to its list and then
-goes back, and `q` exits. Evidence is a task-linked selectable list; Checkpoints
-is an explicitly global selectable list because the current schema has no
-task-to-checkpoint link. When stdin or stdout is not a TTY, the command prints a
+goes back, and `q` exits. Evidence is a task-linked selectable list;
+Checkpoints is a repository-wide selectable list with task marks. When stdin or stdout is not a TTY, the command prints a
 deterministic static Tasks/Health snapshot and exits, which makes it safe in CI
 and pipes.
 
