@@ -89,7 +89,7 @@ agentpack task update \
   --next "Run focused regression tests" \
   --write-scope tests/checkout.test.ts \
   --risk medium
-agentpack task list [--scope <path>] [--status <status>] [--open]
+agentpack task list [--scope <path>] [--status <status>] [--open] [--all]
 agentpack task status [--id <id>] [--full]
 agentpack task verify --status passed --evidence evt_... --summary "Focused checks passed"
 agentpack task handoff
@@ -98,7 +98,7 @@ agentpack task finalize
 
 Write scopes are repo-relative paths. `.` means the repository root. A directory entry such as `api` covers every file under `api/`, so a scope can pin a task to one part of the project without enumerating files. `task list` shows each task's scope so short scoped tasks are easy to tell apart, and `task list --scope api` filters the list to tasks whose scope overlaps that path; tasks without a write scope are omitted from filtered output. Repeating `--scope` unions the filters, `--scope .` matches every scoped task, and leading `./` or trailing slashes are normalized on both sides; an empty `--scope` value is rejected.
 
-`task list --open` hides closed history and shows only active, parked, blocked, and verifying tasks. `task list --status <status>` filters to specific statuses; repeating `--status` unions them, unknown values are rejected, and `--open` cannot be combined with `--status`. Status filters combine with `--scope` as AND, so `task list --open --scope api` means open tasks that own `api`. The default output still lists everything: closed passports remain inspectable history.
+`task list` shows only active, parked, blocked, and verifying tasks by default (`--open` states this explicitly) and notes how many closed tasks are hidden; `task list --all` includes completed and abandoned history. `task list --status <status>` filters to specific statuses; repeating `--status` unions them, unknown values are rejected, `--open` cannot be combined with `--status`, and `--all` cannot be combined with either. Status filters combine with `--scope` as AND, so `task list --open --scope api` means open tasks that own `api`. Closed passports remain inspectable through `--all` or `--status completed`.
 
 The common workflow is:
 

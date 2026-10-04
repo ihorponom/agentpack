@@ -493,11 +493,12 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
   {
     name: "task_list",
     annotations: READ_ONLY_TOOL_ANNOTATIONS,
-    description: "Find Task Passport ids or inspect task history. Prefer open: true and compact: true for open work; optionally limit the result. No arguments lists all history with legacy formatting. Filters combine with AND; current task is marked with an asterisk. Read-only.",
+    description: "Find Task Passport ids or inspect task history. Without status lists open tasks; pass all: true for full history. compact and limit shorten the result. Filters combine with AND; current task is marked with an asterisk. Read-only.",
     inputSchema: {
       type: "object",
       properties: {
-        open: { type: "boolean", description: "Only active, parked, blocked, and verifying tasks. Cannot combine true with status." },
+        open: { type: "boolean", description: "Only active, parked, blocked, and verifying tasks (the default). Cannot combine true with status." },
+        all: { type: "boolean", description: "Include completed and abandoned tasks. Cannot combine with open: true or status." },
         status: {
           description: "One status or a non-empty array of statuses (OR within this filter).",
           oneOf: [{ type: "string", enum: [...TASK_LIST_STATUSES] }, { type: "array", minItems: 1, items: { type: "string", enum: [...TASK_LIST_STATUSES] } }]
@@ -1172,9 +1173,9 @@ function callTool(root: string, name: string, args: Record<string, unknown>, war
   if (name === "task_list") {
     const options = taskListOptions(args);
     const { tasks: all, warnings } = listTasks(root);
-    const matching = all.filter((task) =>
-      (options.status.length === 0 || options.status.includes(task.status)) &&
-      (options.scope.length === 0 || scopeOverlaps(task.writeScope, options.scope)));
+    const scoped = all.filter((task) => options.scope.length === 0 || scopeOverlaps(task.writeScope, options.scope));
+    const matching = scoped.filter((task) => options.status.length === 0 || options.status.includes(task.status));
+    const hidden = options.defaultOpen ? scoped.length - matching.length : 0;
     const tasks = options.limit === undefined ? matching : matching.slice(0, options.limit);
     const metadata = {
       ...(warnings.length > 0 ? { [TASK_LIST_WARNINGS_META_KEY]: warnings.map((warning) => redactForRoot(root, warning)) } : {}),
@@ -1189,10 +1190,13 @@ function callTool(root: string, name: string, args: Record<string, unknown>, war
     }
     const warningOutput = warnings.map((warning) => `[warn] ${warning}\n`).join("");
     if (tasks.length === 0) {
-      return toolText(redactForRoot(root, `${warningOutput}${all.length === 0 ? "No task passports yet. Call `task_start` first." : "No task passports match the filters."}`), meta);
+      const empty = all.length === 0 ? "No task passports yet. Call `task_start` first."
+        : hidden > 0 ? "No open task passports. Pass `all: true` for history." : "No task passports match the filters.";
+      return toolText(redactForRoot(root, `${warningOutput}${empty}`), meta);
     }
     const omitted = matching.length - tasks.length;
-    const suffix = omitted > 0 ? `\nShowing ${tasks.length} of ${matching.length} matching tasks (${omitted} omitted). Increase limit or narrow filters.` : "";
+    const suffix = (omitted > 0 ? `\nShowing ${tasks.length} of ${matching.length} matching tasks (${omitted} omitted). Increase limit or narrow filters.` : "")
+      + (hidden > 0 ? `\n${hidden} closed task${hidden === 1 ? "" : "s"} hidden; pass \`all: true\` for history.` : "");
     return toolText(redactForRoot(root, `${warningOutput}${formatTaskList(tasks, options.compact)}${suffix}`), meta);
   }
 
@@ -1341,8 +1345,8 @@ function send(output: Writable, id: JsonRpcRequest["id"], result: unknown, error
   output.write(`${JSON.stringify(payload)}\n`);
 }
 
-function taskListOptions(args: Record<string, unknown>): { status: string[]; scope: string[]; compact: boolean; limit?: number } {
-  for (const field of ["open", "compact"]) {
+function taskListOptions(args: Record<string, unknown>): { status: string[]; scope: string[]; compact: boolean; defaultOpen: boolean; limit?: number } {
+  for (const field of ["open", "compact", "all"]) {
     if (args[field] !== undefined && typeof args[field] !== "boolean") {
       throw new Error(`task_list ${field} must be a boolean`);
     }
@@ -1360,13 +1364,17 @@ function taskListOptions(args: Record<string, unknown>): { status: string[]; sco
   if (args.open === true && args.status !== undefined) {
     throw new Error("task_list open cannot be combined with status");
   }
+  if (args.all === true && (args.open === true || args.status !== undefined)) {
+    throw new Error("task_list all cannot be combined with open or status");
+  }
   if (status.some((value) => !(TASK_LIST_STATUSES as readonly string[]).includes(value))) {
     throw new Error(`task_list status requires one of: ${TASK_LIST_STATUSES.join(", ")}`);
   }
   if (args.limit !== undefined && (typeof args.limit !== "number" || !Number.isInteger(args.limit) || args.limit < 1 || args.limit > 1000)) {
     throw new Error("task_list limit must be an integer between 1 and 1000");
   }
-  return { status: args.open === true ? [...OPEN_TASK_STATUSES] : status, scope, compact: args.compact === true,
+  const defaultOpen = args.open === undefined && args.status === undefined && args.all !== true;
+  return { status: args.open === true || defaultOpen ? [...OPEN_TASK_STATUSES] : status, scope, compact: args.compact === true, defaultOpen,
     ...(args.limit !== undefined ? { limit: args.limit as number } : {}) };
 }
 

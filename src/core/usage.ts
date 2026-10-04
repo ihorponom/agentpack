@@ -206,7 +206,8 @@ function estimateAgentpackOverhead(client: UsageOptions["client"], lines: string
     const listBody = first.replace(/^(?:\[warn\] [^\n]*\n)+/u, "");
     if (/^[*-] task_[A-Za-z0-9][A-Za-z0-9._-]* \[(?:active|parked|blocked|verifying|completed|abandoned)\] /u.test(listBody)
       || listBody === "No task passports yet. Call `task_start` first."
-      || listBody === "No task passports match the filters.") return "task_list";
+      || listBody === "No task passports match the filters."
+      || listBody === "No open task passports. Pass `all: true` for history.") return "task_list";
     if (listBody.startsWith("[") && listBody.endsWith("]")) {
       try {
         const tasks: unknown = JSON.parse(listBody);

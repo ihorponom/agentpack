@@ -255,6 +255,7 @@ test("Codex overhead recognizes supported task-list text and validated JSON resu
     branch: null, current: true, updatedAt: time, writeScope: [] }]);
   for (const result of [listed, `[warn] skipped one invalid passport\n${listed}`,
     "No task passports yet. Call `task_start` first.", "No task passports match the filters.",
+    "No open task passports. Pass `all: true` for history.",
     "[warn] skipped one invalid passport\nNo task passports match the filters.", json]) {
     const overhead = reportFor(result);
     assert.equal(overhead.calls, 1, result);

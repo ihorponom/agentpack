@@ -558,7 +558,7 @@ Common workflow:
   agentpack task finalize [--status passed|failed|accepted] [--evidence <id>] [--summary <text>] [--force]
 
 Inspection and coordination:
-  agentpack task list [--scope <path>] [--status <status>] [--open]
+  agentpack task list [--scope <path>] [--status <status>] [--open] [--all]
   agentpack task passport
   agentpack task switch <id> [--park-current]
   agentpack task audit [--json]
@@ -620,9 +620,14 @@ function noteCommand(root: string, rest: string[]): void {
 }
 
 
-function taskListStatusFilters(options: Record<string, ArgValue>): string[] {
+function taskListStatusFilters(options: Record<string, ArgValue>): { statuses: string[]; defaultOpen: boolean } {
   if (options.open !== undefined && options.status !== undefined) {
     throw new Error("task list --open cannot be combined with --status");
+  }
+  if (options.all !== undefined) {
+    if (options.open !== undefined || options.status !== undefined) throw new Error("task list --all cannot be combined with --open or --status");
+    if (!(options.all === true || (Array.isArray(options.all) && options.all.length === 0))) throw new Error("task list --all takes no value");
+    return { statuses: [], defaultOpen: false };
   }
   if (options.open !== undefined) {
     // A repeated bare --open collapses to an empty array in addOption; both
@@ -631,17 +636,17 @@ function taskListStatusFilters(options: Record<string, ArgValue>): string[] {
     if (!bare) {
       throw new Error("task list --open takes no value");
     }
-    return [...OPEN_TASK_STATUSES];
+    return { statuses: [...OPEN_TASK_STATUSES], defaultOpen: false };
   }
   if (options.status === undefined) {
-    return [];
+    return { statuses: [...OPEN_TASK_STATUSES], defaultOpen: true };
   }
   const values = [...new Set(toArray(options.status).map((value) => value.trim()))];
   const invalid = values.filter((value) => !(TASK_LIST_STATUSES as readonly string[]).includes(value));
   if (values.length === 0 || invalid.length > 0) {
     throw new Error(`task list --status requires one of: ${TASK_LIST_STATUSES.join(", ")}`);
   }
-  return values;
+  return { statuses: values, defaultOpen: false };
 }
 
 function gateCommand(root: string | null, args: string[]): void {
@@ -819,7 +824,7 @@ function taskCommand(root: string, rest: string[]): void {
     if (scopeFilters.some((filter) => !filter.trim())) {
       throw new Error("task list --scope requires a path");
     }
-    const statusFilters = taskListStatusFilters(parsed.options);
+    const { statuses: statusFilters, defaultOpen } = taskListStatusFilters(parsed.options);
     const { tasks: all, warnings } = listTasks(root);
     const warningOutput = warnings.map((warning) => `[warn] ${warning}\n`).join("");
     if (all.length === 0) {
@@ -827,22 +832,26 @@ function taskCommand(root: string, rest: string[]): void {
       return;
     }
 
-    let tasks = scopeFilters.length > 0
+    const scoped = scopeFilters.length > 0
       ? all.filter((task) => scopeOverlaps(task.writeScope, scopeFilters))
       : all;
-    if (statusFilters.length > 0) {
-      tasks = tasks.filter((task) => statusFilters.includes(task.status));
-    }
+    const tasks = statusFilters.length > 0 ? scoped.filter((task) => statusFilters.includes(task.status)) : scoped;
+    const hidden = defaultOpen ? scoped.length - tasks.length : 0;
     if (tasks.length === 0) {
+      if (hidden > 0) {
+        process.stdout.write(`${warningOutput}No open task passports. Use \`agentpack task list --all\` for history.\n`);
+        return;
+      }
       const applied = [
         scopeFilters.length > 0 ? `scope ${scopeFilters.join(", ")}` : "",
-        statusFilters.length > 0 ? `status ${statusFilters.join(", ")}` : ""
+        statusFilters.length > 0 && !defaultOpen ? `status ${statusFilters.join(", ")}` : ""
       ].filter(Boolean).join(" and ");
       process.stdout.write(redactForRoot(root, `${warningOutput}No task passports match ${applied}.\n`));
       return;
     }
 
-    process.stdout.write(redactForRoot(root, `${warningOutput}${formatTaskList(tasks)}\n`));
+    const footer = hidden > 0 ? `\n${hidden} closed task${hidden === 1 ? "" : "s"} hidden; use \`--all\` for history.` : "";
+    process.stdout.write(redactForRoot(root, `${warningOutput}${formatTaskList(tasks)}${footer}\n`));
     return;
   }
 

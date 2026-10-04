@@ -5497,8 +5497,12 @@ test("MCP task_list filters match CLI and compact limits preserve history and re
     } } : {}) }
   });
   const full = await call({});
-  assert.equal(full.result.content[0].text, run(dir, ["task", "list"]).trim());
-  const all = await call({ json: true });
+  assert.match(full.result.content[0].text, /\n1 closed task hidden; pass `all: true` for history\.$/);
+  assert.equal(full.result.content[0].text.replace("pass `all: true`", "use `--all`"), run(dir, ["task", "list"]).trim());
+  assert.doesNotMatch(full.result.content[0].text, /Closed API/);
+  assert.equal((await call({ all: true })).result.content[0].text, run(dir, ["task", "list", "--all"]).trim());
+  assert.equal(JSON.parse((await call({ json: true })).result.content[0].text).length, 2, "JSON defaults to open tasks");
+  const all = await call({ json: true, all: true });
   const entries = JSON.parse(all.result.content[0].text);
   assert.equal(entries.length, 3);
   for (const [args, flags] of [
@@ -5514,7 +5518,7 @@ test("MCP task_list filters match CLI and compact limits preserve history and re
   assert.doesNotMatch(compact.result.content[0].text, /\(scope:|\(branch:/);
   assert.match(compact.result.content[0].text, /Showing 1 of 2 matching tasks/);
   assert.deepEqual(compact.result._meta["io.agentpack/taskListPage"], { matched: 2, returned: 1, omitted: 1 });
-  const compactJson = await call({ json: true, compact: true, limit: 1 }, true);
+  const compactJson = await call({ json: true, compact: true, limit: 1, all: true }, true);
   assert.deepEqual(JSON.parse(compactJson.result.content[0].text), entries.slice(0, 1));
   assert.ok(compactJson.result.content[0].text.length < all.result.content[0].text.length);
   assert.equal(compactJson.result.content[0].text.includes("\n"), false);
@@ -5531,13 +5535,29 @@ test("MCP task_list filters match CLI and compact limits preserve history and re
     { open: "true" }, { compact: 1 }, { open: null }, { status: [] },
     { status: "bogus" }, { status: ["active", 1] }, { scope: " " },
     { scope: [] }, { scope: ["api", null] }, { scope: {} },
-    { open: true, status: "active" }, { limit: 0 }, { limit: -1 },
+    { open: true, status: "active" }, { all: "true" }, { all: true, open: true }, { all: true, status: "completed" },
+    { limit: 0 }, { limit: -1 },
     { limit: 1001 }, { limit: 1.5 }, { limit: "1" }, { limit: null }
   ]) {
     const response = await call(args);
     assert.equal(response.error?.code, -32000, JSON.stringify(args));
   }
   for (const [file, content] of snapshots) assert.equal(readFileSync(file, "utf8"), content, file);
+});
+
+test("task list explains hidden history when every task is closed", async () => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), "agentpack-list-closed-"));
+  run(dir, ["init"]);
+  run(dir, ["task", "start", "Finished work"]);
+  run(dir, ["task", "close"]);
+  assert.match(run(dir, ["task", "list"]), /^No open task passports\. Use `agentpack task list --all` for history\.$/m);
+  assert.match(run(dir, ["task", "list", "--all"]), /\[completed\] Finished work/);
+  assert.match(runExpectError(dir, ["task", "list", "--all", "--open"]), /--all cannot be combined with --open or --status/);
+  assert.match(runExpectError(dir, ["task", "list", "--all", "--status", "active"]), /--all cannot be combined/);
+  assert.match(runExpectError(dir, ["task", "list", "--all", "now"]), /--all takes no value/);
+  const mcp = createMcpHarness(dir);
+  const response = await mcp.send({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "task_list", arguments: {} } });
+  assert.equal(response.result.content[0].text, "No open task passports. Pass `all: true` for history.");
 });
 
 test("combined park-and-switch validates targets before writes and preserves frozen verdicts", async () => {
