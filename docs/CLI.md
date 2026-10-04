@@ -148,6 +148,8 @@ and the task is genuinely accepted as-is.
 
 Repeated identical verification updates are treated as no-ops, so retrying the same `task verify` command does not add duplicate task events.
 
+New `--evidence` IDs on `task verify` and `task finalize` must match recorded evidence events in the bounded recent event-log window. An unknown ID rejects the command before it changes the Passport or task events. Already linked IDs can be repeated after their events leave that window; existing links in older Passports remain readable.
+
 Final `task verify` output names the bound HEAD and explains that code is frozen until finalization or an explicit return to pending. Pending output says the task remains active for fixes and intermediate checks. `task finalize` reports the bound HEAD and completed/frozen consequence; it preserves an existing final-verdict binding, while direct finalization from non-final verification binds the live HEAD.
 
 When a current passport exists, `resume` and MCP `load_context` treat its status

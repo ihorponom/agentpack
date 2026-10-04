@@ -513,6 +513,7 @@ export function updateCurrentTaskVerification(root: string, options: TaskVerific
         ? existing.verification?.summary || ""
         : options.summary.trim()
     };
+    validateEvidenceIds(root, options.evidence || [], existing.verification.evidence);
 
     // A final verdict (passed/failed/accepted) means implementation is done and
     // awaiting review, matching the documented "verifying" status. A non-final
@@ -574,6 +575,7 @@ export function finalizeCurrentTask(root: string, options: TaskFinalizeOptions =
     if (verificationStatus === "accepted" && existing.nextActions.length > 0 && !options.force) {
       throw new Error("task finalize --status accepted refuses to close a task that still has next actions. Use `agentpack task park` for deferred work, clear or complete the next actions, or pass `--force` if this task is genuinely accepted as-is.");
     }
+    validateEvidenceIds(root, options.evidence || [], existing.verification.evidence);
 
     return {
       closedAt: new Date().toISOString(),
@@ -784,7 +786,18 @@ function referencedAdversarialEvidence(root: string, passport: TaskPassport): Ad
   return evidence;
 }
 
-function readRecentAdversarialEvidenceEvents(root: string, ids: Set<string>): AgentpackEvent[] {
+function validateEvidenceIds(root: string, evidence: string[], alreadyLinked: string[]): void {
+  const linked = new Set(alreadyLinked);
+  const ids = new Set(uniqueStrings(evidence).filter((id) => !linked.has(id)));
+  if (!ids.size) return;
+  const found = new Set(readRecentAdversarialEvidenceEvents(root, ids, true).map((event) => event.id));
+  const missing = [...ids].filter((id) => !found.has(id));
+  if (missing.length) {
+    throw new Error(`Evidence event not found in the last ${MAX_ADVERSARIAL_EVENT_BYTES / (1024 * 1024)} MiB of events.jsonl; attach evidence first or reference a recent evidence id.`);
+  }
+}
+
+function readRecentAdversarialEvidenceEvents(root: string, ids: Set<string>, strict = false): AgentpackEvent[] {
   const eventsPath = getPackPath(root, "events.jsonl");
   let descriptor: number | null = null;
   try {
@@ -813,7 +826,8 @@ function readRecentAdversarialEvidenceEvents(root: string, ids: Set<string>): Ag
       }
     }
     return events;
-  } catch {
+  } catch (error) {
+    if (strict) throw new Error(`Cannot validate evidence ids: ${error instanceof Error ? error.message : String(error)}`);
     return [];
   } finally {
     if (descriptor !== null) closeSync(descriptor);

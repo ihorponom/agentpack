@@ -2819,7 +2819,8 @@ test("adversarial verification accepts bounded compatible review kinds and degra
   const eventsPath = path.join(unsafeDir, ".agentpack", "events.jsonl");
   writeFileSync(eventsPath, "{not json\n", { encoding: "utf8", flag: "a" });
   writeFileSync(eventsPath, `${JSON.stringify({ id: "evt_unsafe", ts: new Date().toISOString(), type: "evidence", kind: "note", path: "evidence/../tasks/current" })}\n`, { encoding: "utf8", flag: "a" });
-  run(unsafeDir, ["task", "verify", "--status", "passed", "--evidence", "evt_missing", "--evidence", "evt_unsafe"]);
+  assert.match(runExpectError(unsafeDir, ["task", "verify", "--status", "passed", "--evidence", "evt_missing"]), /Evidence event not found/);
+  run(unsafeDir, ["task", "verify", "--status", "passed", "--evidence", "evt_unsafe"]);
   assert.match(run(unsafeDir, ["task", "audit"]), /Success completion lacks/);
 
   const malformedDir = mkdtempSync(path.join(os.tmpdir(), "agentpack-adversarial-malformed-"));
@@ -3081,6 +3082,7 @@ test("manages a current task passport", () => {
   assert.equal(pendingAfterBlocked.verification.status, "pending");
   assert.equal(pendingAfterBlocked.blockedReason, undefined, "a verify-driven unblock clears the stale blockedReason");
   assert.match(runExpectError(dir, ["task", "finalize"]), /task finalize requires verification status passed, failed, or accepted/);
+  const taskEvidenceId = addEvidenceFixture(dir, "test-output", "Focused task passport checks passed.");
 
   assert.match(run(dir, [
     "task",
@@ -3088,13 +3090,13 @@ test("manages a current task passport", () => {
     "--status",
     "passed",
     "--evidence",
-    "evt_task_test",
+    taskEvidenceId,
     "--summary",
     "Focused task passport checks passed."
   ]), /Updated verification for task .* \(passed\)/);
   const passed = JSON.parse(run(dir, ["task", "passport"]));
   assert.equal(passed.verification.status, "passed");
-  assert.deepEqual(passed.verification.evidence, ["evt_task_test"]);
+  assert.deepEqual(passed.verification.evidence, [taskEvidenceId]);
   assert.equal(passed.verification.summary, "Focused task passport checks passed.");
   const eventCountBeforeNoop = taskEventCount(dir, passed.id);
   assert.match(run(dir, [
@@ -3103,7 +3105,7 @@ test("manages a current task passport", () => {
     "--status",
     "passed",
     "--evidence",
-    "evt_task_test",
+    taskEvidenceId,
     "--summary",
     "Focused task passport checks passed."
   ]), /Verification unchanged for task .* \(passed\)/);
@@ -3111,7 +3113,7 @@ test("manages a current task passport", () => {
   assert.doesNotMatch(run(dir, ["task", "audit"]), /Verification is/);
   const verifiedHandoff = run(dir, ["task", "handoff"]);
   assert.match(verifiedHandoff, /Verification: passed - Focused task passport checks passed\./);
-  assert.match(verifiedHandoff, /Verification evidence: evt_task_test/);
+  assert.match(verifiedHandoff, new RegExp(`Verification evidence: ${taskEvidenceId}`));
   assert.match(verifiedHandoff, /Audit: No action-required task warnings\./);
 
   assert.match(run(dir, ["task", "finalize"]), /Finalized task .* \(passed\)/);
@@ -4491,12 +4493,13 @@ test("remediation stays pending until one finalization without losing passport f
   runGit(dir, ["add", "src/fix.ts"]);
   commit(dir, "Resolve review finding");
   run(dir, ["task", "update", "--clear-next-actions"]);
-  const finalOutput = run(dir, ["task", "finalize", "--status", "passed", "--evidence", "evt_review", "--summary", "Independent review and tests passed"]);
+  const reviewId = addEvidenceFixture(dir, "review", "Independent review and tests passed.");
+  const finalOutput = run(dir, ["task", "finalize", "--status", "passed", "--evidence", reviewId, "--summary", "Independent review and tests passed"]);
   const completed = JSON.parse(run(dir, ["task", "passport"]));
   assert.match(finalOutput, new RegExp(`Bound HEAD ${completed.currentHead}`));
   assert.equal(completed.status, "completed");
   assert.equal(completed.verification.status, "passed");
-  assert.deepEqual(completed.verification.evidence, ["evt_review"]);
+  assert.deepEqual(completed.verification.evidence, [reviewId]);
   assert.equal(completed.objective, started.objective);
   assert.deepEqual(completed.constraints, started.constraints);
   assert.deepEqual(completed.writeScope, started.writeScope);
@@ -4528,6 +4531,55 @@ test("task verify is rejected while the current task is parked", () => {
   );
   const stillParked = JSON.parse(run(dir, ["task", "passport"]));
   assert.equal(stillParked.status, "parked", "a rejected verify must not re-activate the parked task");
+});
+
+test("task verify and finalize reject unrecorded evidence before writing", () => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), "agentpack-evidence-reference-test-"));
+  run(dir, ["init"]);
+  run(dir, ["task", "start", "Validate evidence references"]);
+  const passport = JSON.parse(run(dir, ["task", "passport"]));
+  const validId = addEvidenceFixture(dir, "test-output", "Focused verification passed.");
+  const eventsPath = path.join(dir, ".agentpack", "events.jsonl");
+  writeFileSync(eventsPath, `${JSON.stringify({ id: "evt_not_evidence", ts: new Date().toISOString(), type: "decision" })}\n`, { encoding: "utf8", flag: "a" });
+  const before = run(dir, ["task", "passport"]);
+  const eventCount = taskEventCount(dir, passport.id);
+
+  for (const invalidId of ["PLACEHOLDER", "evt_not_evidence", "secret=top"]) {
+    const error = runExpectError(dir, ["task", "verify", "--status", "passed", "--evidence", validId, "--evidence", invalidId]);
+    assert.match(error, /Evidence event not found/);
+    assert.doesNotMatch(error, /secret=top/, "an invalid caller-supplied id is not echoed");
+    assert.equal(run(dir, ["task", "passport"]), before);
+    assert.equal(taskEventCount(dir, passport.id), eventCount);
+  }
+
+  run(dir, ["task", "verify", "--status", "pending", "--evidence", validId]);
+  const pending = run(dir, ["task", "passport"]);
+  const pendingEventCount = taskEventCount(dir, passport.id);
+  assert.match(runExpectError(dir, ["task", "finalize", "--status", "passed", "--evidence", "PLACEHOLDER"]), /Evidence event not found/);
+  assert.equal(run(dir, ["task", "passport"]), pending);
+  assert.equal(taskEventCount(dir, passport.id), pendingEventCount);
+  run(dir, ["task", "finalize", "--status", "passed", "--evidence", validId]);
+  assert.deepEqual(JSON.parse(run(dir, ["task", "passport"])).verification.evidence, [validId]);
+});
+
+test("already linked evidence remains usable after its event leaves the bounded lookup window", () => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), "agentpack-aged-evidence-test-"));
+  run(dir, ["init"]);
+  run(dir, ["task", "start", "Keep linked evidence valid"]);
+  const linkedId = addEvidenceFixture(dir, "test-output", "Verified before log growth.");
+  const unlinkedId = addEvidenceFixture(dir, "test-output", "Stored but not linked.");
+  run(dir, ["task", "verify", "--status", "passed", "--evidence", linkedId]);
+  const passport = JSON.parse(run(dir, ["task", "passport"]));
+  const eventCount = taskEventCount(dir, passport.id);
+  writeFileSync(path.join(dir, ".agentpack", "events.jsonl"),
+    `${JSON.stringify({ id: "evt_padding", ts: new Date().toISOString(), type: "decision", text: "x".repeat(4 * 1024 * 1024) })}\n`,
+    { encoding: "utf8", flag: "a" });
+
+  assert.match(run(dir, ["task", "verify", "--status", "passed", "--evidence", linkedId]), /Verification unchanged/);
+  assert.equal(taskEventCount(dir, passport.id), eventCount);
+  assert.match(runExpectError(dir, ["task", "verify", "--status", "passed", "--evidence", unlinkedId]), /Evidence event not found/);
+  assert.equal(taskEventCount(dir, passport.id), eventCount);
+  assert.match(run(dir, ["task", "finalize", "--evidence", linkedId]), /Finalized task/);
 });
 
 test("task finalize prints hygiene advisories and calibrates unknown risk", () => {
@@ -6094,6 +6146,11 @@ test("serves MCP JSON-RPC tools over newline-delimited stdio", async () => {
   assert.deepEqual(startedPassport.tags, ["mcp-lifecycle"]);
   assert.equal(startedPassport.risk, "medium");
 
+  const invalidVerify = await mcp.send({ jsonrpc: "2.0", id: 901, method: "tools/call",
+    params: { name: "task_update_verification", arguments: { status: "passed", evidence: ["PLACEHOLDER"] } } });
+  assert.match(invalidVerify.error?.message || "", /Evidence event not found/);
+  assert.deepEqual(JSON.parse(run(dir, ["task", "passport"])), startedPassport);
+
   const taskStatusAfterStart = await mcp.send({
     jsonrpc: "2.0",
     id: 10,
@@ -6259,6 +6316,12 @@ test("serves MCP JSON-RPC tools over newline-delimited stdio", async () => {
       }
     }
   });
+
+  const beforeInvalidFinalize = run(dir, ["task", "passport"]);
+  const invalidFinalize = await mcp.send({ jsonrpc: "2.0", id: 902, method: "tools/call",
+    params: { name: "task_finalize", arguments: { evidence: ["PLACEHOLDER"] } } });
+  assert.match(invalidFinalize.error?.message || "", /Evidence event not found/);
+  assert.equal(run(dir, ["task", "passport"]), beforeInvalidFinalize);
 
   const taskFinalize = await mcp.send({
     jsonrpc: "2.0",
