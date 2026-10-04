@@ -32,6 +32,16 @@ interface RequestUsage {
   at: number | null;
 }
 
+export interface AgentpackOverhead {
+  method: "direct calls or distinct observed code-mode results; transcript chars / 4; later selected requests are an upper bound";
+  calls: number;
+  responseTokens: number;
+  rereadTokensUpperBound: number;
+  outputTokensUpperBound: number;
+  unattributedResponses: number;
+  byTool: Array<{ tool: string; calls: number; responseTokens: number; rereadTokensUpperBound: number; outputTokensUpperBound: number }>;
+}
+
 interface UsageTurn {
   source: number;
   turn: number;
@@ -70,6 +80,7 @@ export interface UsageReport {
   turnSelection: string | null;
   turns?: UsageTurn[];
   unassignedRequests: number;
+  agentpackOverhead: AgentpackOverhead;
 }
 
 const MAX_FILE_BYTES = 64 * 1024 * 1024;
@@ -131,6 +142,181 @@ function normalize(client: UsageOptions["client"], value: unknown): Tokens {
 
 function emptyTokens(): Tokens {
   return { input: 0, uncachedInput: 0, cacheRead: 0, cacheWrite: 0, output: 0, reasoning: 0 };
+}
+
+export function emptyAgentpackOverhead(): AgentpackOverhead {
+  return { method: "direct calls or distinct observed code-mode results; transcript chars / 4; later selected requests are an upper bound", calls: 0,
+    responseTokens: 0, rereadTokensUpperBound: 0, outputTokensUpperBound: 0,
+    unattributedResponses: 0, byTool: [] };
+}
+
+export function addAgentpackOverhead(total: AgentpackOverhead, part: AgentpackOverhead): void {
+  for (const key of ["calls", "responseTokens", "rereadTokensUpperBound", "outputTokensUpperBound", "unattributedResponses"] as const) total[key] += part[key];
+  for (const row of part.byTool) {
+    let group = total.byTool.find(item => item.tool === row.tool);
+    if (!group) { group = { tool: row.tool, calls: 0, responseTokens: 0, rereadTokensUpperBound: 0, outputTokensUpperBound: 0 }; total.byTool.push(group); }
+    for (const key of ["calls", "responseTokens", "rereadTokensUpperBound", "outputTokensUpperBound"] as const) group[key] += row[key];
+  }
+  total.byTool.sort((a, b) => a.tool.localeCompare(b.tool));
+}
+
+/** Inspect only call names, ids, response lengths and request positions; never retain transcript content. */
+function estimateAgentpackOverhead(client: UsageOptions["client"], lines: string[], selected: Map<string, { line: number; tokens: Tokens }>, allCodexRequests: Array<{ id: string; line: number }>, seenCalls: Set<string>): AgentpackOverhead {
+  const overhead = emptyAgentpackOverhead();
+  const calls = new Map<string, { tools: string[]; direct: boolean; otherMcp: boolean; line: number; requestId: string | null }>();
+  const outputRequests = new Set<string>();
+  const toolOutputRequests = new Map<string, Set<string>>();
+  const selectedInOrder = [...selected.entries()].sort((a, b) => a[1].line - b[1].line);
+  const firstAtOrAfter = (line: number): string | null => {
+    let low = 0; let high = allCodexRequests.length;
+    while (low < high) { const mid = (low + high) >>> 1; if (allCodexRequests[mid]!.line < line) low = mid + 1; else high = mid; }
+    return allCodexRequests[low]?.id ?? null;
+  };
+  const laterCount = (line: number): number => {
+    let low = 0; let high = selectedInOrder.length;
+    while (low < high) { const mid = (low + high) >>> 1; if (selectedInOrder[mid]![1].line <= line) low = mid + 1; else high = mid; }
+    return selectedInOrder.length - low;
+  };
+  const rowAt = (line: string): Record<string, unknown> => {
+    try { return object(JSON.parse(line) as unknown); } catch { return {}; }
+  };
+  const toolGroup = (name: string) => {
+    let group = overhead.byTool.find(item => item.tool === name);
+    if (!group) { group = { tool: name, calls: 0, responseTokens: 0, rereadTokensUpperBound: 0, outputTokensUpperBound: 0 }; overhead.byTool.push(group); }
+    return group;
+  };
+  const resultLength = (value: unknown): number => {
+    if (typeof value === "string") return value.length;
+    if (Array.isArray(value)) return value.reduce<number>((sum, item) => sum + resultLength(object(item).text ?? object(item).content), 0);
+    return 0;
+  };
+  const resultTool = (value: string): string | null => {
+    const first = value.trimStart();
+    for (const [tool, prefix] of [["load_context", "# Agentpack Resume"], ["task_status", "Task inspection"],
+      ["task_status", "Task status"],
+      ["attach_evidence", "Attached evidence"], ["checkpoint", "Created checkpoint"],
+      ["task_start", "Started task"], ["task_switch", "Switched to task"],
+      ["task_park", "Parked task"], ["task_update", "Updated task"]] as const) {
+      if (first.startsWith(prefix)) return tool;
+    }
+    return null;
+  };
+  const codexResultBlocks = (value: unknown, soleTool: string | null): Array<{ chars: number; tool: string | null; digest: string }> => {
+    if (!Array.isArray(value)) return [];
+    return value.flatMap(block => {
+      const visible = object(block).text;
+      if (typeof visible !== "string") return [];
+      try {
+        const parsed = object(JSON.parse(visible) as unknown);
+        const result = Array.isArray(parsed.content) ? parsed : object(parsed.result);
+        if (Array.isArray(result.content) && result.content.every(item => object(item).type === "text")) {
+          const first = object(result.content[0]).text;
+          return [{ chars: visible.length, tool: (typeof first === "string" ? resultTool(first) : null) || soleTool, digest: sha256(visible) }];
+        }
+      } catch { /* A direct text(r.content[0]) result is not JSON. */ }
+      const tool = resultTool(visible) || (visible.startsWith("Warning: truncated output") && visible.includes("# Agentpack Resume") ? "load_context" : null);
+      return tool ? [{ chars: visible.length, tool, digest: sha256(visible) }] : [];
+    });
+  };
+  for (let i = 0; i < lines.length; i += 1) {
+    const row = rowAt(lines[i]!);
+    const payload = object(row.payload);
+    const message = object(row.message);
+    if (client === "claude" && row.type === "assistant") {
+      const content = message.content;
+      if (!Array.isArray(content)) continue;
+      for (const block of content) {
+        const item = object(block);
+        if (item.type !== "tool_use" || typeof item.id !== "string" || typeof item.name !== "string" || !item.name.startsWith("mcp__agentpack__")) continue;
+        calls.set(item.id, { tools: [item.name.slice("mcp__agentpack__".length)], direct: true, otherMcp: false, line: i,
+          requestId: typeof message.id === "string" ? message.id : null });
+      }
+    }
+    if (client === "codex" && row.type === "response_item" && (payload.type === "function_call" || payload.type === "custom_tool_call")) {
+      if (typeof payload.call_id !== "string") continue;
+      const direct = typeof payload.name === "string" && payload.name.startsWith("mcp__agentpack__") ? [payload.name.slice("mcp__agentpack__".length)] : [];
+      const input = String(payload.arguments ?? payload.input ?? "");
+      const wrapped = [...input.matchAll(/tools\.mcp__agentpack__([A-Za-z_]+)\s*\(/gu)].map(match => match[1]!);
+      const tools = direct.length ? direct : wrapped;
+      if (tools.length) calls.set(payload.call_id, { tools: [...new Set(tools)], direct: direct.length > 0,
+        otherMcp: /tools\.mcp__(?!agentpack__)[A-Za-z0-9_]+\s*\(/u.test(input), line: i, requestId: null });
+    }
+  }
+  for (const [id, call] of calls) {
+    if (client === "codex") call.requestId = firstAtOrAfter(call.line);
+    if (!call.requestId || !selected.has(call.requestId)) continue;
+    if (client === "codex" && !call.direct) continue;
+    if (seenCalls.has(`${client}:${id}`)) { calls.delete(id); continue; }
+    seenCalls.add(`${client}:${id}`);
+    overhead.calls += call.tools.length;
+    for (const tool of call.tools) toolGroup(tool).calls += 1;
+    outputRequests.add(call.requestId);
+    if (call.tools.length === 1) {
+      const tool = call.tools[0]!;
+      if (!toolOutputRequests.has(tool)) toolOutputRequests.set(tool, new Set());
+      toolOutputRequests.get(tool)!.add(call.requestId);
+    }
+  }
+  for (let i = 0; i < lines.length; i += 1) {
+    const row = rowAt(lines[i]!);
+    const payload = object(row.payload);
+    const message = object(row.message);
+    const outputs: Array<{ id: string; content: unknown }> = [];
+    if (client === "codex" && row.type === "response_item" && (payload.type === "function_call_output" || payload.type === "custom_tool_call_output") && typeof payload.call_id === "string") {
+      outputs.push({ id: payload.call_id, content: payload.output });
+    }
+    if (client === "claude" && row.type === "user" && Array.isArray(message.content)) {
+      for (const block of message.content) {
+        const item = object(block);
+        if (item.type === "tool_result" && typeof item.tool_use_id === "string") outputs.push({ id: item.tool_use_id, content: item.content });
+      }
+    }
+    for (const output of outputs) {
+      const call = calls.get(output.id);
+      if (!call || !call.requestId || !selected.has(call.requestId) || selected.get(call.requestId)!.line > i) continue;
+      const laterRequests = laterCount(i);
+      if (client === "codex" && !call.direct) {
+        if (seenCalls.has(`${client}:${output.id}`)) continue;
+        const blocks = codexResultBlocks(output.content, call.tools.length === 1 && !call.otherMcp ? call.tools[0]! : null);
+        const observed = blocks.filter(block => block.tool !== null && call.tools.includes(block.tool));
+        if (!observed.length) { overhead.unattributedResponses += 1; continue; }
+        seenCalls.add(`${client}:${output.id}`);
+        const distinctResults = new Set<string>();
+        outputRequests.add(call.requestId);
+        for (const block of observed) {
+          const group = toolGroup(block.tool!);
+          const size = Math.ceil(block.chars / 4);
+          const identity = `${block.tool}:${block.digest}`;
+          if (!distinctResults.has(identity)) {
+            distinctResults.add(identity);
+            overhead.calls += 1;
+            group.calls += 1;
+          }
+          group.responseTokens += size;
+          group.rereadTokensUpperBound += size * laterRequests;
+          overhead.responseTokens += size;
+          overhead.rereadTokensUpperBound += size * laterRequests;
+          if (!toolOutputRequests.has(group.tool)) toolOutputRequests.set(group.tool, new Set());
+          toolOutputRequests.get(group.tool)!.add(call.requestId);
+        }
+        if (observed.length < blocks.length) overhead.unattributedResponses += 1;
+        continue;
+      }
+      const tokens = Math.ceil(resultLength(output.content) / 4);
+      overhead.responseTokens += tokens;
+      overhead.rereadTokensUpperBound += tokens * laterRequests;
+      if (call.tools.length === 1) {
+        const group = toolGroup(call.tools[0]!);
+        group.responseTokens += tokens;
+        group.rereadTokensUpperBound += tokens * laterRequests;
+      } else overhead.unattributedResponses += 1;
+    }
+  }
+  overhead.outputTokensUpperBound = [...outputRequests].reduce((sum, id) => sum + (selected.get(id)?.tokens.output ?? 0), 0);
+  for (const group of overhead.byTool) group.outputTokensUpperBound = [...(toolOutputRequests.get(group.tool) ?? [])]
+    .reduce((sum, id) => sum + (selected.get(id)?.tokens.output ?? 0), 0);
+  overhead.byTool.sort((a, b) => a.tool.localeCompare(b.tool));
+  return overhead;
 }
 
 function addTokens(total: Tokens, tokens: Tokens): void {
@@ -234,6 +420,8 @@ function parseUsageReport(options: UsageOptions, cwd: string): { report: UsageRe
   let duplicateFiles = 0;
   let duplicateRecords = 0;
   let excludedRequests = 0;
+  const agentpackOverhead = emptyAgentpackOverhead();
+  const seenAgentpackCalls = new Set<string>();
   for (const file of options.files) {
     // Resolve explicit symlinks so the same source cannot be counted twice.
     let resolved: string;
@@ -260,6 +448,8 @@ function parseUsageReport(options: UsageOptions, cwd: string): { report: UsageRe
     let model = "unknown";
     const turnModels = new Map<string, string>();
     const sourceRequests = new Map<string, Tokens>();
+    const requestLines = new Map<string, { line: number; tokens: Tokens }>();
+    const allCodexRequests: Array<{ id: string; line: number }> = [];
     let cumulative: unknown;
     let turnNumber = 0;
     let activeTurn: string | null = null;
@@ -274,7 +464,9 @@ function parseUsageReport(options: UsageOptions, cwd: string): { report: UsageRe
         start: timestamp(at) === null ? null : String(at), durationMs: null,
         complete: boundaryKind === "client turn" ? false : null, boundary: boundaryKind, requests: 0, tokens: emptyTokens() });
     };
-    for (const line of text.split(/\r?\n/u)) {
+    const lines = text.split(/\r?\n/u);
+    for (let lineIndex = 0; lineIndex < lines.length; lineIndex += 1) {
+      const line = lines[lineIndex]!;
       if (!line.trim()) continue;
       let row: Record<string, unknown>;
       try { row = object(JSON.parse(line) as unknown); }
@@ -311,6 +503,7 @@ function parseUsageReport(options: UsageOptions, cwd: string): { report: UsageRe
       const isUsage = options.client === "codex" ? row.type === "token_usage_record"
         : row.type === "assistant" && message.usage !== undefined && message.model !== "<synthetic>";
       if (!isUsage) continue;
+      if (options.client === "codex" && typeof payload.response_id === "string") allCodexRequests.push({ id: payload.response_id, line: lineIndex });
       const turnKey = options.client === "codex" ? clientTurns.get(String(payload.turn_id)) || null : activeTurn;
       const selectedTurn = turnKey ? turnGroups.get(turnKey) : undefined;
       if (turnRange && (!selectedTurn || selectedTurn.turn < turnRange[0] || selectedTurn.turn > turnRange[1])) continue;
@@ -330,6 +523,10 @@ function parseUsageReport(options: UsageOptions, cwd: string): { report: UsageRe
       if (options.exclude?.has(`${options.client}:${key}`)) { excludedRequests += 1; continue; }
       source.usageRecords += 1;
       sourceRequests.set(key, tokens);
+      const firstSeen = requestLines.get(key);
+      if (firstSeen) {
+        firstSeen.tokens.output = Math.max(firstSeen.tokens.output, tokens.output);
+      } else requestLines.set(key, { line: lineIndex, tokens: { ...tokens } });
       if (options.client === "codex") cumulative = payload.thread_token_usage;
       const existing = requests.get(key);
       if (existing) {
@@ -348,6 +545,7 @@ function parseUsageReport(options: UsageOptions, cwd: string): { report: UsageRe
         requests.set(key, { model: requestModel, tokens, turnKey, at: time });
       }
     }
+    addAgentpackOverhead(agentpackOverhead, estimateAgentpackOverhead(options.client, lines, requestLines, allCodexRequests, seenAgentpackCalls));
     if (turnRange) source.cumulativeCheck = "turn-filtered";
     if (options.client === "codex" && !bounded && !turnRange && cumulative !== undefined) {
       const sum = emptyTokens();
@@ -394,7 +592,7 @@ function parseUsageReport(options: UsageOptions, cwd: string): { report: UsageRe
       : { from: options.from || null, to: options.to || null, selection: "Usage record timestamps: inclusive from, exclusive to; whole supplied sources when unbounded" },
     requests: requests.size, duplicateRecords, duplicateFiles, totals,
     models: [...models.values()].sort((a, b) => a.model.localeCompare(b.model)), sources, warnings, billedUsd: null,
-    turnSelection: options.turns || null, unassignedRequests,
+    turnSelection: options.turns || null, unassignedRequests, agentpackOverhead,
     ...(options.byTurn ? { turns: [...turnGroups.values()].filter(turn => turn.requests > 0) } : {})
   };
   return { report, requests, turnGroups, excludedRequests };
@@ -414,6 +612,10 @@ export function formatUsageReport(report: UsageReport): string {
     const t = group.tokens;
     lines.push(`${group.model}: ${group.requests} requests; input ${t.input} (uncached ${t.uncachedInput}, cache read ${t.cacheRead}, cache write ${t.cacheWrite}); output ${t.output} (reasoning ${t.reasoning ?? "unknown"})`);
   }
+  const overhead = report.agentpackOverhead;
+  lines.push("", `Agentpack: ${overhead.calls} calls; response ~${overhead.responseTokens} tokens; later-context <=${overhead.rereadTokensUpperBound} tokens; invoking-output <=${overhead.outputTokensUpperBound} tokens`);
+  for (const tool of overhead.byTool) lines.push(`- ${tool.tool}: ${tool.calls} calls; response ~${tool.responseTokens}; later-context <=${tool.rereadTokensUpperBound}; invoking-output <=${tool.outputTokensUpperBound}`);
+  if (overhead.unattributedResponses) lines.push(`Unresolved code-mode wrappers: ${overhead.unattributedResponses}`);
   if (report.turnSelection) lines.push(`Selected turns: ${report.turnSelection}`);
   if (report.turns) {
     lines.push("", "Source/Turn | Started | Requests | Uncached input | Cache read | Cache write | Output | Duration (seconds) | Complete");

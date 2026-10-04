@@ -57,6 +57,131 @@ test("Claude content snapshots use final counters, normalize cache categories an
   assert.doesNotMatch(JSON.stringify(r), /PRIVATE_PROMPT_SENTINEL|content/);
 });
 
+test("Agentpack overhead estimates Claude and wrapped Codex calls without exposing response text", t => {
+  const claudeCall = { ...claude("c1"), message: { ...claude("c1").message,
+    content: [{ type: "tool_use", id: "tool-1", name: "mcp__agentpack__task_park", input: {} }] } };
+  const claudeResult = { type: "user", timestamp: time, message: { content: [
+    { type: "tool_result", tool_use_id: "tool-1", content: "PRIVATE_RESULT_1234" }] } };
+  const { dir, file } = fixture(t, [claudeCall, claudeResult, claude("c2")]);
+  const claudeReport = buildUsageReport({ client: "claude", files: [file] }, dir);
+  assert.equal(claudeReport.agentpackOverhead.calls, 1);
+  assert.equal(claudeReport.agentpackOverhead.responseTokens, Math.ceil("PRIVATE_RESULT_1234".length / 4));
+  assert.equal(claudeReport.agentpackOverhead.rereadTokensUpperBound, claudeReport.agentpackOverhead.responseTokens);
+  assert.equal(claudeReport.agentpackOverhead.outputTokensUpperBound, 20);
+  assert.equal(claudeReport.agentpackOverhead.byTool[0]?.tool, "task_park");
+  assert.doesNotMatch(JSON.stringify(claudeReport), /PRIVATE_RESULT/);
+
+  const wrapped = "const r = await tools.mcp__agentpack__task_switch({id:'task_test'}); text(r);";
+  const resultBlock = JSON.stringify({ content: [{ type: "text", text: "Switched to task task_test" }] });
+  writeFileSync(file, [context,
+    { type: "response_item", payload: { type: "custom_tool_call", call_id: "call-1", name: "exec", input: wrapped } },
+    codex("r1"),
+    { type: "response_item", payload: { type: "custom_tool_call_output", call_id: "call-1", output: [{ type: "text", text: resultBlock }] } },
+    codex("r2")].map(row => JSON.stringify(row)).join("\n") + "\n");
+  const codexReport = buildUsageReport({ client: "codex", files: [file] }, dir);
+  assert.equal(codexReport.agentpackOverhead.calls, 1);
+  assert.equal(codexReport.agentpackOverhead.responseTokens, Math.ceil(resultBlock.length / 4));
+  assert.equal(codexReport.agentpackOverhead.rereadTokensUpperBound, codexReport.agentpackOverhead.responseTokens);
+  assert.equal(codexReport.agentpackOverhead.outputTokensUpperBound, 20);
+  assert.equal(codexReport.agentpackOverhead.byTool[0]?.tool, "task_switch");
+
+  const mixed = "const r = await Promise.all([tools.mcp__agentpack__task_switch({id:'task_test'}), tools.exec_command({cmd:'pwd'})]); text(r);";
+  writeFileSync(file, [context,
+    { type: "response_item", payload: { type: "custom_tool_call", call_id: "call-2", name: "exec", input: mixed } },
+    codex("r1"),
+    { type: "response_item", payload: { type: "custom_tool_call_output", call_id: "call-2", output: "PRIVATE_MIXED_RESULT" } },
+    codex("r2", usage, "2026-10-02T12:01:00Z")].map(row => JSON.stringify(row)).join("\n") + "\n");
+  const mixedReport = buildUsageReport({ client: "codex", files: [file] }, dir);
+  assert.equal(mixedReport.agentpackOverhead.calls, 0, "wrapper source is not proof of execution");
+  assert.equal(mixedReport.agentpackOverhead.unattributedResponses, 1);
+  assert.equal(mixedReport.agentpackOverhead.responseTokens, 0);
+  const laterOnly = buildUsageReport({ client: "codex", files: [file], from: "2026-10-02T12:01:00Z" }, dir);
+  assert.equal(laterOnly.requests, 1);
+  assert.equal(laterOnly.agentpackOverhead.calls, 0, "a call made by an excluded request cannot attach to the next selected request");
+
+  writeFileSync(file, [context,
+    { type: "response_item", payload: { type: "custom_tool_call", call_id: "call-3", name: "exec", input: mixed } },
+    codex("r1"),
+    { type: "response_item", payload: { type: "custom_tool_call_output", call_id: "call-3", output: [
+      { type: "text", text: "Script completed" }, { type: "text", text: resultBlock },
+      { type: "text", text: JSON.stringify({ output: "PRIVATE_SHELL_RESULT" }) }] } },
+    codex("r2")].map(row => JSON.stringify(row)).join("\n") + "\n");
+  const separated = buildUsageReport({ client: "codex", files: [file] }, dir);
+  assert.equal(separated.agentpackOverhead.unattributedResponses, 0);
+  assert.equal(separated.agentpackOverhead.responseTokens, Math.ceil(resultBlock.length / 4));
+  assert.equal(separated.agentpackOverhead.byTool[0]?.responseTokens, Math.ceil(resultBlock.length / 4));
+  assert.doesNotMatch(JSON.stringify(separated), /PRIVATE_SHELL_RESULT/);
+  const copy = path.join(dir, "fork.jsonl");
+  writeFileSync(copy, readFileSync(file));
+  const repeated = buildUsageReport({ client: "codex", files: [file, copy] }, dir);
+  assert.equal(repeated.requests, 2);
+  assert.equal(repeated.agentpackOverhead.calls, 1, "a copied call in a fork is not counted twice");
+  assert.equal(repeated.agentpackOverhead.responseTokens, separated.agentpackOverhead.responseTokens);
+
+  const twoCalls = "const r = await Promise.all([tools.mcp__agentpack__attach_evidence({content:'x'}), tools.mcp__agentpack__checkpoint({summary:'y'})]); r.forEach(text);";
+  const evidenceBlock = JSON.stringify({ content: [{ type: "text", text: "Attached evidence evt_test." }] });
+  const checkpointBlock = JSON.stringify({ content: [{ type: "text", text: "Created checkpoint cp_test." }] });
+  writeFileSync(file, [context,
+    { type: "response_item", payload: { type: "custom_tool_call", call_id: "call-4", name: "exec", input: twoCalls } },
+    codex("r1"),
+    { type: "response_item", payload: { type: "custom_tool_call_output", call_id: "call-4", output: [
+      { type: "text", text: checkpointBlock }, { type: "text", text: evidenceBlock }] } },
+    codex("r2")].map(row => JSON.stringify(row)).join("\n") + "\n");
+  const separatedPair = buildUsageReport({ client: "codex", files: [file] }, dir);
+  assert.equal(separatedPair.agentpackOverhead.calls, 2);
+  assert.equal(separatedPair.agentpackOverhead.unattributedResponses, 0);
+  assert.deepEqual(separatedPair.agentpackOverhead.byTool.map(row => [row.tool, row.responseTokens]), [
+    ["attach_evidence", Math.ceil(evidenceBlock.length / 4)], ["checkpoint", Math.ceil(checkpointBlock.length / 4)]]);
+
+  const loop = "const ids = ['a','b','c','d','e']; const r = await Promise.all(ids.map(id => tools.mcp__agentpack__task_status({id}))); r.forEach(text);";
+  const statusBlock = (id: number) => JSON.stringify({ id: `task_${id}`, status: "fulfilled", result: { content: [{ type: "text", text: "Task inspection (read-only)\n" }] } });
+  writeFileSync(file, [context,
+    { type: "response_item", payload: { type: "custom_tool_call", call_id: "call-5", name: "exec", input: loop } },
+    codex("r1"),
+    { type: "response_item", payload: { type: "custom_tool_call_output", call_id: "call-5", output: Array.from({ length: 5 }, (_, i) => ({ type: "text", text: statusBlock(i) })) } },
+    codex("r2")].map(row => JSON.stringify(row)).join("\n") + "\n");
+  const loopReport = buildUsageReport({ client: "codex", files: [file] }, dir);
+  assert.equal(loopReport.agentpackOverhead.calls, 5, "executed results determine looped call count");
+  assert.equal(loopReport.agentpackOverhead.byTool[0]?.calls, 5);
+  const errorBlock = (id: number) => JSON.stringify({ id: `short_${id}`, status: "fulfilled", result: { content: [{ type: "text", text: "tool call error: Invalid task id" }], isError: true } });
+  writeFileSync(file, [context,
+    { type: "response_item", payload: { type: "custom_tool_call", call_id: "call-5a", name: "exec", input: loop } },
+    codex("r1"),
+    { type: "response_item", payload: { type: "custom_tool_call_output", call_id: "call-5a", output: Array.from({ length: 5 }, (_, i) => ({ type: "text", text: errorBlock(i) })) } },
+    codex("r2")].map(row => JSON.stringify(row)).join("\n") + "\n");
+  assert.equal(buildUsageReport({ client: "codex", files: [file] }, dir).agentpackOverhead.calls, 5,
+    "MCP errors still prove that five tool calls executed");
+
+  const mixedMcp = "const r = await Promise.all([tools.mcp__agentpack__task_status({id:'a'}), tools.mcp__other__lookup({id:'b'})]); r.forEach(text);";
+  writeFileSync(file, [context,
+    { type: "response_item", payload: { type: "custom_tool_call", call_id: "call-5b", name: "exec", input: mixedMcp } },
+    codex("r1"),
+    { type: "response_item", payload: { type: "custom_tool_call_output", call_id: "call-5b", output: [{ type: "text", text: errorBlock(0) }] } },
+    codex("r2")].map(row => JSON.stringify(row)).join("\n") + "\n");
+  assert.equal(buildUsageReport({ client: "codex", files: [file] }, dir).agentpackOverhead.calls, 0,
+    "an unlabeled result in a wrapper with another MCP server is ambiguous");
+
+  const duplicatePrint = "const r = await tools.mcp__agentpack__task_status({id:'a'}); text(r); text(r);";
+  writeFileSync(file, [context,
+    { type: "response_item", payload: { type: "custom_tool_call", call_id: "call-5c", name: "exec", input: duplicatePrint } },
+    codex("r1"),
+    { type: "response_item", payload: { type: "custom_tool_call_output", call_id: "call-5c", output: [
+      { type: "text", text: statusBlock(0) }, { type: "text", text: statusBlock(0) }] } },
+    codex("r2")].map(row => JSON.stringify(row)).join("\n") + "\n");
+  const duplicated = buildUsageReport({ client: "codex", files: [file] }, dir).agentpackOverhead;
+  assert.equal(duplicated.calls, 1, "printing one result twice does not execute the tool twice");
+  assert.equal(duplicated.responseTokens, 2 * Math.ceil(statusBlock(0).length / 4), "both printed copies occupy context");
+
+  const quoted = "await tools.apply_patch(\"+ tools.mcp__agentpack__task_status({id:'unused'})\");";
+  writeFileSync(file, [context,
+    { type: "response_item", payload: { type: "custom_tool_call", call_id: "call-6", name: "exec", input: quoted } },
+    codex("r1"),
+    { type: "response_item", payload: { type: "custom_tool_call_output", call_id: "call-6", output: [{ type: "text", text: "{}" }] } },
+    codex("r2")].map(row => JSON.stringify(row)).join("\n") + "\n");
+  assert.equal(buildUsageReport({ client: "codex", files: [file] }, dir).agentpackOverhead.calls, 0,
+    "quoted source code is not an Agentpack invocation");
+});
+
 test("Codex cumulative reconciliation includes reasoning and does not confirm unknown counters", t => {
   const request = codex("r1");
   const { dir, file } = fixture(t, [context, { ...request, payload: { ...request.payload,
@@ -366,7 +491,7 @@ test("Task usage links suggested sessions once and reports by Task Passport id a
   assert.deepEqual(manifest.sources.map((source: { file: string; turns?: string }) => [source.file, source.turns]), [[realpathSync(main), undefined], [realpathSync(codexFile), undefined]]);
   const report = JSON.parse(run("report", "--task", passport.id, "--json").stdout);
   assert.equal(report.kind, "task-usage-report");
-  assert.deepEqual(Object.keys(report).sort(), ["billedUsd", "coverage", "kind", "manifest", "requests", "slices", "taskId", "totals", "version", "warnings"], "task report JSON contract");
+  assert.deepEqual(Object.keys(report).sort(), ["agentpackOverhead", "billedUsd", "coverage", "kind", "manifest", "requests", "slices", "taskId", "totals", "version", "warnings"], "task report JSON contract");
   const linkJson = JSON.parse(run("link", "--client", "codex", "--file", codexFile, "--phase", "implementation", "--json").stdout);
   assert.deepEqual(Object.keys(linkJson).sort(), ["kind", "linked", "report", "taskId"], "link JSON contract");
   assert.equal(linkJson.kind, "task-usage-link");

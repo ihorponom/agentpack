@@ -270,7 +270,7 @@ output carries `kind`, and these shapes are stable:
   `client`, `file`, `subagent`, `started`, `requests`, `taskRequests`,
   `traced`, `linked`)
 - `task-usage-report`: `version`, `taskId`, `manifest` (`path`, `sha256`),
-  `coverage`, `requests`, `totals`, `slices` (`phase`, `report`; traced
+  `coverage`, `requests`, `totals`, `agentpackOverhead`, `slices` (`phase`, `report`; traced
   sessions use phase `traced`), `billedUsd` (always null), `warnings`. For
   `--task`, `manifest` describes the effective selection of linked plus
   traced sessions.
@@ -316,6 +316,26 @@ supplied local JSONL files (maximum 64 MiB each), prints aggregate usage and
 provenance, and writes no files or ledger records. Repeat `--file` for additional
 sources from the same client, including explicitly identified child sessions.
 The task label is descriptive; it does not activate or modify a Task Passport.
+
+Direct reports and each task slice include additive `agentpackOverhead` JSON:
+`calls`, estimated `responseTokens`, `rereadTokensUpperBound`,
+`outputTokensUpperBound`, `unattributedResponses`, and `byTool` rows with the
+same per-tool counts and estimates. Response tokens use visible transcript
+characters divided by four, rounded up. The reread upper bound multiplies
+each response estimate by later selected requests in that source; context
+compaction or truncation can make actual rereads smaller. The output upper
+bound counts model output for requests with observed Agentpack calls, once per
+request; it includes other output from those requests. For Codex code-mode,
+only identifiable MCP result blocks count as calls and response size; source
+expressions alone do not prove execution. Identical result blocks in one
+wrapper count as one call but every visible copy contributes response size.
+Distinct calls with identical results, or missing, transformed, or ambiguous
+results can therefore undercount calls. Unresolved wrappers increment
+`unattributedResponses`. Separate Agentpack result blocks can be measured even
+when `functions.exec` also runs shell commands.
+These fields contain no transcript content and do not measure tool schemas,
+exact tokenizer usage, cache billing, or money. Task reports sum the selected
+source estimates; their coverage limitations still apply.
 
 `--by-turn` adds source-local turn rows: start time, request count, token
 categories, completion and available duration. `--turns N`, `--turns N:` or

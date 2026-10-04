@@ -190,7 +190,12 @@ failures. See [TASK-PASSPORT.md](TASK-PASSPORT.md) for the full import contract.
 
 ### Usage Tools
 
-`usage_report` provides the same read-only report as `agentpack usage report`.
+`usage_report` provides the same read-only report as `agentpack usage report`,
+including additive `agentpackOverhead` estimates for visible Agentpack calls,
+response size, later selected requests, and invoking model output. These are
+transcript-based estimates and upper bounds, not schema cost or billed tokens.
+Codex code-mode counts only identifiable MCP result blocks; unresolved wrappers
+can undercount calls and responses (see docs/CLI.md).
 It does not collect activity automatically or write ledger state.
 
 To report a task, pass its Passport id (or nothing for the current task):

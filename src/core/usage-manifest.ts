@@ -3,7 +3,7 @@ import path from "node:path";
 import { resolveRegularFileWithin, sha256 } from "./hash.js";
 import { getPackPath, PACK_DIR_MODE, withPackWriteLock, writeJson } from "./store.js";
 import { getCurrentPassport, readPassport, readTaskActiveIntervals } from "./tasks.js";
-import { formatUsageReport, isSubagentTranscript, readUsageReport, readUsageTimeline, type UsageReport } from "./usage.js";
+import { addAgentpackOverhead, emptyAgentpackOverhead, formatUsageReport, isSubagentTranscript, readUsageReport, readUsageTimeline, type AgentpackOverhead, type UsageReport } from "./usage.js";
 
 export interface TaskUsageReport {
   kind: "task-usage-report";
@@ -13,6 +13,7 @@ export interface TaskUsageReport {
   coverage: { status: "partial" | "declared-complete"; note: string };
   requests: number;
   totals: UsageReport["totals"];
+  agentpackOverhead: AgentpackOverhead;
   slices: Array<{ phase: string; report: UsageReport }>;
   billedUsd: null;
   warnings: string[];
@@ -212,6 +213,7 @@ function reportFromBytes(bytes: Buffer, resolved: string, byTurn: boolean, inter
   const emptySources: string[] = [];
   let repeatedRequests = 0;
   const totals: UsageReport["totals"] = { input: 0, uncachedInput: 0, cacheRead: 0, cacheWrite: 0, output: 0, reasoning: 0 };
+  const agentpackOverhead = emptyAgentpackOverhead();
   const slices: TaskUsageReport["slices"] = [];
   let requests = 0;
   for (const { client, file: sourceFile, phase, turns } of sources) {
@@ -248,6 +250,7 @@ function reportFromBytes(bytes: Buffer, resolved: string, byTurn: boolean, inter
       seen.add(id);
     }
     requests += report.requests;
+    addAgentpackOverhead(agentpackOverhead, report.agentpackOverhead);
     for (const key of ["input", "uncachedInput", "cacheRead", "cacheWrite", "output"] as const) {
       totals[key] += report.totals[key];
       if (!Number.isSafeInteger(totals[key])) throw new Error("Usage manifest totals exceed safe integer range");
@@ -257,7 +260,7 @@ function reportFromBytes(bytes: Buffer, resolved: string, byTurn: boolean, inter
     slices.push({ phase, report });
   }
   return { kind: "task-usage-report", version: 1, taskId, manifest: { path: resolved, sha256: sha256(bytes) },
-    coverage, requests, totals, slices, billedUsd: null,
+    coverage, requests, totals, agentpackOverhead, slices, billedUsd: null,
     warnings: [...new Set(["Coverage is declared by the manifest author; it is not independently verified.",
       ...(intervals ? ["Only requests made while the task was the current Passport are counted; sessions shared with other tasks are split by those periods. Subagent sessions count whole for the task that was current when they started."] : []),
       ...(skippedSubagents.length ? [`Subagent sessions started while another task was current are not counted: ${skippedSubagents.join(", ")}.`] : []),
@@ -271,6 +274,7 @@ export function formatTaskUsageReport(report: TaskUsageReport): string {
   return [`Task usage: ${report.taskId}`, `Coverage: ${report.coverage.status} — ${report.coverage.note}`,
     `Requests: ${report.requests}`, `Input: ${report.totals.input} (cache read ${report.totals.cacheRead}, cache write ${report.totals.cacheWrite}, uncached ${report.totals.uncachedInput})`,
     `Output: ${report.totals.output} (reasoning ${report.totals.reasoning ?? "unknown"})`,
+    `Agentpack: ${report.agentpackOverhead.calls} calls; response ~${report.agentpackOverhead.responseTokens} tokens; later-context <=${report.agentpackOverhead.rereadTokensUpperBound}; invoking-output <=${report.agentpackOverhead.outputTokensUpperBound}`,
     "Task monetary cost: unavailable", ...report.warnings.map(warning => `Warning: ${warning}`),
     ...report.slices.map(slice => `\nPhase: ${slice.phase}\n${formatUsageReport({ ...slice.report, warnings: [] })}`)].join("\n");
 }
