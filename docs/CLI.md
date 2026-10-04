@@ -341,11 +341,14 @@ each response estimate by later selected requests in that source; context
 compaction or truncation can make actual rereads smaller. The output upper
 bound counts model output for requests with observed Agentpack calls, once per
 request; it includes other output from those requests. For Codex code-mode,
-only identifiable MCP result blocks count as calls and response size; source
-expressions alone do not prove execution. Identical result blocks in one
-wrapper count as one call but every visible copy contributes response size.
-Distinct calls with identical results, or missing, transformed, or ambiguous
-results can therefore undercount calls. Unresolved wrappers increment
+completed nested MCP events count calls even when tools are invoked
+dynamically. Printed result text contributes response size; an unprinted or
+very short result does not. A nested event that cannot be assigned to exactly
+one open wrapper is not counted as a call and increments
+`unattributedResponses`. Without these events, the report uses identifiable result blocks:
+source expressions alone do not prove execution. Repeated prints contribute
+response size, while distinct identical calls or transformed results can still
+be ambiguous in the fallback. Unresolved wrappers increment
 `unattributedResponses`. Separate Agentpack result blocks can be measured even
 when `functions.exec` also runs shell commands. Result attribution uses visible
 output signatures and matching tool names; shell text that mimics a result can

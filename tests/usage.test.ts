@@ -269,6 +269,86 @@ test("Codex overhead recognizes supported task-list text and validated JSON resu
   }
 });
 
+test("Codex overhead counts completed nested MCP calls with dynamic code-mode dispatch", t => {
+  const nested = (id: string, tool: string, text: string, server = "agentpack") => ({ type: "event_msg",
+    payload: { type: "item_completed", item: { type: "McpToolCall", id, server, tool, status: "completed",
+      result: { content: [{ type: "text", text }] } } } });
+  const source = "const name = ALL_TOOLS.find(x => x.name.endsWith('task_status')).name; const r = await tools[name]({}); text(r.content[0]);";
+  const status = "Task task_example. State: active; Verification: pending; Next: Review; Branch: main; Write scope: src; Drift: none";
+  const list = "* task_example [active] Probe task";
+  const rows = (input: string, events: unknown[], output?: unknown) => [context,
+    { type: "response_item", payload: { type: "custom_tool_call", call_id: "call-nested", name: "exec", input } },
+    codex("r1"), ...events,
+    ...(output === undefined ? [] : [{ type: "response_item", payload: { type: "custom_tool_call_output", call_id: "call-nested", output } }]),
+    codex("r2")];
+  const { dir, file } = fixture(t, rows(source, [nested("exec-status", "task_status", status),
+    nested("exec-list", "task_list", list)], [
+      { type: "text", text: `CALL task_status\n${status}\nEND_CALL` },
+      { type: "text", text: `CALL task_list\n${list}\nEND_CALL` },
+      { type: "text", text: "PRIVATE_SHELL_RESULT" }]));
+  const report = buildUsageReport({ client: "codex", files: [file] }, dir).agentpackOverhead;
+  assert.equal(report.calls, 2);
+  assert.equal(report.responseTokens, Math.ceil(status.length / 4) + Math.ceil(list.length / 4));
+  assert.equal(report.unattributedResponses, 0);
+  assert.deepEqual(report.byTool.map(row => [row.tool, row.calls]), [["task_list", 1], ["task_status", 1]]);
+  assert.doesNotMatch(JSON.stringify(report), /PRIVATE_SHELL_RESULT|Probe task/);
+
+  writeFileSync(file, rows("const r = await tools.mcp__agentpack__task_status({}); text(r.content[0]);",
+    [nested("exec-status", "task_status", status)], [{ type: "text", text: status }, { type: "text", text: status }])
+    .map(row => JSON.stringify(row)).join("\n") + "\n");
+  const repeated = buildUsageReport({ client: "codex", files: [file] }, dir).agentpackOverhead;
+  assert.equal(repeated.calls, 1, "nested event and printed result must not double count the call");
+  assert.equal(repeated.responseTokens, 2 * Math.ceil(status.length / 4));
+
+  const wrapped = JSON.stringify({ content: [{ type: "text", text: status }] });
+  writeFileSync(file, rows(source, [nested("exec-status", "task_status", status),
+    nested("exec-status", "task_status", status)], [{ type: "text", text: wrapped }])
+    .map(row => JSON.stringify(row)).join("\n") + "\n");
+  const wrappedReport = buildUsageReport({ client: "codex", files: [file] }, dir).agentpackOverhead;
+  assert.equal(wrappedReport.calls, 1, "repeated completion for one nested id is one call");
+  assert.equal(wrappedReport.responseTokens, Math.ceil(wrapped.length / 4), "JSON printed result remains visible");
+
+  writeFileSync(file, rows(source, [nested("exec-status", "task_status", status)],
+    [{ type: "text", text: "PRIVATE_SHELL_RESULT" }]).map(row => JSON.stringify(row)).join("\n") + "\n");
+  const hidden = buildUsageReport({ client: "codex", files: [file] }, dir).agentpackOverhead;
+  assert.equal(hidden.calls, 1, "completed event proves a call even when its result is not printed");
+  assert.equal(hidden.responseTokens, 0, "unprinted MCP results do not enter visible response estimates");
+  assert.equal(hidden.unattributedResponses, 1);
+  assert.equal(hidden.outputTokensUpperBound, usage.output_tokens, "the invoking request output counts without a printed result");
+  assert.equal(hidden.byTool[0]!.outputTokensUpperBound, usage.output_tokens);
+
+  writeFileSync(file, rows(source, [nested("exec-list", "task_list", "[]")], [{ type: "text", text: "[] [] []" }])
+    .map(row => JSON.stringify(row)).join("\n") + "\n");
+  const short = buildUsageReport({ client: "codex", files: [file] }, dir).agentpackOverhead;
+  assert.equal(short.calls, 1);
+  assert.equal(short.responseTokens, 0, "short results are not matched as substrings of unrelated output");
+
+  writeFileSync(file, rows(source, [nested("exec-other", "task_status", status, "other")])
+    .map(row => JSON.stringify(row)).join("\n") + "\n");
+  assert.equal(buildUsageReport({ client: "codex", files: [file] }, dir).agentpackOverhead.calls, 0);
+
+  writeFileSync(file, [context,
+    { type: "response_item", payload: { type: "custom_tool_call", call_id: "call-a", name: "exec", input: source } },
+    { type: "response_item", payload: { type: "custom_tool_call", call_id: "call-b", name: "exec", input: source } },
+    codex("r1"), nested("exec-status", "task_status", status),
+    { type: "response_item", payload: { type: "custom_tool_call_output", call_id: "call-a", output: [] } },
+    { type: "response_item", payload: { type: "custom_tool_call_output", call_id: "call-b", output: [] } },
+    codex("r2")].map(row => JSON.stringify(row)).join("\n") + "\n");
+  const parallel = buildUsageReport({ client: "codex", files: [file] }, dir).agentpackOverhead;
+  assert.equal(parallel.calls, 0, "a nested event cannot be assigned when two exec wrappers are open");
+  assert.equal(parallel.unattributedResponses, 1, "an unassigned nested event remains visible");
+
+  writeFileSync(file, [context,
+    { type: "response_item", payload: { type: "custom_tool_call", call_id: "call-orphan", name: "exec", input: source } },
+    codex("r1"), { type: "response_item", payload: { type: "custom_tool_call", call_id: "call-nested", name: "exec", input: source } },
+    codex("r2"), nested("exec-status", "task_status", status),
+    { type: "response_item", payload: { type: "custom_tool_call_output", call_id: "call-nested", output: [{ type: "text", text: status }] } },
+    codex("r3")].map(row => JSON.stringify(row)).join("\n") + "\n");
+  const orphan = buildUsageReport({ client: "codex", files: [file] }, dir).agentpackOverhead;
+  assert.equal(orphan.calls, 0, "a wrapper without output keeps later nested events unassigned");
+  assert.equal(orphan.unattributedResponses, 1, "a wrapper without output does not hide later nested events");
+});
+
 test("Codex cumulative reconciliation includes reasoning and does not confirm unknown counters", t => {
   const request = codex("r1");
   const { dir, file } = fixture(t, [context, { ...request, payload: { ...request.payload,

@@ -33,7 +33,7 @@ interface RequestUsage {
 }
 
 export interface AgentpackOverhead {
-  method: "direct calls or distinct observed code-mode results; transcript chars / 4; later selected requests are an upper bound";
+  method: "direct calls, completed nested MCP events, or distinct observed code-mode results; visible chars / 4; later selected requests are an upper bound";
   calls: number;
   responseTokens: number;
   rereadTokensUpperBound: number;
@@ -84,6 +84,8 @@ export interface UsageReport {
 }
 
 const MAX_FILE_BYTES = 64 * 1024 * 1024;
+// Short results such as an empty JSON list also occur in unrelated shell output.
+const MIN_NESTED_MATCH_CHARS = 16;
 const identifier = /^[A-Za-z0-9._<>:/-]{1,160}$/u;
 const fields = ["input", "uncachedInput", "cacheRead", "cacheWrite", "output"] as const;
 
@@ -145,7 +147,7 @@ function emptyTokens(): Tokens {
 }
 
 export function emptyAgentpackOverhead(): AgentpackOverhead {
-  return { method: "direct calls or distinct observed code-mode results; transcript chars / 4; later selected requests are an upper bound", calls: 0,
+  return { method: "direct calls, completed nested MCP events, or distinct observed code-mode results; visible chars / 4; later selected requests are an upper bound", calls: 0,
     responseTokens: 0, rereadTokensUpperBound: 0, outputTokensUpperBound: 0,
     unattributedResponses: 0, byTool: [] };
 }
@@ -160,10 +162,13 @@ export function addAgentpackOverhead(total: AgentpackOverhead, part: AgentpackOv
   total.byTool.sort((a, b) => a.tool.localeCompare(b.tool));
 }
 
-/** Inspect only call names, ids, response lengths and request positions; never retain transcript content. */
+/** Match nested result text transiently to visible output; never include transcript content in reports. */
 function estimateAgentpackOverhead(client: UsageOptions["client"], lines: string[], selected: Map<string, { line: number; tokens: Tokens }>, allCodexRequests: Array<{ id: string; line: number }>, seenCalls: Set<string>): AgentpackOverhead {
   const overhead = emptyAgentpackOverhead();
   const calls = new Map<string, { tools: string[]; direct: boolean; otherMcp: boolean; line: number; requestId: string | null }>();
+  const nestedByWrapper = new Map<string, Array<{ id: string; tool: string; resultTexts: string[] }>>();
+  const unassignedNested: Array<{ id: string; line: number }> = [];
+  const openCodexExec = new Map<string, number>();
   const outputRequests = new Set<string>();
   const toolOutputRequests = new Map<string, Set<string>>();
   const selectedInOrder = [...selected.entries()].sort((a, b) => a[1].line - b[1].line);
@@ -244,6 +249,28 @@ function estimateAgentpackOverhead(client: UsageOptions["client"], lines: string
     const row = rowAt(lines[i]!);
     const payload = object(row.payload);
     const message = object(row.message);
+    if (client === "codex" && row.type === "response_item" && payload.type === "custom_tool_call"
+      && payload.name === "exec" && typeof payload.call_id === "string") openCodexExec.set(payload.call_id, i);
+    if (client === "codex" && row.type === "event_msg" && payload.type === "item_completed") {
+      const item = object(payload.item);
+      if (item.type === "McpToolCall" && item.server === "agentpack" && item.status === "completed"
+        && typeof item.id === "string" && typeof item.tool === "string" && /^[a-z_]+$/u.test(item.tool)) {
+        if (openCodexExec.size !== 1) unassignedNested.push({ id: item.id, line: i });
+        else {
+          const [wrapperId, line] = openCodexExec.entries().next().value!;
+          const result = object(item.result);
+          const resultTexts = Array.isArray(result.content) ? result.content.flatMap(block => {
+            const visible = object(block).text;
+            return typeof visible === "string" ? [visible] : [];
+          }) : [];
+          if (!nestedByWrapper.has(wrapperId)) nestedByWrapper.set(wrapperId, []);
+          nestedByWrapper.get(wrapperId)!.push({ id: item.id, tool: item.tool, resultTexts });
+          if (!calls.has(wrapperId)) calls.set(wrapperId, { tools: [], direct: false, otherMcp: false, line, requestId: null });
+        }
+      }
+    }
+    if (client === "codex" && row.type === "response_item" && payload.type === "custom_tool_call_output"
+      && typeof payload.call_id === "string") openCodexExec.delete(payload.call_id);
     if (client === "claude" && row.type === "assistant") {
       const content = message.content;
       if (!Array.isArray(content)) continue;
@@ -279,6 +306,29 @@ function estimateAgentpackOverhead(client: UsageOptions["client"], lines: string
       toolOutputRequests.get(tool)!.add(call.requestId);
     }
   }
+  const countedNested = new Map<string, Array<{ id: string; tool: string; resultTexts: string[] }>>();
+  if (client === "codex") for (const [wrapperId, items] of nestedByWrapper) {
+    const requestId = calls.get(wrapperId)?.requestId;
+    if (!requestId || !selected.has(requestId)) continue;
+    for (const item of items) {
+      const identity = `codex:nested:${item.id}`;
+      if (seenCalls.has(identity)) continue;
+      seenCalls.add(identity);
+      overhead.calls += 1;
+      toolGroup(item.tool).calls += 1;
+      outputRequests.add(requestId);
+      if (!toolOutputRequests.has(item.tool)) toolOutputRequests.set(item.tool, new Set());
+      toolOutputRequests.get(item.tool)!.add(requestId);
+      if (!countedNested.has(wrapperId)) countedNested.set(wrapperId, []);
+      countedNested.get(wrapperId)!.push(item);
+    }
+  }
+  if (client === "codex") for (const item of unassignedNested) {
+    const identity = `codex:nested:${item.id}`;
+    const requestId = firstAtOrAfter(item.line);
+    if (requestId && selected.has(requestId) && !seenCalls.has(identity)) overhead.unattributedResponses += 1;
+  }
+  let nestedMatchBudget = MAX_FILE_BYTES;
   for (let i = 0; i < lines.length; i += 1) {
     const row = rowAt(lines[i]!);
     const payload = object(row.payload);
@@ -297,6 +347,48 @@ function estimateAgentpackOverhead(client: UsageOptions["client"], lines: string
       const call = calls.get(output.id);
       if (!call || !call.requestId || !selected.has(call.requestId) || selected.get(call.requestId)!.line > i) continue;
       const laterRequests = laterCount(i);
+      if (client === "codex" && nestedByWrapper.has(output.id)) {
+        const nested = countedNested.get(output.id) ?? [];
+        const blocks = Array.isArray(output.content) ? output.content : [output.content];
+        let matched = false;
+        let matchLimited = false;
+        for (const block of blocks) {
+          const visible = typeof block === "string" ? block : object(block).text;
+          if (typeof visible !== "string") continue;
+          const recognized = codexResultBlocks([block], null).filter(result => nested.some(item => item.tool === result.tool));
+          if (recognized.length) {
+            for (const result of recognized) {
+              const size = Math.ceil(result.chars / 4);
+              const group = toolGroup(result.tool!);
+              group.responseTokens += size;
+              group.rereadTokensUpperBound += size * laterRequests;
+              overhead.responseTokens += size;
+              overhead.rereadTokensUpperBound += size * laterRequests;
+              matched = true;
+            }
+            continue;
+          }
+          const seenText = new Set<string>();
+          for (const item of nested) for (const resultText of item.resultTexts) {
+            if (resultText.length < MIN_NESTED_MATCH_CHARS || seenText.has(resultText)) continue;
+            seenText.add(resultText);
+            if (visible.length > nestedMatchBudget) { matchLimited = true; continue; }
+            nestedMatchBudget -= visible.length;
+            let copies = 0;
+            for (let at = visible.indexOf(resultText); at >= 0; at = visible.indexOf(resultText, at + resultText.length)) copies += 1;
+            if (!copies) continue;
+            const size = Math.ceil(resultText.length / 4) * copies;
+            const group = toolGroup(item.tool);
+            group.responseTokens += size;
+            group.rereadTokensUpperBound += size * laterRequests;
+            overhead.responseTokens += size;
+            overhead.rereadTokensUpperBound += size * laterRequests;
+            matched = true;
+          }
+        }
+        if (matchLimited || (!matched && nested.length && resultLength(output.content) > 0)) overhead.unattributedResponses += 1;
+        continue;
+      }
       if (client === "codex" && !call.direct) {
         if (seenCalls.has(`${client}:${output.id}`)) continue;
         const blocks = codexResultBlocks(output.content, call.tools.length === 1 && !call.otherMcp ? call.tools[0]! : null);
