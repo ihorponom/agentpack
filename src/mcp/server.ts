@@ -118,7 +118,7 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
   {
     name: "usage_report",
     annotations: READ_ONLY_TOOL_ANNOTATIONS,
-    description: "Report local Codex/Claude Code usage when the user asks about work usage. Pass task (Task Passport id; omit for the current task) to report the sources linked to it; sessions that ran Agentpack for the task (and their subagents) are included automatically; if none are traced or linked, the result lists candidate sessions of the task worktree to link with usage_link. Task reports count only requests made while the task was the current Passport; a subagent counts whole for the task current when it started. Alternatively supply manifest, or client/files for a direct report. Same read-only report as CLI usage report; no collection, rates or ledger writes. Agentpack overhead fields estimate visible tool response tokens (chars/4) and upper bounds for later-context and invoking output; they do not measure tool schemas or billing. Optional byTurn shows boundaries and turns selects N, N: or N:M in one file. Monetary snapshots are source-session estimates, unavailable for filtered ranges. Supported clients: Codex and Claude Code.",
+    description: "Report local Codex/Claude Code usage when the user asks about work usage. Pass task (Task Passport id; omit for the current task) to report the sources linked to it; sessions that ran Agentpack for the task (and their subagents) are included automatically; if none are traced or linked, the result lists candidate sessions of the task worktree to link with usage_link. Task reports count only requests made while the task was the current Passport; a subagent counts whole for the task current when it started. Alternatively supply manifest, or client/files for a direct report. Same read-only report as CLI usage report; no collection, rates or ledger writes. Includes estimated Agentpack call overhead, not schema cost or billing. Optional byTurn shows boundaries and turns selects N, N: or N:M in one file. Monetary snapshots are source-session estimates, unavailable for filtered ranges. Supported clients: Codex and Claude Code.",
     inputSchema: {
       type: "object", additionalProperties: false,
       properties: {
@@ -161,7 +161,7 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
   {
     name: "load_context",
     annotations: READ_ONLY_TOOL_ANNOTATIONS,
-    description: "Load a token-budgeted markdown resume of Agentpack state for the current task: Task Passport status and next actions, git state, query-relevant decisions, dead ends, and source conclusions, plus gate warnings when the task lifecycle needs attention. Call once at the start of a session or task, before reading code; resume returns the same view, so do not call it again after a successful load_context unless the query or budget changes. Read-only.",
+    description: "Load a token-budgeted markdown resume of Agentpack state for the current task: Task Passport status and next actions, git state, query-relevant decisions, dead ends, and source conclusions, plus gate warnings when the task lifecycle needs attention. Call once at the start of a session or task, before reading code; re-call only for a different query or budget. Read-only.",
     inputSchema: {
       type: "object",
       properties: {
@@ -481,12 +481,12 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
   {
     name: "task_status",
     annotations: READ_ONLY_TOOL_ANNOTATIONS,
-    description: "Print a compact current-task state line by default; pass full: true for the detailed current view. Passing id keeps the detailed selected-Passport inspection with objective, constraints, all next actions and verification without switching tasks. Task mutations already return the new state, so do not call task_status immediately after them unless more detail is needed. Gate warnings always concern the actual current task. No source-cache scan; use task_audit for the full continuity audit. Read-only.",
+    description: "Print a compact current-task state line by default; pass full: true for the detailed current view, or id to inspect a selected Passport with objective, constraints, all next actions and verification without switching tasks. Gate warnings always concern the actual current task. No source-cache scan; use task_audit for the full continuity audit. Read-only.",
     inputSchema: {
       type: "object",
       properties: {
         id: { type: "string", minLength: 1, description: "Task Passport id to inspect in full without changing the current task or lifecycle." },
-        full: { type: "boolean", description: "Show the detailed current-task summary instead of the compact state line. Selected id inspection remains detailed." }
+        full: { type: "boolean", description: "Show the detailed current-task summary instead of the compact state line." }
       }
     }
   },
@@ -595,7 +595,7 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
   {
     name: "task_update",
     annotations: UPDATING_TOOL_ANNOTATIONS,
-    description: "Patch the current Task Passport without changing lifecycle status. Batch related objective, constraints, scope and next-action changes in one call; the response includes state, verification and next action, so an immediate task_status is unnecessary. List fields (constraints, writeScope, nextActions, tags) append and deduplicate; omitted fields are preserved; empty or no-op updates fail. Pass clearNextActions to replace the next actions, or replaceConstraints to replace superseded constraints; removed constraints stay in task history.",
+    description: "Patch the current Task Passport without changing lifecycle status. List fields (constraints, writeScope, nextActions, tags) append and deduplicate; omitted fields are preserved; empty or no-op updates fail. Pass clearNextActions to replace the next-actions list instead of appending, e.g. to clear a stale plan before finalizing. Pass replaceConstraints to replace constraints that are obsolete or superseded; removed constraints stay in the task history.",
     inputSchema: {
       type: "object",
       properties: {
@@ -665,7 +665,7 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
   {
     name: "resume",
     annotations: READ_ONLY_TOOL_ANNOTATIONS,
-    description: "Generate the same token-budgeted markdown resume as load_context: Task Passport state, git state, query-relevant records, and gate warnings. Do not call both for the same query and budget; prefer load_context at task start, and use resume only for a changed query or budget mid-session. Read-only.",
+    description: "Generate the same token-budgeted markdown resume as load_context: Task Passport state, git state, query-relevant records, and gate warnings. Prefer load_context at task start; use resume for ad-hoc re-reads with a different query or budget mid-session. Read-only.",
     inputSchema: {
       type: "object",
       properties: {
