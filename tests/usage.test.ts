@@ -182,6 +182,21 @@ test("Agentpack overhead estimates Claude and wrapped Codex calls without exposi
     "quoted source code is not an Agentpack invocation");
 });
 
+test("Agentpack overhead attributes compact task status printed directly in Codex", t => {
+  const status = "Task task_example. State: active; Verification: pending; Next: Review; Branch: main; Write scope: src; Drift: none";
+  const { dir, file } = fixture(t, [context,
+    { type: "response_item", payload: { type: "custom_tool_call", call_id: "call-status", name: "exec",
+      input: "const r = await tools.mcp__agentpack__task_status({}); text(r.content[0]);" } },
+    codex("r1"),
+    { type: "response_item", payload: { type: "custom_tool_call_output", call_id: "call-status",
+      output: [{ type: "text", text: status }] } },
+    codex("r2")]);
+  const overhead = buildUsageReport({ client: "codex", files: [file] }, dir).agentpackOverhead;
+  assert.equal(overhead.calls, 1);
+  assert.equal(overhead.responseTokens, Math.ceil(status.length / 4));
+  assert.equal(overhead.byTool[0]?.tool, "task_status");
+});
+
 test("Codex cumulative reconciliation includes reasoning and does not confirm unknown counters", t => {
   const request = codex("r1");
   const { dir, file } = fixture(t, [context, { ...request, payload: { ...request.payload,

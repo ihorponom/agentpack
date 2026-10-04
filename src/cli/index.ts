@@ -551,7 +551,7 @@ handoff context, and lifecycle status.
 
 Common workflow:
   agentpack task start <title> [--objective <text>] [--write-scope <path>] [--next <item>] [--risk low|medium|high]
-  agentpack task status [--id <id>]
+  agentpack task status [--id <id>] [--full]
   agentpack task update [--objective <text>] [--constraint <text>] [--replace-constraints] [--write-scope <path>] [--next <item>] [--clear-next-actions] [--risk low|medium|high]
   agentpack task verify [--status pending|passed|failed|accepted] [--evidence <id>] [--summary <text>]
   agentpack task handoff

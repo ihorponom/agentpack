@@ -90,7 +90,7 @@ agentpack task update \
   --write-scope tests/checkout.test.ts \
   --risk medium
 agentpack task list [--scope <path>] [--status <status>] [--open]
-agentpack task status [--id <id>]
+agentpack task status [--id <id>] [--full]
 agentpack task verify --status passed --evidence evt_... --summary "Focused checks passed"
 agentpack task handoff
 agentpack task finalize
