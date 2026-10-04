@@ -238,6 +238,37 @@ test("Codex overhead recognizes lifecycle results in a mixed code-mode wrapper",
   assert.equal(ambiguous.unattributedResponses, 1);
 });
 
+test("Codex overhead recognizes supported task-list text and validated JSON results", t => {
+  const { dir, file } = fixture(t, []);
+  const reportFor = (result: string) => {
+    writeFileSync(file, [context,
+      { type: "response_item", payload: { type: "custom_tool_call", call_id: "call-list", name: "exec",
+        input: "const r = await tools.mcp__agentpack__task_list({}); text(r.content[0]);" } },
+      codex("r1"),
+      { type: "response_item", payload: { type: "custom_tool_call_output", call_id: "call-list",
+        output: [{ type: "text", text: result }] } },
+      codex("r2")].map(row => JSON.stringify(row)).join("\n") + "\n");
+    return buildUsageReport({ client: "codex", files: [file] }, dir).agentpackOverhead;
+  };
+  const listed = "* task_example [active] Probe task";
+  const json = JSON.stringify([{ id: "task_example", title: "Probe task", status: "active",
+    branch: null, current: true, updatedAt: time, writeScope: [] }]);
+  for (const result of [listed, `[warn] skipped one invalid passport\n${listed}`,
+    "No task passports yet. Call `task_start` first.", "No task passports match the filters.",
+    "[warn] skipped one invalid passport\nNo task passports match the filters.", json]) {
+    const overhead = reportFor(result);
+    assert.equal(overhead.calls, 1, result);
+    assert.equal(overhead.byTool[0]?.tool, "task_list");
+    assert.equal(overhead.responseTokens, Math.ceil(result.length / 4));
+    assert.equal(overhead.unattributedResponses, 0);
+  }
+  for (const result of ["[]", "[warn] skipped one invalid passport", '[{"id":"task_example"}]']) {
+    const overhead = reportFor(result);
+    assert.equal(overhead.calls, 0, result);
+    assert.equal(overhead.unattributedResponses, 1);
+  }
+});
+
 test("Codex cumulative reconciliation includes reasoning and does not confirm unknown counters", t => {
   const request = codex("r1");
   const { dir, file } = fixture(t, [context, { ...request, payload: { ...request.payload,

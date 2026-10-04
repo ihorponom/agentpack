@@ -347,9 +347,9 @@ wrapper count as one call but every visible copy contributes response size.
 Distinct calls with identical results, or missing, transformed, or ambiguous
 results can therefore undercount calls. Unresolved wrappers increment
 `unattributedResponses`. Separate Agentpack result blocks can be measured even
-when `functions.exec` also runs shell commands. Recognized task-list,
-verification, and finalization results count only when the wrapper names the
-corresponding Agentpack tool; unrelated output remains excluded.
+when `functions.exec` also runs shell commands. Result attribution uses visible
+output signatures and matching tool names; shell text that mimics a result can
+still be ambiguous, and an empty JSON list cannot identify its source.
 These fields contain no transcript content and do not measure tool schemas,
 exact tokenizer usage, cache billing, or money. Task reports sum the selected
 source estimates; their coverage limitations still apply.

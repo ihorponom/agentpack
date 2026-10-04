@@ -193,7 +193,24 @@ function estimateAgentpackOverhead(client: UsageOptions["client"], lines: string
   const resultTool = (value: string): string | null => {
     const first = value.trimStart();
     if (/^Task task_[A-Za-z0-9][A-Za-z0-9._-]*\. State:/u.test(first)) return "task_status";
-    if (/^[*-] task_[A-Za-z0-9][A-Za-z0-9._-]* \[(?:active|parked|blocked|verifying|completed|abandoned)\] /u.test(first)) return "task_list";
+    const listBody = first.replace(/^(?:\[warn\] [^\n]*\n)+/u, "");
+    if (/^[*-] task_[A-Za-z0-9][A-Za-z0-9._-]* \[(?:active|parked|blocked|verifying|completed|abandoned)\] /u.test(listBody)
+      || listBody === "No task passports yet. Call `task_start` first."
+      || listBody === "No task passports match the filters.") return "task_list";
+    if (listBody.startsWith("[") && listBody.endsWith("]")) {
+      try {
+        const tasks: unknown = JSON.parse(listBody);
+        if (Array.isArray(tasks) && tasks.length > 0 && tasks.every(item => {
+          const task = object(item);
+          return typeof task.id === "string" && /^task_[A-Za-z0-9][A-Za-z0-9._-]*$/u.test(task.id)
+            && typeof task.title === "string" && typeof task.status === "string"
+            && /^(?:active|parked|blocked|verifying|completed|abandoned)$/u.test(task.status)
+            && (task.branch === null || typeof task.branch === "string")
+            && typeof task.current === "boolean" && typeof task.updatedAt === "string"
+            && Array.isArray(task.writeScope) && task.writeScope.every(scope => typeof scope === "string");
+        })) return "task_list";
+      } catch { /* Unrecognized printed text is not an Agentpack result. */ }
+    }
     for (const [tool, prefix] of [["load_context", "# Agentpack Resume"], ["task_status", "Task inspection"],
       ["task_status", "Task status"],
       ["attach_evidence", "Attached evidence"], ["checkpoint", "Created checkpoint"],
