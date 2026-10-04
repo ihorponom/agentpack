@@ -92,6 +92,8 @@ Every tool advertises standard MCP `annotations` so clients can distinguish read
 These annotations are client-facing hints, not authorization or sandbox enforcement. A client must still honor its own trust and approval policy, and a write-capable tool remains write-capable even when a particular invocation only plans a change (for example, `bundle_import` without `write: true`).
 
 `load_context` and `resume` accept `query`, `budget`, and `preset`. Supported presets are `quick`, `chat`, `agent`, and `deep`; unknown MCP preset values are rejected instead of falling back silently. When `query` is present, Agentpack filters Source Cache locally: matched sources keep full summaries/snippets, and query-unrelated sources remain visible as compact path/status/topic/guidance stubs. Changed or missing query-unrelated sources are warning stubs, not trusted conclusions; call `source_status` for full stale details. If nothing matches, Agentpack keeps compact stubs for all recorded sources and tells the caller to rerun without `query` when the full Source Cache is needed. This saves tokens without hiding which recorded files exist.
+They return the same resume for the same inputs; call one, and re-read only when
+the query or budget needs to change.
 
 When a current Task Passport exists, its status and next actions are
 authoritative in the resume Current State section. Legacy repo-level status and
@@ -110,7 +112,16 @@ push, tag, publish, or create GitHub Releases.
 
 `task_start` creates a new current Task Passport. It accepts `title`, `objective`, `constraints`, `writeScope`, `nextActions`, `tags`, and `risk`, matching the CLI start semantics. It refuses to replace an active, blocked, or verifying current task; call `task_park` or close that task before starting unrelated MCP work.
 
-`task_status` without arguments prints the same quick current-task view as `agentpack task status`. With `{ "id": "task_..." }`, it inspects a selected Passport without activating, switching, parking, or writing ledger state. The inspection includes objective, constraints, all next actions, blocked reason, verification summary/evidence, bound HEAD and selected-task diagnostics. Inspected and actual-current contexts are labeled separately; MCP gate warnings always describe the actual current task. Invalid, missing, corrupt, or escaping passport paths are rejected. It does not scan the source cache and should not be used as a substitute for `task_audit`.
+`task_status` without arguments prints a compact current-task state line,
+matching `agentpack task status`. Pass `{ "full": true }` for the prior detailed
+current-task view. With `{ "id": "task_..." }`, it keeps the detailed read-only
+inspection of a selected Passport without activating, switching, parking, or
+writing ledger state. The inspection includes objective, constraints, all next
+actions, blocked reason, verification summary/evidence, bound HEAD and
+selected-task diagnostics. Inspected and actual-current contexts are labeled
+separately; MCP gate warnings always describe the actual current task. Invalid,
+missing, corrupt, or escaping passport paths are rejected. It does not scan the
+source cache and should not be used as a substitute for `task_audit`.
 
 `load_context`, `resume`, and `task_status` append a `Gate Warnings` section when the current passport has gate findings (no active task; task parked, blocked, verifying, or closed; branch drift). This is the client-neutral warn layer of the task gate: any MCP client sees lifecycle warnings without needing hook support. Enforcement modes and the full check live in `agentpack task gate` (see docs/CLI.md).
 
@@ -148,6 +159,11 @@ unswitchable.
 `task close` intentionally has no MCP equivalent. Closing a task without a verification verdict bypasses the lifecycle discipline that `task_park` and `task_finalize` enforce, so it stays a human CLI operation (`agentpack task close`). The full passport JSON view also stays CLI-only (`agentpack task passport`); `task_status` is the MCP summary equivalent.
 
 `task_update` patches the current Task Passport without changing lifecycle status. It accepts `objective`, `constraints`, `writeScope`, `nextActions`, `tags`, and `risk`; list fields append and deduplicate, and omitted fields are preserved. `clearNextActions: true` replaces the next actions with the provided `nextActions` (or clears them) instead of appending, so a stale plan can be corrected before finalize. `replaceConstraints: true` likewise replaces superseded constraints with the provided `constraints`; removed ones are kept as `removedConstraints` in the task-update event. `task_status` with `id` labels gate findings as concerning the actual current task, which gates editing but not that read-only inspection. Empty or no-op updates fail, and unknown risk values are rejected.
+
+Batch related fields in one `task_update`. Task mutations return one line with
+lifecycle state, verification status, and the first next action (trimmed for
+display); the stored Passport remains complete. Do not immediately call
+`task_status` unless more detail or a fresh state check is needed.
 
 `task_update_verification` updates the current Task Passport verification state. It accepts `status` (`unknown`, `pending`, `passed`, `failed`, or `accepted`), `evidence` IDs, and a short `summary`. Use it after `attach_evidence` to make verification evidence-backed. Keep it `pending` throughout an active fix loop and aggregate intermediate checks as evidence/checkpoints. A final verdict (`passed`, `failed`, or `accepted`) binds the reviewed HEAD, moves the task lifecycle to `verifying`, and returns that bound HEAD with the freeze consequence; `pending` or `unknown` returns it to `active`, and resolves a `blocked` task by clearing its `blockedReason` (see docs/TASK-PASSPORT.md). It is rejected while the current task is `parked`; resume it with `task_switch` first.
 

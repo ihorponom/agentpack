@@ -37,6 +37,7 @@ import {
   formatTaskAuditReport,
   formatTaskFinalizationMessage,
   formatTaskList,
+  formatTaskMutationMessage,
   formatVerificationUpdateMessage,
   getCurrentPassport,
   listTasks,
@@ -318,7 +319,7 @@ Setup:
 
 Task Passport:
   agentpack task start <title> [--objective <text>] [--write-scope <path>] [--next <item>] [--risk low|medium|high]
-  agentpack task status [--id <id>]
+  agentpack task status [--id <id>] [--full]
   agentpack task handoff
   agentpack task verify --status passed|failed|accepted [--evidence <id>] [--summary <text>]
   agentpack task finalize
@@ -568,7 +569,7 @@ Inspection and coordination:
 
 Notes:
   Write scopes are repo-relative paths; . means the repository root.
-  task status is the quick current-task view; --id inspects another task without switching.
+  task status is a compact current-task line; --full restores the detailed current view; --id inspects another task without switching.
   task audit is the diagnostic continuity check; --json exposes additive structured review candidates.
   task handoff is the compact summary for another chat, client, worktree, or agent.
   task finalize refuses unknown or pending verification by default.
@@ -802,7 +803,7 @@ function taskCommand(root: string, rest: string[]): void {
     const passport = startTask(root, optionValue(parsed.options, "risk")
       ? { ...startOptions, risk: taskRiskOption(parsed.options.risk) }
       : startOptions);
-    process.stdout.write(`Started task ${passport.id}\n`);
+    process.stdout.write(`${formatTaskMutationMessage(root, "Started", passport)}\n`);
     return;
   }
 
@@ -847,14 +848,14 @@ function taskCommand(root: string, rest: string[]): void {
 
   if (subcommand === "status") {
     const parsed = parseArgs(args);
-    if (parsed.positionals.length > 0 || Object.keys(parsed.options).some((key) => key !== "id")) {
-      throw new Error("Usage: agentpack task status [--id <id>]");
+    if (parsed.positionals.length > 0 || Object.keys(parsed.options).some((key) => key !== "id" && key !== "full")) {
+      throw new Error("Usage: agentpack task status [--id <id>] [--full]");
     }
     const id = parsed.options.id;
     if (id !== undefined && (typeof id !== "string" || !id.trim())) {
       throw new Error("task status --id requires one non-empty task id");
     }
-    process.stdout.write(`${redactForRoot(root, formatTaskStatus(root, id))}\n`);
+    process.stdout.write(`${redactForRoot(root, formatTaskStatus(root, id, booleanOption(parsed.options.full, "--full")))}\n`);
     return;
   }
 
@@ -885,7 +886,7 @@ function taskCommand(root: string, rest: string[]): void {
       updateOptions.replaceConstraints = true;
     }
     const passport = updateCurrentTaskPassport(root, updateOptions);
-    process.stdout.write(`Updated task ${passport.id}\n`);
+    process.stdout.write(`${formatTaskMutationMessage(root, "Updated", passport)}\n`);
     return;
   }
 
@@ -911,7 +912,7 @@ function taskCommand(root: string, rest: string[]): void {
       throw new Error("task switch --park-current takes no value");
     }
     const passport = switchTask(root, taskId, { parkCurrent: parsed.options["park-current"] === true });
-    process.stdout.write(`Switched to task ${passport.id}\n`);
+    process.stdout.write(`${formatTaskMutationMessage(root, "Switched to", passport)}\n`);
     return;
   }
 
@@ -924,7 +925,7 @@ function taskCommand(root: string, rest: string[]): void {
 
   if (subcommand === "park") {
     const passport = parkCurrentTask(root);
-    process.stdout.write(`Parked task ${passport.id}\n`);
+    process.stdout.write(`${formatTaskMutationMessage(root, "Parked", passport)}\n`);
     return;
   }
 
@@ -932,7 +933,7 @@ function taskCommand(root: string, rest: string[]): void {
     const parsed = parseArgs(args);
     const reason = redactForRoot(root, stringOption(parsed.options.reason) || parsed.positionals.join(" "));
     const passport = blockCurrentTask(root, reason);
-    process.stdout.write(`Blocked task ${passport.id}\n`);
+    process.stdout.write(`${formatTaskMutationMessage(root, "Blocked", passport)}\n`);
     return;
   }
 
@@ -944,7 +945,7 @@ function taskCommand(root: string, rest: string[]): void {
       summary: redactForRoot(root, stringOption(parsed.options.summary))
     });
     const { passport } = result;
-    process.stdout.write(`${formatVerificationUpdateMessage(passport, result.changed)}\n`);
+    process.stdout.write(`${formatVerificationUpdateMessage(root, passport, result.changed)}\n`);
     return;
   }
 
@@ -956,7 +957,7 @@ function taskCommand(root: string, rest: string[]): void {
       summary: redactForRoot(root, stringOption(parsed.options.summary)),
       force: parsed.options.force === true
     });
-    process.stdout.write(`${formatTaskFinalizationMessage(passport)}\n`);
+    process.stdout.write(`${formatTaskFinalizationMessage(root, passport)}\n`);
     const advisories = finalizeAdvisories(root, passport);
     if (advisories.length > 0) {
       process.stdout.write(`Advisories:\n${advisories.map((advisory) => `- ${advisory}`).join("\n")}\n`);
@@ -966,7 +967,7 @@ function taskCommand(root: string, rest: string[]): void {
 
   if (subcommand === "close") {
     const passport = closeCurrentTask(root);
-    process.stdout.write(`Closed task ${passport.id}\n`);
+    process.stdout.write(`${formatTaskMutationMessage(root, "Closed", passport)}\n`);
     return;
   }
 

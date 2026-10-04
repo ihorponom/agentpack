@@ -32,6 +32,7 @@ import {
   formatTaskAuditReport,
   formatTaskFinalizationMessage,
   formatTaskList,
+  formatTaskMutationMessage,
   formatVerificationUpdateMessage,
   listTasks,
   OPEN_TASK_STATUSES,
@@ -160,7 +161,7 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
   {
     name: "load_context",
     annotations: READ_ONLY_TOOL_ANNOTATIONS,
-    description: "Load a token-budgeted markdown resume of Agentpack state for the current task: Task Passport status and next actions, git state, query-relevant decisions, dead ends, and source conclusions, plus gate warnings when the task lifecycle needs attention. Call once at the start of a session or task, before reading code; re-call only for a different query or budget. Read-only.",
+    description: "Load a token-budgeted markdown resume of Agentpack state for the current task: Task Passport status and next actions, git state, query-relevant decisions, dead ends, and source conclusions, plus gate warnings when the task lifecycle needs attention. Call once at the start of a session or task, before reading code; resume returns the same view, so do not call it again after a successful load_context unless the query or budget changes. Read-only.",
     inputSchema: {
       type: "object",
       properties: {
@@ -480,11 +481,12 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
   {
     name: "task_status",
     annotations: READ_ONLY_TOOL_ANNOTATIONS,
-    description: "Print a quick current-task summary, or pass id to inspect a selected Passport with objective, constraints, all next actions and verification without switching tasks. Gate warnings always concern the actual current task. No source-cache scan; use task_audit for the full continuity audit. Read-only.",
+    description: "Print a compact current-task state line by default; pass full: true for the detailed current view. Passing id keeps the detailed selected-Passport inspection with objective, constraints, all next actions and verification without switching tasks. Task mutations already return the new state, so do not call task_status immediately after them unless more detail is needed. Gate warnings always concern the actual current task. No source-cache scan; use task_audit for the full continuity audit. Read-only.",
     inputSchema: {
       type: "object",
       properties: {
-        id: { type: "string", minLength: 1, description: "Task Passport id to inspect without changing the current task or lifecycle. Omit for the legacy current-task summary." }
+        id: { type: "string", minLength: 1, description: "Task Passport id to inspect in full without changing the current task or lifecycle." },
+        full: { type: "boolean", description: "Show the detailed current-task summary instead of the compact state line. Selected id inspection remains detailed." }
       }
     }
   },
@@ -593,7 +595,7 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
   {
     name: "task_update",
     annotations: UPDATING_TOOL_ANNOTATIONS,
-    description: "Patch the current Task Passport without changing lifecycle status. List fields (constraints, writeScope, nextActions, tags) append and deduplicate; omitted fields are preserved; empty or no-op updates fail. Pass clearNextActions to replace the next-actions list instead of appending, e.g. to clear a stale plan before finalizing. Pass replaceConstraints to replace constraints that are obsolete or superseded; removed constraints stay in the task history.",
+    description: "Patch the current Task Passport without changing lifecycle status. Batch related objective, constraints, scope and next-action changes in one call; the response includes state, verification and next action, so an immediate task_status is unnecessary. List fields (constraints, writeScope, nextActions, tags) append and deduplicate; omitted fields are preserved; empty or no-op updates fail. Pass clearNextActions to replace the next actions, or replaceConstraints to replace superseded constraints; removed constraints stay in task history.",
     inputSchema: {
       type: "object",
       properties: {
@@ -663,7 +665,7 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
   {
     name: "resume",
     annotations: READ_ONLY_TOOL_ANNOTATIONS,
-    description: "Generate the same token-budgeted markdown resume as load_context: Task Passport state, git state, query-relevant records, and gate warnings. Prefer load_context at task start; use resume for ad-hoc re-reads with a different query or budget mid-session. Read-only.",
+    description: "Generate the same token-budgeted markdown resume as load_context: Task Passport state, git state, query-relevant records, and gate warnings. Do not call both for the same query and budget; prefer load_context at task start, and use resume only for a changed query or budget mid-session. Read-only.",
     inputSchema: {
       type: "object",
       properties: {
@@ -1153,15 +1155,16 @@ function callTool(root: string, name: string, args: Record<string, unknown>, war
       startOptions.risk = risk;
     }
     const passport = startTask(root, startOptions);
-    return toolText(`Started task ${passport.id}.`);
+    return toolText(formatTaskMutationMessage(root, "Started", passport));
   }
 
   if (name === "task_status") {
     if (args.id !== undefined && (typeof args.id !== "string" || !args.id.trim())) {
       throw new Error("task_status id must be a non-empty string");
     }
+    if (args.full !== undefined && typeof args.full !== "boolean") throw new Error("task_status full must be a boolean");
     const id = args.id as string | undefined;
-    return toolText(redactForRoot(root, appendGateWarnings(root, formatTaskStatus(root, id), warnings, id === undefined,
+    return toolText(redactForRoot(root, appendGateWarnings(root, formatTaskStatus(root, id, args.full === true), warnings, id === undefined,
       id === undefined ? "Gate Warnings" : "Gate Warnings (actual current task)",
       id === undefined ? undefined : "These gate editing under the actual current task; this read-only inspection is not blocked.")));
   }
@@ -1202,12 +1205,12 @@ function callTool(root: string, name: string, args: Record<string, unknown>, war
       throw new Error("task_switch parkCurrent must be a boolean");
     }
     const passport = switchTask(root, taskId, { parkCurrent: args.parkCurrent === true });
-    return toolText(`Switched to task ${passport.id} (${passport.status}).`);
+    return toolText(formatTaskMutationMessage(root, "Switched to", passport));
   }
 
   if (name === "task_park") {
     const passport = parkCurrentTask(root);
-    return toolText(`Parked task ${passport.id}.`);
+    return toolText(formatTaskMutationMessage(root, "Parked", passport));
   }
 
   if (name === "task_update_verification") {
@@ -1217,7 +1220,7 @@ function callTool(root: string, name: string, args: Record<string, unknown>, war
       summary: redactForRoot(root, text(args.summary))
     });
     const { passport } = result;
-    return toolText(formatVerificationUpdateMessage(passport, result.changed));
+    return toolText(formatVerificationUpdateMessage(root, passport, result.changed));
   }
 
   if (name === "task_finalize") {
@@ -1231,7 +1234,7 @@ function callTool(root: string, name: string, args: Record<string, unknown>, war
     const advisoryText = advisories.length > 0
       ? `\n\nAdvisories:\n${advisories.map((advisory) => `- ${advisory}`).join("\n")}`
       : "";
-    return toolText(`${formatTaskFinalizationMessage(passport)}${advisoryText}`);
+    return toolText(`${formatTaskFinalizationMessage(root, passport)}${advisoryText}`);
   }
 
   if (name === "task_update") {
@@ -1259,7 +1262,7 @@ function callTool(root: string, name: string, args: Record<string, unknown>, war
       updateOptions.replaceConstraints = true;
     }
     const passport = updateCurrentTaskPassport(root, updateOptions);
-    return toolText(`Updated task ${passport.id}.`);
+    return toolText(formatTaskMutationMessage(root, "Updated", passport));
   }
 
   if (name === "checkpoint") {

@@ -123,7 +123,18 @@ Use `agentpack task --help` for the task-focused command list.
 
 The gate fails closed where it matters: an unreadable `config.json` blocks instead of throwing a skippable hook error, an unreadable current passport is a violation (exit 2 in block mode), an unrecognized native hook payload produces `hook-input-unreadable` instead of silently skipping path checks, and an unknown `gateMode` value falls back to `warn` with an `invalid-gate-mode` finding instead of silently disabling checks. Paths outside the repository are not judged by this pack's gate but are reported with an advisory `outside-root` finding rather than skipped silently; when every checked path is outside the repository, or a `--staged` run stages nothing under this pack root, lifecycle findings are skipped too, and so are the `no-write-scope` and `branch-drift` advisories — the gate protects repo code, not the whole filesystem, and an untouched pack should not get spammed on every unrelated commit in a multi-pack repo. Invocations with no paths keep lifecycle checks and advisories (they back the MCP gate-warnings layer). In block mode, a task without a write scope gets an advisory `no-write-scope` finding, because scope enforcement is opt-in per task. Scope matching is lexical and byte-literal, the same as git paths: the gate does not resolve symlinks and does not detect case-only aliasing on case-insensitive filesystems. It is a guardrail against agent drift, not a filesystem security boundary.
 
-`task passport` prints the current `passport.json`. `task switch <id>` points the worktree at another open passport: pending or unknown verification resumes as `active`, while a final verdict resumes as `verifying` and remains frozen with its bound HEAD until verification returns to pending. `task block --reason <text>`, `task park`, and `task close` remain available for explicit lifecycle control. `task update-verification` remains available as a compatibility alias for `task verify`.
+`task status` prints one compact state line by default; `task status --full`
+restores the detailed current-task summary. `task status --id <id>` keeps the
+detailed read-only inspection of a selected Passport. Task mutations return the
+new lifecycle state, verification status, and first next action on one line; a
+follow-up status call is only needed for more detail or a fresh check. Batch
+related changes into one `task update` call. `task passport` prints the current
+`passport.json`. `task switch <id>` points the worktree at another open passport:
+pending or unknown verification resumes as `active`, while a final verdict
+resumes as `verifying` and remains frozen with its bound HEAD until verification
+returns to pending. `task block --reason <text>`, `task park`, and `task close`
+remain available for explicit lifecycle control. `task update-verification`
+remains available as a compatibility alias for `task verify`.
 
 `task switch <id> --park-current` combines parking a different current open task
 and switching to a validated target. It preserves both verification states and
@@ -143,6 +154,8 @@ When a current passport exists, `resume` and MCP `load_context` treat its status
 and next actions as authoritative in Current State, then include the full
 passport before the broader repo-level ledger. Without a current passport,
 Current State preserves the legacy repo-level status and next-action fallback.
+Both commands build the same resume; do not call them with the same query and
+budget just to repeat context.
 
 ## Record Durable State
 

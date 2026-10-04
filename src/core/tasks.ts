@@ -3,6 +3,7 @@ import path from "node:path";
 import { getGitInfo, listDirtyFiles } from "./git.js";
 import { normalizePath, resolveRegularFileWithin } from "./hash.js";
 import { createId } from "./ids.js";
+import { redactForRoot } from "./redaction.js";
 import {
   getPackPath,
   listCheckpoints,
@@ -132,20 +133,33 @@ interface AdversarialEvidenceAssessment {
   satisfied: boolean;
 }
 
-export function formatVerificationUpdateMessage(passport: TaskPassport, changed: boolean): string {
+function shortNextAction(root: string, passport: TaskPassport): string {
+  const next = redactForRoot(root, passport.nextActions[0] || "(none)").replace(/\s+/gu, " ").trim();
+  return next.length > 160 ? `${next.slice(0, 159)}…` : next;
+}
+
+export function formatTaskStateLine(root: string, passport: TaskPassport): string {
+  return `State: ${passport.status}; Verification: ${passport.verification.status}; Next: ${shortNextAction(root, passport)}`;
+}
+
+export function formatTaskMutationMessage(root: string, action: string, passport: TaskPassport): string {
+  return `${action} task ${passport.id} (${passport.status}). ${formatTaskStateLine(root, passport)}`;
+}
+
+export function formatVerificationUpdateMessage(root: string, passport: TaskPassport, changed: boolean): string {
   const prefix = changed ? "Updated verification" : "Verification unchanged";
   const status = passport.verification.status;
   if (FINAL_VERIFICATION_STATUSES.has(status)) {
-    return `${prefix} for task ${passport.id} (${status}). Bound HEAD ${passport.currentHead || "(unknown)"}; the final verdict freezes code changes until finalization or an explicit return to pending.`;
+    return `${prefix} for task ${passport.id} (${status}). Bound HEAD ${passport.currentHead || "(unknown)"}; the final verdict freezes code changes until finalization or an explicit return to pending. ${formatTaskStateLine(root, passport)}`;
   }
   const consequence = status === "pending"
     ? "Verification remains pending: the task stays active for fixes and intermediate checks."
     : "Verification is unknown: the task stays active until a verification result is recorded.";
-  return `${prefix} for task ${passport.id} (${status}). ${consequence}`;
+  return `${prefix} for task ${passport.id} (${status}). ${consequence} ${formatTaskStateLine(root, passport)}`;
 }
 
-export function formatTaskFinalizationMessage(passport: TaskPassport): string {
-  return `Finalized task ${passport.id} (${passport.verification.status}). Bound HEAD ${passport.currentHead || "(unknown)"}; the final verdict is frozen and the task is completed.`;
+export function formatTaskFinalizationMessage(root: string, passport: TaskPassport): string {
+  return `Finalized task ${passport.id} (${passport.verification.status}). Bound HEAD ${passport.currentHead || "(unknown)"}; the final verdict is frozen and the task is completed. ${formatTaskStateLine(root, passport)}`;
 }
 
 export function startTask(root: string, options: TaskStartOptions): TaskPassport {
@@ -945,8 +959,8 @@ function isDocumentationScope(scope: string): boolean {
   return normalized === "docs" || normalized.startsWith("docs/") || /\.(md|mdx|rst|txt)$/i.test(normalized);
 }
 
-export function formatTaskStatus(root: string, id?: string): string {
-  if (id === undefined) return formatCurrentTaskStatus(root);
+export function formatTaskStatus(root: string, id?: string, full = false): string {
+  if (id === undefined) return formatCurrentTaskStatus(root, full);
 
   const passport = readPassport(root, id);
   let current: string;
@@ -981,7 +995,7 @@ export function formatTaskStatus(root: string, id?: string): string {
   ].join("\n");
 }
 
-export function formatCurrentTaskStatus(root: string): string {
+export function formatCurrentTaskStatus(root: string, full = false): string {
   let passport: TaskPassport | null;
 
   try {
@@ -1002,6 +1016,10 @@ export function formatCurrentTaskStatus(root: string): string {
 
   const git = getGitInfo(root);
   const drift = formatTaskDrift(passport, git);
+  if (!full) {
+    const writeScope = passport.writeScope.length > 0 ? passport.writeScope.join(", ") : "(none)";
+    return `Task ${passport.id}. ${formatTaskStateLine(root, passport)}; Branch: ${passport.branch || "(unknown)"}; Write scope: ${redactForRoot(root, writeScope).replace(/\s+/gu, " ")}; Drift: ${redactForRoot(root, drift).replace(/\s+/gu, " ")}`;
+  }
   const nextAction = passport.nextActions[0] || "(none)";
   const writeScope = passport.writeScope.length > 0 ? passport.writeScope.join(", ") : "(none)";
   const verification = passport.verification?.status || "unknown";

@@ -171,7 +171,12 @@ try {
     name: "task_status",
     arguments: {}
   });
-  assertMatch(activeTaskStatus.result?.content?.[0]?.text || "", /MCP smoke verification \[active\]/, "task_status reports the active task");
+  assertMatch(activeTaskStatus.result?.content?.[0]?.text || "", /State: active; Verification: unknown; Next: Complete smoke verification/, "task_status reports compact active state");
+  const fullTaskStatus = await client.request("tools/call", {
+    name: "task_status",
+    arguments: { full: true }
+  });
+  assertMatch(fullTaskStatus.result?.content?.[0]?.text || "", /MCP smoke verification \[active\]/, "task_status full reports the active task details");
 
   const taskList = await client.request("tools/call", {
     name: "task_list",

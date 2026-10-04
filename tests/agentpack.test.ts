@@ -2628,8 +2628,9 @@ test("tolerates a legacy roles field in passport.json without migrating it", () 
   writeFileSync(passportPath, `${JSON.stringify(legacyPassport, null, 2)}\n`, "utf8");
 
   const status = run(dir, ["task", "status"]);
-  assert.match(status, /Legacy roles passport \[active\]/);
+  assert.match(status, /State: active/);
   assert.doesNotMatch(status, /Roles:/);
+  assert.match(run(dir, ["task", "status", "--full"]), /Legacy roles passport \[active\]/);
 
   const passportJson = JSON.parse(run(dir, ["task", "passport"]));
   assert.equal(passportJson.roles, undefined);
@@ -2880,6 +2881,24 @@ test("CLI and MCP expose the same adversarial audit and finalize advisory", asyn
   assert.match(finalizeResponse.result.content[0].text, /Copy-ready evidence template/);
 });
 
+test("complete review evidence keeps unrelated finalize advisories concise", () => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), "agentpack-finalize-concise-"));
+  run(dir, ["init"]);
+  run(dir, ["task", "start", "Complete review evidence", "--write-scope", "docs", "--risk", "medium", "--next", "Historical follow-up"]);
+  const evidence = addEvidenceFixture(dir, "review", [
+    "Claim or assumption attacked: The current task can close with a complete review record.",
+    "Counterexample or disconfirming check: An independent reviewer checked the negative documentation case.",
+    "Observed result: The check found no missing documentation requirements.",
+    "Unresolved findings: none identified after the independent check.",
+    "Residual risk: The historical follow-up remains visible in the task.",
+    "Review mode: independent read-only",
+    "Adversarial check type: negative documentation check"
+  ].join("\n"));
+  const result = run(dir, ["task", "finalize", "--status", "passed", "--evidence", evidence]);
+  assert.match(result, /remaining next action/);
+  assert.doesNotMatch(result, /Copy-ready evidence template/);
+});
+
 test("manages a current task passport", () => {
   const dir = mkdtempSync(path.join(os.tmpdir(), "agentpack-task-test-"));
   mkdirSync(path.join(dir, "src"));
@@ -2918,6 +2937,8 @@ test("manages a current task passport", () => {
     "low"
   ]);
   assert.match(started, /Started task task_/);
+  assert.match(started, /State: active; Verification: unknown; Next: Wire CLI/);
+  assert.equal(started.trim().split("\n").length, 1);
   assert.match(
     runExpectError(dir, ["task", "start", "Overlapping task", "--write-scope", "src/index.ts"]),
     /Current task .* is active; park or close it before starting a new task\./
@@ -2948,14 +2969,16 @@ test("manages a current task passport", () => {
   assert.match(list, new RegExp(`\\* ${taskId} \\[active\\] Add task passports`));
 
   const status = run(dir, ["task", "status"]);
-  assert.match(status, /Task status/);
-  assert.match(status, /Add task passports \[active\]/);
-  assert.match(status, new RegExp(`ID: ${taskId}`));
-  assert.match(status, /Risk: low/);
+  assert.match(status, new RegExp(`Task ${taskId}\\. State: active`));
   assert.match(status, /Verification: unknown/);
   assert.match(status, /Next: Wire CLI/);
-  assert.match(status, /Write scope: src\/index\.ts/);
   assert.match(status, /Drift: none/);
+  assert.equal(status.trim().split("\n").length, 1);
+  const fullStatus = run(dir, ["task", "status", "--full"]);
+  assert.match(fullStatus, /Add task passports \[active\]/);
+  assert.match(fullStatus, /Risk: low/);
+  assert.match(fullStatus, /Write scope: src\/index\.ts/);
+  assert.ok(status.length < fullStatus.length);
 
   const handoff = run(dir, ["task", "handoff"]);
   assert.match(handoff, /Task handoff/);
@@ -3148,6 +3171,27 @@ test("task status reports missing current passport without requiring audit", () 
   const status = run(dir, ["task", "status"]);
   assert.match(status, /Task status/);
   assert.match(status, /No current task passport/);
+});
+
+test("compact task state stays one line, bounded, and redacted after a mutation", () => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), "agentpack-compact-task-state-"));
+  run(dir, ["init"]);
+  run(dir, ["task", "start", "Compact response"]);
+  const passport = JSON.parse(run(dir, ["task", "passport"]));
+  const passportFile = path.join(dir, ".agentpack", "tasks", passport.id, "passport.json");
+  passport.nextActions = [`API_KEY=private-value\n${"follow up ".repeat(30)}`];
+  writeFileSync(passportFile, JSON.stringify(passport));
+
+  const changed = run(dir, ["task", "update", "--risk", "low"]);
+  const status = run(dir, ["task", "status"]);
+  for (const output of [changed, status]) {
+    assert.equal(output.trim().split("\n").length, 1);
+    assert.match(output, /State: active; Verification: unknown; Next: API_KEY=\[REDACTED\]/);
+    assert.doesNotMatch(output, /private-value/);
+    assert.match(output, /…/);
+  }
+  assert.match(run(dir, ["task", "status", "--full"]), /Write scope:/);
+  assert.match(runExpectError(dir, ["task", "status", "--full=value"]), /--full requires true or false/);
 });
 
 function snapshotPackBytes(dir: string): Array<[string, string]> {
@@ -5575,6 +5619,7 @@ test("parks current task over MCP so a new task can start", async () => {
     }
   });
   assert.match(taskStart.result.content[0].text, /Started task task_/);
+  assert.match(taskStart.result.content[0].text, /State: active; Verification: unknown; Next: Resume later/);
 
   const refusedFinalize = await mcp.send({
     jsonrpc: "2.0",
@@ -5626,7 +5671,14 @@ test("parks current task over MCP so a new task can start", async () => {
       arguments: {}
     }
   });
-  assert.match(status.result.content[0].text, /Replacement MCP task \[active\]/);
+  assert.match(status.result.content[0].text, /State: active; Verification: unknown/);
+  const fullStatus = await mcp.send({
+    jsonrpc: "2.0",
+    id: 55,
+    method: "tools/call",
+    params: { name: "task_status", arguments: { full: true } }
+  });
+  assert.match(fullStatus.result.content[0].text, /Replacement MCP task \[active\]/);
 
   const tasks = run(dir, ["task", "list"]);
   assert.match(tasks, /- task_.* \[parked\] Parkable MCP task \(scope: api, frontend, cron \+1 more\)/);
@@ -5777,7 +5829,7 @@ test("parks current task over MCP so a new task can start", async () => {
       arguments: {}
     }
   });
-  assert.match(switchedStatus.result.content[0].text, /Parkable MCP task \[active\]/);
+  assert.match(switchedStatus.result.content[0].text, /State: active; Verification: unknown; Next: Resume later/);
 
   run(dir, ["task", "park"]);
 
@@ -6051,11 +6103,13 @@ test("serves MCP JSON-RPC tools over newline-delimited stdio", async () => {
       arguments: {}
     }
   });
-  assert.match(taskStatusAfterStart.result.content[0].text, /MCP verification flow \[active\]/);
-  assert.match(taskStatusAfterStart.result.content[0].text, /ID: task_/);
+  assert.match(taskStatusAfterStart.result.content[0].text, /Task task_.*State: active/);
   assert.match(taskStatusAfterStart.result.content[0].text, /Verification: unknown/);
   assert.match(taskStatusAfterStart.result.content[0].text, /Next: Finish MCP verification/);
-  assert.match(taskStatusAfterStart.result.content[0].text, /Write scope: index\.js/);
+  const taskStatusFull = await mcp.send({ jsonrpc: "2.0", id: 101, method: "tools/call",
+    params: { name: "task_status", arguments: { full: true } } });
+  assert.match(taskStatusFull.result.content[0].text, /MCP verification flow \[active\]/);
+  assert.match(taskStatusFull.result.content[0].text, /Write scope: index\.js/);
 
   const duplicateTaskStart = await mcp.send({
     jsonrpc: "2.0",

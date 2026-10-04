@@ -76,10 +76,13 @@ ${collaborationModesSection()}
 
 Task workflow:
 - start with \`load_context\` (\`preset: "quick"\` and a focused query); use \`source_status\` only for a needed stale-source check
+- \`resume\` and \`load_context\` return the same context; use one per query
 - before editing, confirm the active Task Passport's objective, constraints, worktree, branch/HEAD, lifecycle, and write scope. Stop for unexplained drift or a verifying, blocked, closed, or parked task
 - declare a write scope by default; keep one active task per coherent phase. Park deferred work; do not turn a review task into implementation. A review of the current task stays in it; create another Passport only for a different objective or authorization boundary, or an independent frozen-snapshot review
 - record only material decisions, durable source conclusions, unresolved findings, dead ends, meaningful evidence, and checkpoints. Reuse one relevant evidence item instead of duplicating it; a matching hash proves only that a file is unchanged, not that its recorded conclusion is true
 - at a meaningful pause or handoff, checkpoint the summary, current status, and next actions; sequence state-changing Agentpack calls and do not repeat fresh status checks
+- batch related changes in one \`task_update\`; mutations report state, so avoid redundant \`task_status\`
+- to defer and switch, use \`task_switch\` with \`parkCurrent: true\`
 - keep verification pending through fixes. A final verdict binds the reviewed HEAD and freezes edits
 - checks do not grant remote authority: never infer permission to push, merge, publish, message, or otherwise mutate external state
 
