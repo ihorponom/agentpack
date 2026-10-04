@@ -167,7 +167,9 @@ function estimateAgentpackOverhead(client: UsageOptions["client"], lines: string
   const overhead = emptyAgentpackOverhead();
   const calls = new Map<string, { tools: string[]; direct: boolean; otherMcp: boolean; line: number; requestId: string | null }>();
   const nestedByWrapper = new Map<string, Array<{ id: string; tool: string; resultTexts: string[] }>>();
+  const completedNested: Array<{ id: string; tool: string; resultTexts: string[]; line: number; wrapper: [string, number] | null }> = [];
   const unassignedNested: Array<{ id: string; line: number }> = [];
+  const functionCallIds = new Set<string>();
   const openCodexExec = new Map<string, number>();
   const outputRequests = new Set<string>();
   const toolOutputRequests = new Map<string, Set<string>>();
@@ -255,20 +257,17 @@ function estimateAgentpackOverhead(client: UsageOptions["client"], lines: string
       const item = object(payload.item);
       if (item.type === "McpToolCall" && item.server === "agentpack" && item.status === "completed"
         && typeof item.id === "string" && typeof item.tool === "string" && /^[a-z_]+$/u.test(item.tool)) {
-        if (openCodexExec.size !== 1) unassignedNested.push({ id: item.id, line: i });
-        else {
-          const [wrapperId, line] = openCodexExec.entries().next().value!;
-          const result = object(item.result);
-          const resultTexts = Array.isArray(result.content) ? result.content.flatMap(block => {
-            const visible = object(block).text;
-            return typeof visible === "string" ? [visible] : [];
-          }) : [];
-          if (!nestedByWrapper.has(wrapperId)) nestedByWrapper.set(wrapperId, []);
-          nestedByWrapper.get(wrapperId)!.push({ id: item.id, tool: item.tool, resultTexts });
-          if (!calls.has(wrapperId)) calls.set(wrapperId, { tools: [], direct: false, otherMcp: false, line, requestId: null });
-        }
+        const result = object(item.result);
+        const resultTexts = Array.isArray(result.content) ? result.content.flatMap(block => {
+          const visible = object(block).text;
+          return typeof visible === "string" ? [visible] : [];
+        }) : [];
+        completedNested.push({ id: item.id, tool: item.tool, resultTexts, line: i,
+          wrapper: openCodexExec.size === 1 ? openCodexExec.entries().next().value! : null });
       }
     }
+    if (client === "codex" && row.type === "response_item" && payload.type === "function_call"
+      && typeof payload.call_id === "string") functionCallIds.add(payload.call_id);
     if (client === "codex" && row.type === "response_item" && payload.type === "custom_tool_call_output"
       && typeof payload.call_id === "string") openCodexExec.delete(payload.call_id);
     if (client === "claude" && row.type === "assistant") {
@@ -290,6 +289,15 @@ function estimateAgentpackOverhead(client: UsageOptions["client"], lines: string
       if (tools.length) calls.set(payload.call_id, { tools: [...new Set(tools)], direct: direct.length > 0,
         otherMcp: /tools\.mcp__(?!agentpack__)[A-Za-z0-9_]+\s*\(/u.test(input), line: i, requestId: null });
     }
+  }
+  // Direct MCP calls also emit item_completed with the function call id; only the remaining events are nested.
+  for (const event of completedNested) {
+    if (functionCallIds.has(event.id)) continue;
+    if (!event.wrapper) { unassignedNested.push(event); continue; }
+    const [wrapperId, line] = event.wrapper;
+    if (!nestedByWrapper.has(wrapperId)) nestedByWrapper.set(wrapperId, []);
+    nestedByWrapper.get(wrapperId)!.push(event);
+    if (!calls.has(wrapperId)) calls.set(wrapperId, { tools: [], direct: false, otherMcp: false, line, requestId: null });
   }
   for (const [id, call] of calls) {
     if (client === "codex") call.requestId = firstAtOrAfter(call.line);
@@ -326,7 +334,9 @@ function estimateAgentpackOverhead(client: UsageOptions["client"], lines: string
   if (client === "codex") for (const item of unassignedNested) {
     const identity = `codex:nested:${item.id}`;
     const requestId = firstAtOrAfter(item.line);
-    if (requestId && selected.has(requestId) && !seenCalls.has(identity)) overhead.unattributedResponses += 1;
+    if (!requestId || !selected.has(requestId) || seenCalls.has(identity) || seenCalls.has(`codex:unassigned:${item.id}`)) continue;
+    seenCalls.add(`codex:unassigned:${item.id}`);
+    overhead.unattributedResponses += 1;
   }
   let nestedMatchBudget = MAX_FILE_BYTES;
   for (let i = 0; i < lines.length; i += 1) {
@@ -368,17 +378,21 @@ function estimateAgentpackOverhead(client: UsageOptions["client"], lines: string
             }
             continue;
           }
-          const seenText = new Set<string>();
+          const candidates = new Map<string, string>();
           for (const item of nested) for (const resultText of item.resultTexts) {
-            if (resultText.length < MIN_NESTED_MATCH_CHARS || seenText.has(resultText)) continue;
-            seenText.add(resultText);
-            if (visible.length > nestedMatchBudget) { matchLimited = true; continue; }
-            nestedMatchBudget -= visible.length;
-            let copies = 0;
-            for (let at = visible.indexOf(resultText); at >= 0; at = visible.indexOf(resultText, at + resultText.length)) copies += 1;
+            if (resultText.length >= MIN_NESTED_MATCH_CHARS && !candidates.has(resultText)) candidates.set(resultText, item.tool);
+          }
+          // Longest first, removing matches so a result contained in another is not counted twice.
+          let remaining = visible;
+          for (const [resultText, tool] of [...candidates].sort((a, b) => b[0].length - a[0].length)) {
+            if (remaining.length > nestedMatchBudget) { matchLimited = true; continue; }
+            nestedMatchBudget -= remaining.length;
+            const parts = remaining.split(resultText);
+            const copies = parts.length - 1;
             if (!copies) continue;
+            remaining = parts.join("\0");
             const size = Math.ceil(resultText.length / 4) * copies;
-            const group = toolGroup(item.tool);
+            const group = toolGroup(tool);
             group.responseTokens += size;
             group.rereadTokensUpperBound += size * laterRequests;
             overhead.responseTokens += size;

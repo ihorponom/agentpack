@@ -347,6 +347,35 @@ test("Codex overhead counts completed nested MCP calls with dynamic code-mode di
   const orphan = buildUsageReport({ client: "codex", files: [file] }, dir).agentpackOverhead;
   assert.equal(orphan.calls, 0, "a wrapper without output keeps later nested events unassigned");
   assert.equal(orphan.unattributedResponses, 1, "a wrapper without output does not hide later nested events");
+
+  const direct = (prefix: unknown[]) => [context, ...prefix,
+    { type: "response_item", payload: { type: "function_call", call_id: "call-direct", name: "mcp__agentpack__task_status", arguments: "{}" } },
+    codex("r1"), nested("call-direct", "task_status", status),
+    { type: "response_item", payload: { type: "function_call_output", call_id: "call-direct", output: status } },
+    codex("r2")].map(row => JSON.stringify(row)).join("\n") + "\n";
+  writeFileSync(file, direct([]));
+  const directReport = buildUsageReport({ client: "codex", files: [file] }, dir).agentpackOverhead;
+  assert.deepEqual([directReport.calls, directReport.unattributedResponses], [1, 0], "a direct call completion is not a nested call");
+  writeFileSync(file, direct([{ type: "response_item", payload: { type: "custom_tool_call", call_id: "call-stale", name: "exec", input: source } }, codex("r0")]));
+  const stale = buildUsageReport({ client: "codex", files: [file] }, dir).agentpackOverhead;
+  assert.deepEqual([stale.calls, stale.outputTokensUpperBound], [1, usage.output_tokens], "a stale wrapper does not claim a later direct call");
+
+  const inner = "Task task_example. State: active";
+  const outer = `${inner}; Verification: pending`;
+  writeFileSync(file, rows(source, [nested("exec-inner", "task_status", inner), nested("exec-outer", "task_status", outer)],
+    [{ type: "text", text: `out: ${outer}` }]).map(row => JSON.stringify(row)).join("\n") + "\n");
+  assert.equal(buildUsageReport({ client: "codex", files: [file] }, dir).agentpackOverhead.responseTokens, Math.ceil(outer.length / 4),
+    "a result contained in another printed result is not counted twice");
+
+  const twoOpen = [context,
+    { type: "response_item", payload: { type: "custom_tool_call", call_id: "call-a", name: "exec", input: source } },
+    { type: "response_item", payload: { type: "custom_tool_call", call_id: "call-b", name: "exec", input: source } },
+    codex("r1"), nested("exec-status", "task_status", status), codex("r2")].map(row => JSON.stringify(row)).join("\n") + "\n";
+  writeFileSync(file, twoOpen);
+  const copy = path.join(dir, "copy.jsonl");
+  writeFileSync(copy, twoOpen);
+  assert.equal(buildUsageReport({ client: "codex", files: [file, copy] }, dir).agentpackOverhead.unattributedResponses, 1,
+    "duplicate sources report an unassigned nested event once");
 });
 
 test("Codex cumulative reconciliation includes reasoning and does not confirm unknown counters", t => {

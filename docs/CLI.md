@@ -343,8 +343,9 @@ bound counts model output for requests with observed Agentpack calls, once per
 request; it includes other output from those requests. For Codex code-mode,
 completed nested MCP events count calls even when tools are invoked
 dynamically. Printed result text contributes response size; an unprinted or
-very short result does not. A nested event that cannot be assigned to exactly
-one open wrapper is not counted as a call and increments
+very short result does not. Completion events of direct calls are not counted
+again. A nested event that cannot be assigned to exactly one open wrapper is
+not counted as a call and increments
 `unattributedResponses`. Without these events, the report uses identifiable result blocks:
 source expressions alone do not prove execution. Repeated prints contribute
 response size, while distinct identical calls or transformed results can still
