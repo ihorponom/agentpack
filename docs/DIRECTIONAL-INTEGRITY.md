@@ -122,7 +122,7 @@ proof of waste.
 
 ## Product Boundary
 
-Risk-based verification is advisory evidence hygiene, not an architecture or correctness verdict. Low-risk work records a short readable note or useful test output that explains the check, result, and relevant limits. Code scopes retain an exact `Reviewed HEAD` match to the Passport. Medium/high work uses independent read-only review plus a named negative, differential, operational, or rollback check. The low-risk advisory only rejects evidence that is missing, unreadable, empty, head-only, or wholly generic; it does not judge the conclusion. There is no enforcement knob until dogfood justifies its false-positive and ceremony cost.
+Risk-based verification is advisory evidence hygiene, not an architecture or correctness verdict. Low-risk work records a short readable note or useful test output that explains the check, result, and relevant limits. Code scopes retain a `Reviewed HEAD` match to the Passport-bound SHA or its full form. Medium/high work uses independent read-only review plus a named negative, differential, operational, or rollback check. The low-risk advisory only rejects evidence that is missing, unreadable, empty, head-only, or wholly generic; it does not judge the conclusion. There is no enforcement knob until dogfood justifies its false-positive and ceremony cost.
 
 Directional integrity does not expand Agentpack into an architecture adviser,
 review agent, workflow engine, backlog manager, role registry, autonomous

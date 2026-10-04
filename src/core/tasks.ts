@@ -786,6 +786,17 @@ function referencedAdversarialEvidence(root: string, passport: TaskPassport): Ad
   return evidence;
 }
 
+function reviewedHeadMatches(reviewed: string | undefined, bound: string): boolean {
+  return reviewed === bound || (reviewed !== undefined && /^[0-9a-f]{40}$/.test(reviewed) && reviewed.startsWith(bound));
+}
+
+// Only id-shaped values are echoed; arbitrary caller input may contain secrets.
+function missingEvidenceLabel(missing: string[]): string {
+  const shown = missing.filter((id) => /^evt_[A-Za-z0-9._-]{1,120}$/.test(id));
+  const hidden = missing.length - shown.length;
+  return [...shown, ...(hidden ? [`${hidden} invalid id${hidden === 1 ? "" : "s"}`] : [])].join(", ");
+}
+
 function validateEvidenceIds(root: string, evidence: string[], alreadyLinked: string[]): void {
   const linked = new Set(alreadyLinked);
   const ids = new Set(uniqueStrings(evidence).filter((id) => !linked.has(id)));
@@ -793,7 +804,7 @@ function validateEvidenceIds(root: string, evidence: string[], alreadyLinked: st
   const found = new Set(readRecentAdversarialEvidenceEvents(root, ids, true).map((event) => event.id));
   const missing = [...ids].filter((id) => !found.has(id));
   if (missing.length) {
-    throw new Error(`Evidence event not found in the last ${MAX_ADVERSARIAL_EVENT_BYTES / (1024 * 1024)} MiB of events.jsonl; attach evidence first or reference a recent evidence id.`);
+    throw new Error(`Evidence event not found in the last ${MAX_ADVERSARIAL_EVENT_BYTES / (1024 * 1024)} MiB of events.jsonl: ${missingEvidenceLabel(missing)}; attach evidence first or reference a recent evidence id.`);
   }
 }
 
@@ -827,7 +838,10 @@ function readRecentAdversarialEvidenceEvents(root: string, ids: Set<string>, str
     }
     return events;
   } catch (error) {
-    if (strict) throw new Error(`Cannot validate evidence ids: ${error instanceof Error ? error.message : String(error)}`);
+    if (strict) {
+      const code = (error as NodeJS.ErrnoException).code;
+      throw new Error(`Cannot validate evidence ids: cannot read .agentpack/events.jsonl${code ? ` (${code})` : ""}.`);
+    }
     return [];
   } finally {
     if (descriptor !== null) closeSync(descriptor);
@@ -878,7 +892,7 @@ function assessAdversarialEvidence(evidence: AdversarialEvidence, passport: Task
   if (hasCodeScope(passport)) {
     if (!/^[0-9a-f]{7,40}$/i.test(passport.currentHead || "")) malformed.push("Passport-bound Reviewed HEAD");
     else if (values.get("Reviewed HEAD") === undefined) missing.push("Reviewed HEAD");
-    else if (values.get("Reviewed HEAD") !== passport.currentHead) malformed.push("Reviewed HEAD (must exactly match the Passport-bound SHA)");
+    else if (!reviewedHeadMatches(values.get("Reviewed HEAD")!, passport.currentHead!)) malformed.push("Reviewed HEAD (must match the Passport-bound SHA or its full form)");
   }
   if (risk === "medium" || risk === "high") {
     if (!ADVERSARIAL_REVIEW_KINDS.has(evidence.kind)) {
@@ -901,7 +915,7 @@ function assessAdversarialEvidence(evidence: AdversarialEvidence, passport: Task
       malformed.push("Adversarial check type (must name negative, differential, operational, or rollback)");
       relevanceFailures += 1;
     }
-    if (hasCodeScope(passport) && (!/^[0-9a-f]{7,40}$/i.test(passport.currentHead || "") || values.get("Reviewed HEAD") !== passport.currentHead)) relevanceFailures += 1;
+    if (hasCodeScope(passport) && (!/^[0-9a-f]{7,40}$/i.test(passport.currentHead || "") || !reviewedHeadMatches(values.get("Reviewed HEAD"), passport.currentHead!))) relevanceFailures += 1;
   }
   return { id: evidence.id, relevanceFailures, position, missing, malformed, satisfied: missing.length === 0 && malformed.length === 0 };
 }

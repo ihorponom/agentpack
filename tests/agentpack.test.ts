@@ -2701,6 +2701,10 @@ test("low-risk verification accepts short free-form evidence while preserving HE
   assert.ok(concise.length < 32 && concise.split(" ").length < 6);
   assert.doesNotMatch(check(concise), /Success completion lacks/);
   assert.match(check(concise, "0000000000000000000000000000000000000000"), /Reviewed HEAD/);
+  const fullHead = runGit(dir, ["rev-parse", "HEAD"]).trim();
+  assert.ok(fullHead.length === 40 && fullHead.startsWith(passport.currentHead));
+  assert.doesNotMatch(check(concise, fullHead), /Success completion lacks/, "the full form of the bound SHA is accepted");
+  assert.match(check(concise, fullHead.slice(0, 39)), /Reviewed HEAD/, "a truncated longer SHA is not the full form");
   assert.match(check(concise, ""), /Success completion lacks/);
   for (const risk of ["medium", "high"]) {
     assert.match(check(concise, passport.currentHead, risk), /review-like evidence satisfying/);
@@ -4548,6 +4552,7 @@ test("task verify and finalize reject unrecorded evidence before writing", () =>
     const error = runExpectError(dir, ["task", "verify", "--status", "passed", "--evidence", validId, "--evidence", invalidId]);
     assert.match(error, /Evidence event not found/);
     assert.doesNotMatch(error, /secret=top/, "an invalid caller-supplied id is not echoed");
+    assert.match(error, invalidId.startsWith("evt_") ? new RegExp(invalidId) : /1 invalid id;/, "missing ids are named when id-shaped");
     assert.equal(run(dir, ["task", "passport"]), before);
     assert.equal(taskEventCount(dir, passport.id), eventCount);
   }
@@ -4560,6 +4565,12 @@ test("task verify and finalize reject unrecorded evidence before writing", () =>
   assert.equal(taskEventCount(dir, passport.id), pendingEventCount);
   run(dir, ["task", "finalize", "--status", "passed", "--evidence", validId]);
   assert.deepEqual(JSON.parse(run(dir, ["task", "passport"])).verification.evidence, [validId]);
+
+  run(dir, ["task", "start", "Unreadable event log"]);
+  rmSync(eventsPath);
+  const unreadable = runExpectError(dir, ["task", "verify", "--status", "passed", "--evidence", validId]);
+  assert.match(unreadable, /cannot read \.agentpack\/events\.jsonl \(ENOENT\)/);
+  assert.doesNotMatch(unreadable, new RegExp(dir.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")), "local paths are not exposed");
 });
 
 test("already linked evidence remains usable after its event leaves the bounded lookup window", () => {

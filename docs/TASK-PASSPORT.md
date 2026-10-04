@@ -257,7 +257,7 @@ bound HEAD remain frozen. The option never finalizes work or clears blockers.
 
 `task verify` updates the verification state. Without flags it marks verification as `pending`; with `--status`, `--evidence`, and `--summary` it links verification to recorded evidence so the audit warning can become a reviewed result. Pending output makes clear that the task stays active for fixes and intermediate checks. A final verdict (`passed`, `failed`, or `accepted`) binds the reviewed HEAD, moves the task lifecycle to `verifying`, and reports the freeze consequence; only an explicit later verification update may rebind that HEAD. Recording `pending` (or `unknown`) again — verification found more work — moves it back to `active` so the gate stops treating continued edits as out of lifecycle. `task update-verification` remains available as a compatibility alias.
 
-New `--evidence` IDs on `task verify` and `task finalize` must match recorded evidence events in the bounded recent event-log window. An unknown ID rejects the whole update before the Passport or task event is written. Already linked IDs can be repeated after their events leave that window; existing links in older Passports remain readable and are not migrated.
+New `--evidence` IDs on `task verify` and `task finalize` must match recorded evidence events in the bounded recent event-log window. An unknown ID rejects the whole update before the Passport or task event is written; the error names id-shaped missing IDs and only counts other values. Already linked IDs can be repeated after their events leave that window; existing links in older Passports remain readable and are not migrated.
 
 `task finalize` is the compact end-of-task ritual. It closes the current task only after verification is already `passed`, `failed`, or `accepted`, or when that final status is passed explicitly with `--status`. It refuses to close unknown or pending verification by default. Direct finalization binds the live HEAD when verification was non-final; finalizing an already-final verdict preserves its bound HEAD. Its output reports the bound HEAD and completed/frozen consequence. `task finalize --status accepted` also refuses to close a task with remaining next actions unless `--force` is passed; use `task park` for deferred work. `task close` remains available for explicit manual closure.
 
@@ -450,7 +450,7 @@ shared at the pack level.
 
 Successful `passed` or `accepted` completion should reference evidence that fits the task risk.
 
-For low-risk work, use a short readable note or useful test output that says what was checked, what happened, and any relevant limit. It does not need prescribed labels or a minimum length. Code scopes still include a `Reviewed HEAD:` exactly matching the Passport-bound SHA. The advisory can flag evidence that is missing, unreadable, empty, only names a HEAD, or is wholly generic; it does not decide whether the technical conclusion is correct.
+For low-risk work, use a short readable note or useful test output that says what was checked, what happened, and any relevant limit. It does not need prescribed labels or a minimum length. Code scopes still include a `Reviewed HEAD:` matching the Passport-bound SHA or its full 40-character form. The advisory can flag evidence that is missing, unreadable, empty, only names a HEAD, or is wholly generic; it does not decide whether the technical conclusion is correct.
 
 Classify contract-changing work as medium/high risk. Medium/high evidence retains the following fields:
 
