@@ -378,6 +378,43 @@ test("Codex overhead counts completed nested MCP calls with dynamic code-mode di
     "duplicate sources report an unassigned nested event once");
 });
 
+test("Agentpack overhead recognizes project-scoped server names and ignores look-alikes", t => {
+  const claudeCall = (id: string, name: string) => ({ ...claude(id), message: { ...claude(id).message,
+    content: [{ type: "tool_use", id: `tool-${id}`, name, input: {} }] } });
+  const claudeResult = (id: string) => ({ type: "user", timestamp: time, message: { content: [
+    { type: "tool_result", tool_use_id: `tool-${id}`, content: "result" }] } });
+  const { dir, file } = fixture(t, [claudeCall("c1", "mcp__agentpack-demo-repo__task_status"), claudeResult("c1"),
+    claudeCall("c2", "mcp__agentpackish__task_status"), claudeResult("c2"), claude("c3")]);
+  const claudeReport = buildUsageReport({ client: "claude", files: [file] }, dir).agentpackOverhead;
+  assert.deepEqual(claudeReport.byTool.map(row => [row.tool, row.calls]), [["task_status", 1]]);
+
+  const status = "Task task_example. State: active; Verification: pending; Next: Review";
+  const list = "* task_example [active] Demo task";
+  writeFileSync(file, [context,
+    { type: "response_item", payload: { type: "function_call", call_id: "call-direct", namespace: "mcp__agentpack_demo_repo__", name: "task_status", arguments: "{}" } },
+    codex("r1"),
+    { type: "event_msg", payload: { type: "item_completed", item: { type: "McpToolCall", id: "call-direct", server: "agentpack-demo-repo",
+      tool: "task_status", status: "completed", result: { content: [{ type: "text", text: status }] } } } },
+    { type: "response_item", payload: { type: "function_call_output", call_id: "call-direct", output: status } },
+    { type: "response_item", payload: { type: "custom_tool_call", call_id: "call-wrapped", name: "exec",
+      input: "const r = await tools.mcp__agentpack_demo_repo__task_list({}); text(r.content[0]);" } },
+    codex("r2"),
+    { type: "response_item", payload: { type: "custom_tool_call_output", call_id: "call-wrapped", output: [{ type: "text", text: list }] } },
+    { type: "response_item", payload: { type: "custom_tool_call", call_id: "call-nested", name: "exec", input: "await tools[n]({})" } },
+    codex("r3"),
+    { type: "event_msg", payload: { type: "item_completed", item: { type: "McpToolCall", id: "exec-1", server: "agentpack-demo-repo",
+      tool: "checkpoint", status: "completed", result: { content: [{ type: "text", text: "Created checkpoint 2026-10-04" }] } } } },
+    { type: "event_msg", payload: { type: "item_completed", item: { type: "McpToolCall", id: "exec-2", server: "agentpackish",
+      tool: "checkpoint", status: "completed", result: { content: [{ type: "text", text: "Created checkpoint 2026-10-05" }] } } } },
+    { type: "response_item", payload: { type: "custom_tool_call_output", call_id: "call-nested", output: [] } },
+    { type: "response_item", payload: { type: "function_call", call_id: "call-other", namespace: "mcp__agentpackish__", name: "task_status", arguments: "{}" } },
+    codex("r4")].map(row => JSON.stringify(row)).join("\n") + "\n");
+  const codexReport = buildUsageReport({ client: "codex", files: [file] }, dir).agentpackOverhead;
+  assert.equal(codexReport.calls, 3);
+  assert.deepEqual(codexReport.byTool.map(row => [row.tool, row.calls]), [["checkpoint", 1], ["task_list", 1], ["task_status", 1]]);
+  assert.equal(codexReport.unattributedResponses, 0);
+});
+
 test("Codex cumulative reconciliation includes reasoning and does not confirm unknown counters", t => {
   const request = codex("r1");
   const { dir, file } = fixture(t, [context, { ...request, payload: { ...request.payload,

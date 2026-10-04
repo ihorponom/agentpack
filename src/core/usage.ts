@@ -86,6 +86,9 @@ export interface UsageReport {
 const MAX_FILE_BYTES = 64 * 1024 * 1024;
 // Short results such as an empty JSON list also occur in unrelated shell output.
 const MIN_NESTED_MATCH_CHARS = 16;
+// Installed servers are `agentpack` or `agentpack-<slug>`; Codex rewrites `-` to `_` in tool namespaces.
+const AGENTPACK_SERVER = /^agentpack(?:-[a-z0-9_-]+)?$/u;
+const AGENTPACK_TOOL = /^mcp__agentpack(?:[-_][a-z0-9_-]*)?__([a-z]+(?:_[a-z]+)*)$/u;
 const identifier = /^[A-Za-z0-9._<>:/-]{1,160}$/u;
 const fields = ["input", "uncachedInput", "cacheRead", "cacheWrite", "output"] as const;
 
@@ -255,7 +258,7 @@ function estimateAgentpackOverhead(client: UsageOptions["client"], lines: string
       && payload.name === "exec" && typeof payload.call_id === "string") openCodexExec.set(payload.call_id, i);
     if (client === "codex" && row.type === "event_msg" && payload.type === "item_completed") {
       const item = object(payload.item);
-      if (item.type === "McpToolCall" && item.server === "agentpack" && item.status === "completed"
+      if (item.type === "McpToolCall" && typeof item.server === "string" && AGENTPACK_SERVER.test(item.server) && item.status === "completed"
         && typeof item.id === "string" && typeof item.tool === "string" && /^[a-z_]+$/u.test(item.tool)) {
         const result = object(item.result);
         const resultTexts = Array.isArray(result.content) ? result.content.flatMap(block => {
@@ -275,19 +278,22 @@ function estimateAgentpackOverhead(client: UsageOptions["client"], lines: string
       if (!Array.isArray(content)) continue;
       for (const block of content) {
         const item = object(block);
-        if (item.type !== "tool_use" || typeof item.id !== "string" || typeof item.name !== "string" || !item.name.startsWith("mcp__agentpack__")) continue;
-        calls.set(item.id, { tools: [item.name.slice("mcp__agentpack__".length)], direct: true, otherMcp: false, line: i,
+        const tool = item.type === "tool_use" && typeof item.name === "string" ? AGENTPACK_TOOL.exec(item.name)?.[1] : undefined;
+        if (typeof item.id !== "string" || !tool) continue;
+        calls.set(item.id, { tools: [tool], direct: true, otherMcp: false, line: i,
           requestId: typeof message.id === "string" ? message.id : null });
       }
     }
     if (client === "codex" && row.type === "response_item" && (payload.type === "function_call" || payload.type === "custom_tool_call")) {
       if (typeof payload.call_id !== "string") continue;
-      const direct = typeof payload.name === "string" && payload.name.startsWith("mcp__agentpack__") ? [payload.name.slice("mcp__agentpack__".length)] : [];
+      const name = typeof payload.name === "string" ? `${typeof payload.namespace === "string" ? payload.namespace : ""}${payload.name}` : "";
+      const directTool = AGENTPACK_TOOL.exec(name)?.[1];
       const input = String(payload.arguments ?? payload.input ?? "");
-      const wrapped = [...input.matchAll(/tools\.mcp__agentpack__([A-Za-z_]+)\s*\(/gu)].map(match => match[1]!);
-      const tools = direct.length ? direct : wrapped;
-      if (tools.length) calls.set(payload.call_id, { tools: [...new Set(tools)], direct: direct.length > 0,
-        otherMcp: /tools\.mcp__(?!agentpack__)[A-Za-z0-9_]+\s*\(/u.test(input), line: i, requestId: null });
+      const invoked = [...input.matchAll(/tools\.(mcp__[A-Za-z0-9_]+)\s*\(/gu)].map(match => AGENTPACK_TOOL.exec(match[1]!)?.[1] ?? null);
+      const wrapped = invoked.filter((tool): tool is string => tool !== null);
+      const tools = directTool ? [directTool] : wrapped;
+      if (tools.length) calls.set(payload.call_id, { tools: [...new Set(tools)], direct: Boolean(directTool),
+        otherMcp: invoked.includes(null), line: i, requestId: null });
     }
   }
   // Direct MCP calls also emit item_completed with the function call id; only the remaining events are nested.

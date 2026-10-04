@@ -335,7 +335,9 @@ The task label is descriptive; it does not activate or modify a Task Passport.
 Direct reports and each task slice include additive `agentpackOverhead` JSON:
 `calls`, estimated `responseTokens`, `rereadTokensUpperBound`,
 `outputTokensUpperBound`, `unattributedResponses`, and `byTool` rows with the
-same per-tool counts and estimates. Response tokens use visible transcript
+same per-tool counts and estimates. Calls are recognized for the `agentpack`
+server and installer-generated `agentpack-<repo-name>` servers; other MCP
+servers are excluded. Response tokens use visible transcript
 characters divided by four, rounded up. The reread upper bound multiplies
 each response estimate by later selected requests in that source; context
 compaction or truncation can make actual rereads smaller. The output upper
