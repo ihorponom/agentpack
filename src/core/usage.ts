@@ -193,11 +193,15 @@ function estimateAgentpackOverhead(client: UsageOptions["client"], lines: string
   const resultTool = (value: string): string | null => {
     const first = value.trimStart();
     if (/^Task task_[A-Za-z0-9][A-Za-z0-9._-]*\. State:/u.test(first)) return "task_status";
+    if (/^[*-] task_[A-Za-z0-9][A-Za-z0-9._-]* \[(?:active|parked|blocked|verifying|completed|abandoned)\] /u.test(first)) return "task_list";
     for (const [tool, prefix] of [["load_context", "# Agentpack Resume"], ["task_status", "Task inspection"],
       ["task_status", "Task status"],
       ["attach_evidence", "Attached evidence"], ["checkpoint", "Created checkpoint"],
       ["task_start", "Started task"], ["task_switch", "Switched to task"],
-      ["task_park", "Parked task"], ["task_update", "Updated task"]] as const) {
+      ["task_park", "Parked task"], ["task_update", "Updated task"],
+      ["task_update_verification", "Updated verification for task"],
+      ["task_update_verification", "Verification unchanged for task"],
+      ["task_finalize", "Finalized task"]] as const) {
       if (first.startsWith(prefix)) return tool;
     }
     return null;

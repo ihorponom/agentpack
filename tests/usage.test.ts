@@ -197,6 +197,47 @@ test("Agentpack overhead attributes compact task status printed directly in Code
   assert.equal(overhead.byTool[0]?.tool, "task_status");
 });
 
+test("Codex overhead recognizes lifecycle results in a mixed code-mode wrapper", t => {
+  const source = "await tools.mcp__agentpack__task_list({open:true,compact:true}); await tools.exec_command({cmd:'pwd'}); await tools.mcp__agentpack__task_update_verification({status:'pending'}); await tools.mcp__agentpack__task_finalize({status:'passed'});";
+  const list = "* task_example [active] Probe task\n- task_other [parked] Other task";
+  const verification = "Updated verification for task task_example (pending). Verification remains pending.";
+  const finalization = "Finalized task task_example (passed). Bound HEAD abc1234.";
+  const { dir, file } = fixture(t, [context,
+    { type: "response_item", payload: { type: "custom_tool_call", call_id: "call-lifecycle", name: "exec", input: source } },
+    codex("r1"),
+    { type: "response_item", payload: { type: "custom_tool_call_output", call_id: "call-lifecycle", output: [
+      { type: "text", text: "RESULT 0" }, { type: "text", text: list },
+      { type: "text", text: "PRIVATE_SHELL_RESULT" }, { type: "text", text: verification },
+      { type: "text", text: finalization }] } },
+    codex("r2")]);
+  const overhead = buildUsageReport({ client: "codex", files: [file] }, dir).agentpackOverhead;
+  assert.equal(overhead.calls, 3);
+  assert.equal(overhead.responseTokens, [list, verification, finalization].reduce((sum, value) => sum + Math.ceil(value.length / 4), 0));
+  assert.equal(overhead.unattributedResponses, 0);
+  assert.deepEqual(overhead.byTool.map(row => [row.tool, row.calls]), [
+    ["task_finalize", 1], ["task_list", 1], ["task_update_verification", 1]]);
+  assert.doesNotMatch(JSON.stringify(overhead), /PRIVATE_SHELL_RESULT|Probe task/);
+
+  writeFileSync(file, [context,
+    { type: "response_item", payload: { type: "custom_tool_call", call_id: "call-noop", name: "exec",
+      input: "await tools.mcp__agentpack__task_update_verification({status:'pending'});" } },
+    codex("r1"),
+    { type: "response_item", payload: { type: "custom_tool_call_output", call_id: "call-noop", output: [
+      { type: "text", text: "Verification unchanged for task task_example (pending)." }] } },
+    codex("r2")].map(row => JSON.stringify(row)).join("\n") + "\n");
+  assert.equal(buildUsageReport({ client: "codex", files: [file] }, dir).agentpackOverhead.byTool[0]?.tool, "task_update_verification");
+
+  writeFileSync(file, [context,
+    { type: "response_item", payload: { type: "custom_tool_call", call_id: "call-ambiguous", name: "exec", input: source } },
+    codex("r1"),
+    { type: "response_item", payload: { type: "custom_tool_call_output", call_id: "call-ambiguous", output: [
+      { type: "text", text: "PRIVATE_SHELL_RESULT without any Agentpack result" }] } },
+    codex("r2")].map(row => JSON.stringify(row)).join("\n") + "\n");
+  const ambiguous = buildUsageReport({ client: "codex", files: [file] }, dir).agentpackOverhead;
+  assert.equal(ambiguous.calls, 0, "source expressions and unrelated shell output do not prove execution");
+  assert.equal(ambiguous.unattributedResponses, 1);
+});
+
 test("Codex cumulative reconciliation includes reasoning and does not confirm unknown counters", t => {
   const request = codex("r1");
   const { dir, file } = fixture(t, [context, { ...request, payload: { ...request.payload,
