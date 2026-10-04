@@ -5558,6 +5558,14 @@ test("task list explains hidden history when every task is closed", async () => 
   const mcp = createMcpHarness(dir);
   const response = await mcp.send({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "task_list", arguments: {} } });
   assert.equal(response.result.content[0].text, "No open task passports. Pass `all: true` for history.");
+
+  const corruptDir = path.join(dir, ".agentpack", "tasks", "task_corrupt");
+  mkdirSync(corruptDir);
+  writeFileSync(path.join(corruptDir, "passport.json"), "api_key=supersecret");
+  const warned = run(dir, ["task", "list"]);
+  assert.match(warned, /\[warn\] Unreadable task passport task_corrupt/);
+  assert.match(warned, /No open task passports/);
+  assert.doesNotMatch(warned, /api_key=su/, "warnings are redacted in the empty open-list branch");
 });
 
 test("combined park-and-switch validates targets before writes and preserves frozen verdicts", async () => {

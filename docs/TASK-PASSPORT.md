@@ -271,7 +271,7 @@ In a repository with several parts — for example `api/`, `frontend/`, `cron/`,
 agentpack task start "API auth fix" --write-scope api
 ```
 
-A directory write scope covers every file under it. The task gate turns that boundary into enforcement rather than a convention: in the default `warn` mode the agent is told when an edit leaves `api/`, and with `gateMode: "block"` in `.agentpack/config.json` the native Claude Code, Codex, and Cursor hooks deny the edit before it happens. Start a task when you enter one part of the project, finalize it when that slice is verified, and `task list` shows which part each task owned via its scope. `task list --scope api` narrows the history to the tasks that owned that part.
+A directory write scope covers every file under it. The task gate turns that boundary into enforcement rather than a convention: in the default `warn` mode the agent is told when an edit leaves `api/`, and with `gateMode: "block"` in `.agentpack/config.json` the native Claude Code, Codex, and Cursor hooks deny the edit before it happens. Start a task when you enter one part of the project, finalize it when that slice is verified, and `task list` shows which part each task owned via its scope. `task list --all --scope api` narrows the history to the tasks that owned that part; without `--all` it shows the open ones.
 
 This keeps one session focused on one part of the repo without splitting the ledger. The pack also does not have to sit at the repository root: a subfolder project can run `agentpack init` and keep its own ledger. Separate ledgers per part work too, but require switching working directories between packs, so prefer one ledger plus scoped tasks unless the parts really are independent projects.
 

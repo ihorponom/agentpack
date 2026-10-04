@@ -96,10 +96,11 @@ the hooked client can bypass them.
 agentpack task verify --status passed --evidence evt_... --summary "API token tests pass"
 agentpack task finalize
 agentpack task start "Dedupe token utils" --write-scope frontend
-agentpack task list
+agentpack task list --all
 ```
 
-Expected takeaway: `task list` shows which part each task owns via its scope.
+Expected takeaway: `task list --all` shows which part each task owns via its scope,
+including finished tasks; plain `task list` shows only open work.
 The gate checks that boundary for supported edit tools, with warnings or denial
 depending on the client and mode. The ledger stays whole, and per-task context
 stays small instead of accumulating the entire monorepo.

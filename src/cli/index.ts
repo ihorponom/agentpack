@@ -828,7 +828,7 @@ function taskCommand(root: string, rest: string[]): void {
     const { tasks: all, warnings } = listTasks(root);
     const warningOutput = warnings.map((warning) => `[warn] ${warning}\n`).join("");
     if (all.length === 0) {
-      process.stdout.write(`${warningOutput}No task passports yet. Run \`agentpack task start <title>\`.\n`);
+      process.stdout.write(redactForRoot(root, `${warningOutput}No task passports yet. Run \`agentpack task start <title>\`.\n`));
       return;
     }
 
@@ -839,7 +839,7 @@ function taskCommand(root: string, rest: string[]): void {
     const hidden = defaultOpen ? scoped.length - tasks.length : 0;
     if (tasks.length === 0) {
       if (hidden > 0) {
-        process.stdout.write(`${warningOutput}No open task passports. Use \`agentpack task list --all\` for history.\n`);
+        process.stdout.write(redactForRoot(root, `${warningOutput}No open task passports. Use \`agentpack task list --all\` for history.\n`));
         return;
       }
       const applied = [
