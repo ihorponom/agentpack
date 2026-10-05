@@ -3,7 +3,7 @@ import path from "node:path";
 import { resolveRegularFileWithin, sha256 } from "./hash.js";
 import { getPackPath, PACK_DIR_MODE, withPackWriteLock, writeJson } from "./store.js";
 import { getCurrentPassport, listTasks, readPassport, readTaskActiveIntervals } from "./tasks.js";
-import { addAgentpackOverhead, beforeActivationLine, emptyAgentpackOverhead, formatUsageReport, isSubagentTranscript, readUsageReport, readUsageTimeline, type AgentpackOverhead, type UsageReport } from "./usage.js";
+import { addAgentpackOverhead, beforeActivationLine, emptyAgentpackOverhead, formatUsageReport, isSubagentTranscript, readUsageReport, readUsageTimeline, SUPPLIED_SOURCE_WARNINGS, type AgentpackOverhead, type UsageReport } from "./usage.js";
 
 export interface TaskUsageReport {
   kind: "task-usage-report";
@@ -54,7 +54,7 @@ export function buildTaskUsageReport(file: string, cwd: string, byTurn = false):
 }
 
 export function usageTaskId(root: string, taskId?: string): string {
-  if (taskId !== undefined) {
+  if (taskId !== undefined && taskId !== "current") {
     try { return readPassport(root, taskId).id; }
     catch (error) {
       throw new Error(`${error instanceof Error ? error.message : String(error)}. Task usage needs a Task Passport id; for a descriptive label use --client/--file (MCP: client/files).`);
@@ -288,14 +288,14 @@ function reportFromBytes(bytes: Buffer, resolved: string, byTurn: boolean, inter
   }
   return { kind: "task-usage-report", version: 1, taskId, manifest: { path: resolved, sha256: sha256(bytes) },
     coverage, requests, totals, agentpackOverhead, agentpackOverheadBeforeActivation, slices, billedUsd: null,
-    warnings: [...new Set(["Coverage is declared by the manifest author; it is not independently verified.",
+    warnings: [...new Set([...(intervals ? [] : ["Coverage is declared by the manifest author; it is not independently verified."]),
       ...(intervals ? ["Only requests made while the task was the current Passport are counted; sessions shared with other tasks are split by those periods. Subagent sessions count whole for the task that was current when they started."] : []),
       ...(intervals && !windows ? ["Agentpack overhead before activation is unavailable: another task's active periods could not be read."] : []),
       ...(skippedSubagents.length ? [`Subagent sessions started while another task was current are not counted: ${skippedSubagents.join(", ")}.`] : []),
       ...(emptySources.length ? [`Sources without new requests while the task was current: ${emptySources.join(", ")}.`] : []),
       ...(repeatedRequests ? [`${repeatedRequests} request(s) repeated across sources (resumed or forked sessions) were counted once.`] : []),
       "Session monetary estimates are not combined into task monetary cost.",
-      ...slices.flatMap(slice => slice.report.warnings)])] };
+      ...slices.flatMap(slice => slice.report.warnings).filter(warning => !intervals || !SUPPLIED_SOURCE_WARNINGS.includes(warning))])] };
 }
 
 export function formatTaskUsageReport(report: TaskUsageReport): string {

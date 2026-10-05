@@ -89,6 +89,11 @@ export interface UsageReport {
 }
 
 const MAX_FILE_BYTES = 64 * 1024 * 1024;
+/** Direct-report caveats that task reports replace with their own coverage and tracing notes. */
+export const SUPPLIED_SOURCE_WARNINGS = [
+  "Only supplied sources are measured. Child sessions, missing requests and other clients are not discovered automatically.",
+  "Supplied sources do not establish whole-task coverage, completion or quality."
+];
 // Short results such as an empty JSON list also occur in unrelated shell output.
 const MIN_NESTED_MATCH_CHARS = 16;
 // Installed servers are `agentpack` or `agentpack-<slug>`; Codex rewrites `-` to `_` in tool namespaces.
@@ -745,8 +750,7 @@ function parseUsageReport(options: UsageOptions, cwd: string): { report: UsageRe
     else unassignedRequests += 1;
   }
   const warnings = [
-    "Only supplied sources are measured. Child sessions, missing requests and other clients are not discovered automatically.",
-    "Supplied sources do not establish whole-task coverage, completion or quality.",
+    ...SUPPLIED_SOURCE_WARNINGS,
     "Cache read/write are included in input; reasoning, when reported, is included in output. Do not add subsets again.",
     "No verified charges or model rates are available from this importer. Monetary estimates are reported separately per source."
   ];

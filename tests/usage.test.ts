@@ -9,7 +9,7 @@ import { PassThrough } from "node:stream";
 import { startMcpServer, TOOL_DEFINITIONS } from "../src/mcp/server.js";
 import { initPack } from "../src/core/store.js";
 import { buildUsageReport, formatUsageReport } from "../src/core/usage.js";
-import { buildLinkedTaskUsageReport, buildTaskUsageReport, formatTaskUsageReport, linkTaskUsage, taskUsageManifestPath, unlinkTaskUsage } from "../src/core/usage-manifest.js";
+import { buildLinkedTaskUsageReport, buildTaskUsageReport, usageTaskId, formatTaskUsageReport, linkTaskUsage, taskUsageManifestPath, unlinkTaskUsage } from "../src/core/usage-manifest.js";
 import { findUsageCandidates } from "../src/core/usage-discovery.js";
 import { closeCurrentTask, parkCurrentTask, readTaskActiveIntervals, startTask } from "../src/core/tasks.js";
 import { buildTuiModel, loadTuiTaskUsage } from "../src/core/tui.js";
@@ -620,6 +620,7 @@ test("Task usage manifest aggregates disjoint phases and clients with explicit c
   const before = readdirSync(dir);
   const bytes = readFileSync(manifest);
   const r = buildTaskUsageReport(manifest, os.tmpdir(), true);
+  assert.match(r.warnings.join(" "), /Coverage is declared by the manifest author/, "explicit manifests keep the author coverage caveat");
   assert.equal(r.requests, 3);
   assert.deepEqual(r.totals, { input: 300, uncachedInput: 90, cacheRead: 180, cacheWrite: 30, output: 60, reasoning: null });
   assert.equal(r.slices[1]?.report.models[0]?.model, "model-b");
@@ -945,6 +946,9 @@ test("Task reports count Agentpack calls from the gap before activation separate
   assert.deepEqual(readTaskActiveIntervals(dir, a.id), [{ from: at(0), to: null }]);
   const linked = linkTaskUsage(dir, a.id, [{ client: "claude", file: session, phase: "main" }], dir);
   const before = linked.agentpackOverheadBeforeActivation;
+  assert.doesNotMatch(linked.warnings.join(" "), /manifest author|Only supplied sources|Supplied sources do not establish/,
+    "task reports drop caveats that contradict tracing and linked coverage");
+  assert.equal(usageTaskId(dir, "current"), a.id);
   assert.equal(before.calls, 1, "only the call made in the gap that ends at activation; the call made while another task was current is not counted");
   assert.equal(before.responseTokens, Math.ceil(orientation.length / 4));
   const otherTokens = Math.ceil("PRIVATE_OTHER_TASK_RESULT".length / 4);

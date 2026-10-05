@@ -251,8 +251,8 @@ agentpack usage link <task-id>              # list candidate sessions
 agentpack usage link <task-id> --pick 1,3   # or session ids
 ```
 
-The task id defaults to the current Task Passport and may be given
-positionally or with `--task`. Sessions that ran Agentpack for the task are
+The task id defaults to the current Task Passport (also accepted as
+`current`) and may be given positionally or with `--task`. Sessions that ran Agentpack for the task are
 included automatically: a session is traced when its own Agentpack output
 started the task, switched to it, or showed it as the current Passport in
 `load_context`/`resume` (only tool output counts, not prose or quoted history);

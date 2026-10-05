@@ -218,7 +218,7 @@ can undercount calls and responses (see docs/CLI.md). Task reports add
 and earlier responses reread by its requests.
 It does not collect activity automatically or write ledger state.
 
-To report a task, pass its Passport id (or nothing for the current task):
+To report a task, pass its Passport id (or `current`, or nothing for the current task):
 
 ```json
 {"task":"task_2026-10-01T07-41-54-247Z_e76582_example","json":true}
