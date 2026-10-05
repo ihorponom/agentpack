@@ -2,8 +2,8 @@ import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, statSync } f
 import path from "node:path";
 import { resolveRegularFileWithin, sha256 } from "./hash.js";
 import { getPackPath, PACK_DIR_MODE, withPackWriteLock, writeJson } from "./store.js";
-import { getCurrentPassport, readPassport, readTaskActiveIntervals } from "./tasks.js";
-import { addAgentpackOverhead, emptyAgentpackOverhead, formatUsageReport, isSubagentTranscript, readUsageReport, readUsageTimeline, type AgentpackOverhead, type UsageReport } from "./usage.js";
+import { getCurrentPassport, listTasks, readPassport, readTaskActiveIntervals } from "./tasks.js";
+import { addAgentpackOverhead, beforeActivationLine, emptyAgentpackOverhead, formatUsageReport, isSubagentTranscript, readUsageReport, readUsageTimeline, type AgentpackOverhead, type UsageReport } from "./usage.js";
 
 export interface TaskUsageReport {
   kind: "task-usage-report";
@@ -14,6 +14,7 @@ export interface TaskUsageReport {
   requests: number;
   totals: UsageReport["totals"];
   agentpackOverhead: AgentpackOverhead;
+  agentpackOverheadBeforeActivation: AgentpackOverhead;
   slices: Array<{ phase: string; report: UsageReport }>;
   billedUsd: null;
   warnings: string[];
@@ -82,7 +83,25 @@ export function buildLinkedTaskUsageReport(root: string, taskId: string, byTurn 
   const manifest = hasLinkedTaskUsage(root, taskId) ? readLinkedManifest(root, taskId) : emptyManifest(taskId);
   const effective = withTraced(manifest, traced);
   if (!effective.sources.length) throw new Error(`No usage sources linked or traced for ${taskId}`);
-  return reportFromBytes(Buffer.from(`${JSON.stringify(effective, null, 2)}\n`), taskUsageManifestPath(root, taskId), byTurn, intervals);
+  return reportFromBytes(Buffer.from(`${JSON.stringify(effective, null, 2)}\n`), taskUsageManifestPath(root, taskId), byTurn, intervals, preActivationWindows(root, intervals));
+}
+
+/**
+ * Gaps with no current task that end where this task became current. Null when
+ * any task's periods cannot be read: calls are then never guessed into a window.
+ */
+function preActivationWindows(root: string, intervals: Intervals): PreActivation | null {
+  try {
+    const listed = listTasks(root);
+    if (listed.warnings.length) return null;
+    const others = listed.tasks.flatMap(task => readTaskActiveIntervals(root, task.id));
+    return intervals.flatMap(({ from }) => {
+      const start = Date.parse(from);
+      if (others.some(other => Date.parse(other.from) < start && (other.to === null || Date.parse(other.to) > start))) return [];
+      const ends = others.flatMap(other => other.to !== null && Date.parse(other.to) <= start ? [other.to] : []);
+      return [{ from: ends.length ? ends.reduce((a, b) => Date.parse(b) > Date.parse(a) ? b : a) : null, to: from }];
+    });
+  } catch { return null; }
 }
 
 function emptyManifest(taskId: string): UsageManifest {
@@ -166,12 +185,13 @@ function readLinkedManifest(root: string, taskId: string): UsageManifest {
 }
 
 type Intervals = Array<{ from: string; to: string | null }>;
+type PreActivation = Array<{ from: string | null; to: string }>;
 
 function writeLinkedManifest(root: string, manifest: UsageManifest, intervals: Intervals, traced: UsageSourceLink[]): TaskUsageReport {
   const file = taskUsageManifestPath(root, manifest.taskId);
   const effective = withTraced(manifest, traced);
   if (!effective.sources.length) throw new Error(`No usage sources linked or traced for ${manifest.taskId}; link sources first`);
-  const report = reportFromBytes(Buffer.from(`${JSON.stringify(effective, null, 2)}\n`), file, false, intervals);
+  const report = reportFromBytes(Buffer.from(`${JSON.stringify(effective, null, 2)}\n`), file, false, intervals, preActivationWindows(root, intervals));
   mkdirSync(path.dirname(file), { recursive: true, mode: PACK_DIR_MODE });
   writeJson(file, manifest);
   return report;
@@ -202,24 +222,27 @@ function parseManifest(parsed: unknown, allowEmpty = false): UsageManifest {
  * Linked task reports pass the task's active intervals so a session shared by
  * several tasks is split by when each task was current, never counted twice.
  */
-function reportFromBytes(bytes: Buffer, resolved: string, byTurn: boolean, intervals: Intervals | null = null): TaskUsageReport {
+function reportFromBytes(bytes: Buffer, resolved: string, byTurn: boolean, intervals: Intervals | null = null, windows: PreActivation | null = null): TaskUsageReport {
   let parsed: unknown;
   try { parsed = JSON.parse(bytes.toString("utf8")); }
   catch { throw new Error("Usage manifest must contain valid JSON"); }
   // Task reports (with intervals) may combine an empty linked manifest with traced sessions.
   const { taskId, coverage, sources } = parseManifest(parsed, intervals !== null);
   const seen = new Set<string>();
+  const seenBefore = new Set<string>();
   const skippedSubagents: string[] = [];
   const emptySources: string[] = [];
   let repeatedRequests = 0;
   const totals: UsageReport["totals"] = { input: 0, uncachedInput: 0, cacheRead: 0, cacheWrite: 0, output: 0, reasoning: 0 };
   const agentpackOverhead = emptyAgentpackOverhead();
+  const agentpackOverheadBeforeActivation = emptyAgentpackOverhead();
   const slices: TaskUsageReport["slices"] = [];
   let requests = 0;
   for (const { client, file: sourceFile, phase, turns } of sources) {
     // A subagent works for the task that was current when it started, even if
     // the main session switches tasks while it runs: count it whole or not at all.
     let sourceIntervals = intervals;
+    let sourceWindows = windows;
     if (intervals && isSubagentTranscript(client, sourceFile)) {
       const start = readUsageTimeline(client, sourceFile, path.dirname(resolved)).requests
         .reduce<number | null>((min, request) => request.at === null ? min : min === null ? request.at : Math.min(min, request.at), null);
@@ -232,13 +255,15 @@ function reportFromBytes(bytes: Buffer, resolved: string, byTurn: boolean, inter
         continue;
       }
       sourceIntervals = null;
+      sourceWindows = null;
     }
     // Task reports count a request once even when resumed or forked transcripts repeat it;
     // explicit --manifest files keep rejecting overlap below.
     // Sources with no usage at all still fail (wrong client, outside the task's
     // periods, not a transcript); only sources emptied by repeats are skipped.
     const read = readUsageReport({ client, files: [sourceFile], byTurn, ...(turns !== undefined ? { turns } : {}),
-      ...(sourceIntervals ? { intervals: sourceIntervals } : {}), ...(intervals ? { exclude: seen } : {}) }, path.dirname(resolved));
+      ...(sourceIntervals ? { intervals: sourceIntervals } : {}), ...(intervals ? { exclude: seen } : {}),
+      ...(sourceWindows ? { preActivation: sourceWindows, excludeBeforeActivation: seenBefore } : {}) }, path.dirname(resolved));
     const { report, requestIds } = read;
     repeatedRequests += read.excludedRequests;
     if (!report.requests) {
@@ -249,8 +274,10 @@ function reportFromBytes(bytes: Buffer, resolved: string, byTurn: boolean, inter
       if (seen.has(id)) throw new Error("Overlapping usage selections; a request appears in more than one manifest source");
       seen.add(id);
     }
+    for (const id of read.beforeActivationRequestIds) seenBefore.add(id);
     requests += report.requests;
     addAgentpackOverhead(agentpackOverhead, report.agentpackOverhead);
+    if (report.agentpackOverheadBeforeActivation) addAgentpackOverhead(agentpackOverheadBeforeActivation, report.agentpackOverheadBeforeActivation);
     for (const key of ["input", "uncachedInput", "cacheRead", "cacheWrite", "output"] as const) {
       totals[key] += report.totals[key];
       if (!Number.isSafeInteger(totals[key])) throw new Error("Usage manifest totals exceed safe integer range");
@@ -260,9 +287,10 @@ function reportFromBytes(bytes: Buffer, resolved: string, byTurn: boolean, inter
     slices.push({ phase, report });
   }
   return { kind: "task-usage-report", version: 1, taskId, manifest: { path: resolved, sha256: sha256(bytes) },
-    coverage, requests, totals, agentpackOverhead, slices, billedUsd: null,
+    coverage, requests, totals, agentpackOverhead, agentpackOverheadBeforeActivation, slices, billedUsd: null,
     warnings: [...new Set(["Coverage is declared by the manifest author; it is not independently verified.",
       ...(intervals ? ["Only requests made while the task was the current Passport are counted; sessions shared with other tasks are split by those periods. Subagent sessions count whole for the task that was current when they started."] : []),
+      ...(intervals && !windows ? ["Agentpack overhead before activation is unavailable: another task's active periods could not be read."] : []),
       ...(skippedSubagents.length ? [`Subagent sessions started while another task was current are not counted: ${skippedSubagents.join(", ")}.`] : []),
       ...(emptySources.length ? [`Sources without new requests while the task was current: ${emptySources.join(", ")}.`] : []),
       ...(repeatedRequests ? [`${repeatedRequests} request(s) repeated across sources (resumed or forked sessions) were counted once.`] : []),
@@ -275,6 +303,7 @@ export function formatTaskUsageReport(report: TaskUsageReport): string {
     `Requests: ${report.requests}`, `Input: ${report.totals.input} (cache read ${report.totals.cacheRead}, cache write ${report.totals.cacheWrite}, uncached ${report.totals.uncachedInput})`,
     `Output: ${report.totals.output} (reasoning ${report.totals.reasoning ?? "unknown"})`,
     `Agentpack: ${report.agentpackOverhead.calls} calls; response ~${report.agentpackOverhead.responseTokens} tokens; later-context <=${report.agentpackOverhead.rereadTokensUpperBound}; invoking-output <=${report.agentpackOverhead.outputTokensUpperBound}`,
+    ...(report.agentpackOverheadBeforeActivation.calls || report.agentpackOverheadBeforeActivation.rereadTokensUpperBound ? [beforeActivationLine(report.agentpackOverheadBeforeActivation)] : []),
     "Task monetary cost: unavailable", ...report.warnings.map(warning => `Warning: ${warning}`),
     ...report.slices.map(slice => `\nPhase: ${slice.phase}\n${formatUsageReport({ ...slice.report, warnings: [] })}`)].join("\n");
 }

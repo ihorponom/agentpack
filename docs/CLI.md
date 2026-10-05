@@ -285,7 +285,8 @@ output carries `kind`, and these shapes are stable:
   `client`, `file`, `subagent`, `started`, `requests`, `taskRequests`,
   `traced`, `linked`)
 - `task-usage-report`: `version`, `taskId`, `manifest` (`path`, `sha256`),
-  `coverage`, `requests`, `totals`, `agentpackOverhead`, `slices` (`phase`, `report`; traced
+  `coverage`, `requests`, `totals`, `agentpackOverhead`,
+  `agentpackOverheadBeforeActivation`, `slices` (`phase`, `report`; traced
   sessions use phase `traced`), `billedUsd` (always null), `warnings`. For
   `--task`, `manifest` describes the effective selection of linked plus
   traced sessions.
@@ -359,6 +360,18 @@ still be ambiguous, and an empty JSON list cannot identify its source.
 These fields contain no transcript content and do not measure tool schemas,
 exact tokenizer usage, cache billing, or money. Task reports sum the selected
 source estimates; their coverage limitations still apply.
+
+Task reports also carry `agentpackOverheadBeforeActivation` (same shape). Its
+calls and response tokens cover Agentpack calls in the same sources made while
+no task was current, in the gap that ends when this task became current,
+including the activating `task_start` or `task_switch` call and orientation
+such as `load_context`; calls made while another task was current stay with
+that task. Its reread bound counts every earlier Agentpack response still in
+the session, from the gap or from another task's period, over this task's
+selected requests, so each request's reread is counted by the task that owns
+it; carried-in tools appear in `byTool` with zero calls. It is not added to
+`agentpackOverhead` or to the totals, and is omitted from subagent sessions; if
+another task's periods cannot be read it is zero and the report warns.
 
 `--by-turn` adds source-local turn rows: start time, request count, token
 categories, completion and available duration. `--turns N`, `--turns N:` or

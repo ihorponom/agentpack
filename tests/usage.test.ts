@@ -725,7 +725,7 @@ test("Task usage links suggested sessions once and reports by Task Passport id a
   assert.deepEqual(manifest.sources.map((source: { file: string; turns?: string }) => [source.file, source.turns]), [[realpathSync(main), undefined], [realpathSync(codexFile), undefined]]);
   const report = JSON.parse(run("report", "--task", passport.id, "--json").stdout);
   assert.equal(report.kind, "task-usage-report");
-  assert.deepEqual(Object.keys(report).sort(), ["agentpackOverhead", "billedUsd", "coverage", "kind", "manifest", "requests", "slices", "taskId", "totals", "version", "warnings"], "task report JSON contract");
+  assert.deepEqual(Object.keys(report).sort(), ["agentpackOverhead", "agentpackOverheadBeforeActivation", "billedUsd", "coverage", "kind", "manifest", "requests", "slices", "taskId", "totals", "version", "warnings"], "task report JSON contract");
   const linkJson = JSON.parse(run("link", "--client", "codex", "--file", codexFile, "--phase", "implementation", "--json").stdout);
   assert.deepEqual(Object.keys(linkJson).sort(), ["kind", "linked", "report", "taskId"], "link JSON contract");
   assert.equal(linkJson.kind, "task-usage-link");
@@ -920,4 +920,78 @@ test("Sessions with an Agentpack trace of the task are reported without linking"
     if (saved.claude === undefined) delete process.env.CLAUDE_CONFIG_DIR; else process.env.CLAUDE_CONFIG_DIR = saved.claude;
     if (saved.codex === undefined) delete process.env.CODEX_HOME; else process.env.CODEX_HOME = saved.codex;
   }
+});
+
+test("Task reports count Agentpack calls from the gap before activation separately", t => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), "agentpack-usage-before-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  initPack(dir);
+  const x = startTask(dir, { title: "Earlier" });
+  parkCurrentTask(dir);
+  const a = startTask(dir, { title: "Target" });
+  const at = (minutes: number) => new Date(Date.parse("2026-10-01T10:00:00Z") + minutes * 60_000).toISOString();
+  const events = (id: string, rows: Array<[string, number]>) => writeFileSync(path.join(dir, ".agentpack", "tasks", id, "events.jsonl"),
+    rows.map(([type, minutes]) => JSON.stringify({ type, ts: at(minutes) })).join("\n") + "\n");
+  events(x.id, [["task-start", -20], ["task-park", -10]]);
+  events(a.id, [["task-start", 0]]);
+  const call = (id: string, tool: string, minutes: number) => ({ ...claude(id, 20, at(minutes)),
+    message: { ...claude(id).message, content: [{ type: "tool_use", id: `tool-${id}`, name: `mcp__agentpack__${tool}`, input: {} }] } });
+  const result = (id: string, text: string, minutes: number) => ({ type: "user", timestamp: at(minutes), message: { content: [{ type: "tool_result", tool_use_id: `tool-${id}`, content: text }] } });
+  const orientation = `PRIVATE_ORIENTATION_${"x".repeat(380)}`;
+  const rows = [call("o1", "task_list", -15), result("o1", "PRIVATE_OTHER_TASK_RESULT", -15),
+    call("o2", "load_context", -5), result("o2", orientation, -5), claude("m1", 20, at(1)), claude("m2", 30, at(2))];
+  const session = path.join(dir, "main.jsonl");
+  writeFileSync(session, rows.map(row => JSON.stringify(row)).join("\n") + "\n");
+  assert.deepEqual(readTaskActiveIntervals(dir, a.id), [{ from: at(0), to: null }]);
+  const linked = linkTaskUsage(dir, a.id, [{ client: "claude", file: session, phase: "main" }], dir);
+  const before = linked.agentpackOverheadBeforeActivation;
+  assert.equal(before.calls, 1, "only the call made in the gap that ends at activation; the call made while another task was current is not counted");
+  assert.equal(before.responseTokens, Math.ceil(orientation.length / 4));
+  const otherTokens = Math.ceil("PRIVATE_OTHER_TASK_RESULT".length / 4);
+  assert.equal(before.rereadTokensUpperBound, (before.responseTokens + otherTokens) * 2,
+    "reread covers the task's own requests, including responses carried in from another task's period");
+  assert.equal(before.outputTokensUpperBound, 20);
+  assert.deepEqual(before.byTool.map(row => [row.tool, row.calls, row.rereadTokensUpperBound]),
+    [["load_context", 1, before.responseTokens * 2], ["task_list", 0, otherTokens * 2]]);
+  const baseline = buildUsageReport({ client: "claude", files: [session], intervals: [{ from: at(0), to: null }] }, dir);
+  assert.equal("agentpackOverheadBeforeActivation" in baseline, false, "reports without windows carry no pre-activation block");
+  assert.equal(linked.requests, 2);
+  assert.deepEqual(linked.totals, baseline.totals);
+  assert.deepEqual(linked.agentpackOverhead, baseline.agentpackOverhead);
+  assert.equal(linked.agentpackOverhead.calls, 0);
+  assert.deepEqual(linked.slices[0]!.report.agentpackOverheadBeforeActivation, before);
+  assert.deepEqual(linked.slices[0]!.report.totals, baseline.totals);
+  const text = formatTaskUsageReport(linked);
+  assert.match(text, new RegExp(`Agentpack before activation: 1 calls; response ~${before.responseTokens} tokens; later-context in task <=${before.rereadTokensUpperBound}; invoking-output <=20`));
+  assert.match(formatUsageReport(linked.slices[0]!.report), /Agentpack before activation: 1 calls/);
+  assert.doesNotMatch(JSON.stringify(linked) + text, /PRIVATE_ORIENTATION|PRIVATE_OTHER_TASK_RESULT|PRIVATE_PROMPT_SENTINEL/);
+
+  const copy = path.join(dir, "fork", "copy.jsonl");
+  mkdirSync(path.dirname(copy));
+  const forked = (row: { sessionId: string }) => ({ ...row, sessionId: "fork" });
+  writeFileSync(copy, [...rows, claude("m3", 20, at(3))].map(row => JSON.stringify(forked(row as { sessionId: string }))).join("\n") + "\n");
+  const both = linkTaskUsage(dir, a.id, [{ client: "claude", file: copy, phase: "fork" }], dir);
+  assert.equal(both.requests, 3, "the fork adds only its new request");
+  const forkedBefore = both.agentpackOverheadBeforeActivation;
+  assert.deepEqual([forkedBefore.calls, forkedBefore.responseTokens, forkedBefore.outputTokensUpperBound],
+    [before.calls, before.responseTokens, before.outputTokensUpperBound], "a resumed or forked copy does not count the gap call twice");
+  assert.equal(forkedBefore.rereadTokensUpperBound, before.rereadTokensUpperBound + before.responseTokens + otherTokens,
+    "responses still in the copy's context are reread by its one new request");
+  unlinkTaskUsage(dir, a.id, copy, dir);
+
+  events(x.id, [["task-start", -20]]);
+  const covered = buildLinkedTaskUsageReport(dir, a.id);
+  assert.equal(covered.agentpackOverheadBeforeActivation.calls, 0, "no gap when another task was still current at activation");
+  assert.equal(covered.agentpackOverheadBeforeActivation.rereadTokensUpperBound, (before.responseTokens + otherTokens) * 2,
+    "calls from another task's period add only their reread in this task's requests");
+  assert.match(formatTaskUsageReport(covered), /Agentpack before activation: 0 calls; response ~0 tokens; later-context in task <=/);
+  assert.equal(covered.requests, 2);
+
+  writeFileSync(path.join(dir, ".agentpack", "tasks", x.id, "events.jsonl"), JSON.stringify({ type: "task-start", ts: at(-20) }) + "\n" + " ".repeat(2_000_001));
+  const unreadable = buildLinkedTaskUsageReport(dir, a.id);
+  assert.equal(unreadable.agentpackOverheadBeforeActivation.calls, 0);
+  assert.equal(unreadable.requests, 2);
+  assert.match(unreadable.warnings.join(" "), /Agentpack overhead before activation is unavailable/);
+  assert.equal("agentpackOverheadBeforeActivation" in unreadable.slices[0]!.report, false);
+  assert.doesNotMatch(formatTaskUsageReport(unreadable), /Agentpack before activation/);
 });

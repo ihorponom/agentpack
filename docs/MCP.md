@@ -213,7 +213,9 @@ including additive `agentpackOverhead` estimates for visible Agentpack calls,
 response size, later selected requests, and invoking model output. These are
 transcript-based estimates and upper bounds, not schema cost or billed tokens.
 Codex code-mode counts only identifiable MCP result blocks; unresolved wrappers
-can undercount calls and responses (see docs/CLI.md).
+can undercount calls and responses (see docs/CLI.md). Task reports add
+`agentpackOverheadBeforeActivation` for calls made before the task became current
+and earlier responses reread by its requests.
 It does not collect activity automatically or write ledger state.
 
 To report a task, pass its Passport id (or nothing for the current task):

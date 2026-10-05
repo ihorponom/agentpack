@@ -14,6 +14,10 @@ export interface UsageOptions {
   intervals?: Array<{ from: string; to: string | null }>;
   /** Task reports: request identities already counted from another source (resumed or forked sessions). */
   exclude?: ReadonlySet<string>;
+  /** Task reports: requests outside `intervals` but inside these windows (end exclusive; null from = open) feed `agentpackOverheadBeforeActivation` only. */
+  preActivation?: Array<{ from: string | null; to: string }>;
+  /** Task reports: pre-activation request identities already counted from another source. */
+  excludeBeforeActivation?: ReadonlySet<string>;
 }
 
 interface Tokens {
@@ -81,6 +85,7 @@ export interface UsageReport {
   turns?: UsageTurn[];
   unassignedRequests: number;
   agentpackOverhead: AgentpackOverhead;
+  agentpackOverheadBeforeActivation?: AgentpackOverhead;
 }
 
 const MAX_FILE_BYTES = 64 * 1024 * 1024;
@@ -166,7 +171,7 @@ export function addAgentpackOverhead(total: AgentpackOverhead, part: AgentpackOv
 }
 
 /** Match nested result text transiently to visible output; never include transcript content in reports. */
-function estimateAgentpackOverhead(client: UsageOptions["client"], lines: string[], selected: Map<string, { line: number; tokens: Tokens }>, allCodexRequests: Array<{ id: string; line: number }>, seenCalls: Set<string>): AgentpackOverhead {
+function estimateAgentpackOverhead(client: UsageOptions["client"], lines: string[], selected: Map<string, { line: number; tokens: Tokens }>, allCodexRequests: Array<{ id: string; line: number }>, seenCalls: Set<string>, later: Map<string, { line: number; tokens: Tokens }> = selected): AgentpackOverhead {
   const overhead = emptyAgentpackOverhead();
   const calls = new Map<string, { tools: string[]; direct: boolean; otherMcp: boolean; line: number; requestId: string | null }>();
   const nestedByWrapper = new Map<string, Array<{ id: string; tool: string; resultTexts: string[] }>>();
@@ -176,7 +181,7 @@ function estimateAgentpackOverhead(client: UsageOptions["client"], lines: string
   const openCodexExec = new Map<string, number>();
   const outputRequests = new Set<string>();
   const toolOutputRequests = new Map<string, Set<string>>();
-  const selectedInOrder = [...selected.entries()].sort((a, b) => a[1].line - b[1].line);
+  const selectedInOrder = [...later.entries()].sort((a, b) => a[1].line - b[1].line);
   const firstAtOrAfter = (line: number): string | null => {
     let low = 0; let high = allCodexRequests.length;
     while (low < high) { const mid = (low + high) >>> 1; if (allCodexRequests[mid]!.line < line) low = mid + 1; else high = mid; }
@@ -525,12 +530,13 @@ export function readUsageTimeline(client: UsageOptions["client"], file: string, 
 }
 
 /** Internal request identities allow manifest aggregation to reject overlap. */
-export function readUsageReport(options: UsageOptions, cwd: string): { report: UsageReport; requestIds: string[]; excludedRequests: number } {
-  const { report, requests, excludedRequests } = parseUsageReport(options, cwd);
-  return { report, requestIds: [...requests.keys()].map(key => `${options.client}:${key}`), excludedRequests };
+export function readUsageReport(options: UsageOptions, cwd: string): { report: UsageReport; requestIds: string[]; beforeActivationRequestIds: string[]; excludedRequests: number } {
+  const { report, requests, beforeActivationIds, excludedRequests } = parseUsageReport(options, cwd);
+  return { report, requestIds: [...requests.keys()].map(key => `${options.client}:${key}`),
+    beforeActivationRequestIds: [...beforeActivationIds].map(key => `${options.client}:${key}`), excludedRequests };
 }
 
-function parseUsageReport(options: UsageOptions, cwd: string): { report: UsageReport; requests: Map<string, RequestUsage>; turnGroups: Map<string, UsageTurn>; excludedRequests: number } {
+function parseUsageReport(options: UsageOptions, cwd: string): { report: UsageReport; requests: Map<string, RequestUsage>; turnGroups: Map<string, UsageTurn>; beforeActivationIds: Set<string>; excludedRequests: number } {
   if (options.client !== "codex" && options.client !== "claude") throw new Error("Usage supports codex or claude JSONL sources");
   if (!options.files.length) throw new Error("Usage requires at least one --file");
   const from = boundary(options.from, "--from");
@@ -538,6 +544,7 @@ function parseUsageReport(options: UsageOptions, cwd: string): { report: UsageRe
   if (from !== null && to !== null && from >= to) throw new Error("--from must be earlier than --to");
   if (options.intervals && (from !== null || to !== null)) throw new Error("Task intervals cannot be combined with --from or --to");
   const intervals = options.intervals?.map(interval => [boundary(interval.from, "interval start")!, boundary(interval.to ?? undefined, "interval end")] as const);
+  const windows = options.preActivation?.map(window => [window.from === null ? Number.NEGATIVE_INFINITY : boundary(window.from, "pre-activation start")!, boundary(window.to, "pre-activation end")!] as const);
   const bounded = from !== null || to !== null || intervals !== undefined;
   let turnRange: [number, number] | null = null;
   if (options.turns !== undefined) {
@@ -557,6 +564,9 @@ function parseUsageReport(options: UsageOptions, cwd: string): { report: UsageRe
   let excludedRequests = 0;
   const agentpackOverhead = emptyAgentpackOverhead();
   const seenAgentpackCalls = new Set<string>();
+  const agentpackOverheadBefore = emptyAgentpackOverhead();
+  const seenBeforeCalls = new Set<string>();
+  const beforeActivationIds = new Set<string>();
   for (const file of options.files) {
     // Resolve explicit symlinks so the same source cannot be counted twice.
     let resolved: string;
@@ -584,6 +594,8 @@ function parseUsageReport(options: UsageOptions, cwd: string): { report: UsageRe
     const turnModels = new Map<string, string>();
     const sourceRequests = new Map<string, Tokens>();
     const requestLines = new Map<string, { line: number; tokens: Tokens }>();
+    const beforeLines = new Map<string, { line: number; tokens: Tokens }>();
+    const outsideLines = new Map<string, { line: number; tokens: Tokens }>();
     const allCodexRequests: Array<{ id: string; line: number }> = [];
     let cumulative: unknown;
     let turnNumber = 0;
@@ -645,7 +657,20 @@ function parseUsageReport(options: UsageOptions, cwd: string): { report: UsageRe
       const time = timestamp(row.timestamp);
       if (bounded && time === null) { source.missingTimestamps += 1; continue; }
       if (time !== null && ((from !== null && time < from) || (to !== null && time >= to))) continue;
-      if (intervals && !intervals.some(([start, end]) => time! >= start && (end === null || time! < end))) continue;
+      if (intervals && !intervals.some(([start, end]) => time! >= start && (end === null || time! < end))) {
+        const beforeId = options.client === "codex" ? payload.response_id : message.id;
+        if (windows && typeof beforeId === "string" && identifier.test(beforeId) && !options.exclude?.has(`${options.client}:${beforeId}`)) {
+          // A gap request already counted from another source still stays in context here: reread only.
+          const target = windows.some(([start, end]) => time! >= start && time! < end)
+            && !options.excludeBeforeActivation?.has(`${options.client}:${beforeId}`) ? beforeLines : outsideLines;
+          let beforeTokens: Tokens | null = null;
+          try { beforeTokens = normalize(options.client, options.client === "codex" ? payload.usage : message.usage); } catch { /* Invalid pre-activation usage is ignored, not counted. */ }
+          const firstBefore = target.get(beforeId);
+          if (beforeTokens && firstBefore) firstBefore.tokens.output = Math.max(firstBefore.tokens.output, beforeTokens.output);
+          else if (beforeTokens) target.set(beforeId, { line: lineIndex, tokens: beforeTokens });
+        }
+        continue;
+      }
       const id = options.client === "codex" ? payload.response_id : message.id;
       if (typeof id !== "string" || !identifier.test(id)) { source.invalidUsage += 1; continue; }
       let tokens: Tokens;
@@ -681,6 +706,16 @@ function parseUsageReport(options: UsageOptions, cwd: string): { report: UsageRe
       }
     }
     addAgentpackOverhead(agentpackOverhead, estimateAgentpackOverhead(options.client, lines, requestLines, allCodexRequests, seenAgentpackCalls));
+    if (windows) {
+      for (const key of [...beforeLines.keys()]) if (requestLines.has(key)) beforeLines.delete(key);
+      for (const key of beforeLines.keys()) beforeActivationIds.add(key);
+      addAgentpackOverhead(agentpackOverheadBefore, estimateAgentpackOverhead(options.client, lines, beforeLines, allCodexRequests, seenBeforeCalls, requestLines));
+      for (const key of [...outsideLines.keys()]) if (requestLines.has(key)) outsideLines.delete(key);
+      // Responses from other tasks' periods stay in context: count only their reread in this task's requests.
+      const carried = estimateAgentpackOverhead(options.client, lines, outsideLines, allCodexRequests, new Set(), requestLines);
+      addAgentpackOverhead(agentpackOverheadBefore, { ...emptyAgentpackOverhead(), rereadTokensUpperBound: carried.rereadTokensUpperBound,
+        byTool: carried.byTool.map(row => ({ tool: row.tool, calls: 0, responseTokens: 0, rereadTokensUpperBound: row.rereadTokensUpperBound, outputTokensUpperBound: 0 })) });
+    }
     if (turnRange) source.cumulativeCheck = "turn-filtered";
     if (options.client === "codex" && !bounded && !turnRange && cumulative !== undefined) {
       const sum = emptyTokens();
@@ -728,13 +763,18 @@ function parseUsageReport(options: UsageOptions, cwd: string): { report: UsageRe
     requests: requests.size, duplicateRecords, duplicateFiles, totals,
     models: [...models.values()].sort((a, b) => a.model.localeCompare(b.model)), sources, warnings, billedUsd: null,
     turnSelection: options.turns || null, unassignedRequests, agentpackOverhead,
+    ...(windows ? { agentpackOverheadBeforeActivation: agentpackOverheadBefore } : {}),
     ...(options.byTurn ? { turns: [...turnGroups.values()].filter(turn => turn.requests > 0) } : {})
   };
-  return { report, requests, turnGroups, excludedRequests };
+  return { report, requests, turnGroups, beforeActivationIds, excludedRequests };
 }
 
 function printable(text: string): string {
   return text.replace(/[\u0000-\u001f\u007f-\u009f]/gu, " ");
+}
+
+export function beforeActivationLine(overhead: AgentpackOverhead): string {
+  return `Agentpack before activation: ${overhead.calls} calls; response ~${overhead.responseTokens} tokens; later-context in task <=${overhead.rereadTokensUpperBound}; invoking-output <=${overhead.outputTokensUpperBound}`;
 }
 
 export function formatUsageReport(report: UsageReport): string {
@@ -751,6 +791,7 @@ export function formatUsageReport(report: UsageReport): string {
   lines.push("", `Agentpack: ${overhead.calls} calls; response ~${overhead.responseTokens} tokens; later-context <=${overhead.rereadTokensUpperBound} tokens; invoking-output <=${overhead.outputTokensUpperBound} tokens`);
   for (const tool of overhead.byTool) lines.push(`- ${tool.tool}: ${tool.calls} calls; response ~${tool.responseTokens}; later-context <=${tool.rereadTokensUpperBound}; invoking-output <=${tool.outputTokensUpperBound}`);
   if (overhead.unattributedResponses) lines.push(`Unresolved code-mode wrappers: ${overhead.unattributedResponses}`);
+  if (report.agentpackOverheadBeforeActivation?.calls || report.agentpackOverheadBeforeActivation?.rereadTokensUpperBound) lines.push(beforeActivationLine(report.agentpackOverheadBeforeActivation));
   if (report.turnSelection) lines.push(`Selected turns: ${report.turnSelection}`);
   if (report.turns) {
     lines.push("", "Source/Turn | Started | Requests | Uncached input | Cache read | Cache write | Output | Duration (seconds) | Complete");
