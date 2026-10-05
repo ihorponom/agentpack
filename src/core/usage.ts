@@ -665,7 +665,8 @@ function parseUsageReport(options: UsageOptions, cwd: string): { report: UsageRe
             && !options.excludeBeforeActivation?.has(`${options.client}:${beforeId}`) ? beforeLines : outsideLines;
           let beforeTokens: Tokens | null = null;
           try { beforeTokens = normalize(options.client, options.client === "codex" ? payload.usage : message.usage); } catch { /* Invalid pre-activation usage is ignored, not counted. */ }
-          const firstBefore = target.get(beforeId);
+          // Claude writes one line per content block; a boundary between them must not place one request in both maps.
+          const firstBefore = beforeLines.get(beforeId) ?? outsideLines.get(beforeId);
           if (beforeTokens && firstBefore) firstBefore.tokens.output = Math.max(firstBefore.tokens.output, beforeTokens.output);
           else if (beforeTokens) target.set(beforeId, { line: lineIndex, tokens: beforeTokens });
         }

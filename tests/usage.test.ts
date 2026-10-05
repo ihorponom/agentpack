@@ -979,6 +979,14 @@ test("Task reports count Agentpack calls from the gap before activation separate
     "responses still in the copy's context are reread by its one new request");
   unlinkTaskUsage(dir, a.id, copy, dir);
 
+  const split = path.join(dir, "split.jsonl");
+  writeFileSync(split, [call("s1", "load_context", -11), claude("s1", 20, at(-9)), result("s1", orientation, -9),
+    claude("m1", 20, at(1)), claude("m2", 30, at(2))].map(row => JSON.stringify(row)).join("\n") + "\n");
+  const splitReport = buildUsageReport({ client: "claude", files: [split], intervals: [{ from: at(0), to: null }],
+    preActivation: [{ from: at(-10), to: at(0) }] }, dir).agentpackOverheadBeforeActivation!;
+  assert.deepEqual([splitReport.calls, splitReport.rereadTokensUpperBound], [0, Math.ceil(orientation.length / 4) * 2],
+    "a request split across a boundary is classified once, by its first line");
+
   events(x.id, [["task-start", -20]]);
   const covered = buildLinkedTaskUsageReport(dir, a.id);
   assert.equal(covered.agentpackOverheadBeforeActivation.calls, 0, "no gap when another task was still current at activation");
