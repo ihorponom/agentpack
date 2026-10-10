@@ -499,7 +499,9 @@ agentpack bundle inspect <file> [--json]
 agentpack bundle import-plan <file> [--as-new] [--json]
 agentpack bundle import <file> [--write] [--as-new] [--json]
 
-Export, inspect, plan, or explicitly apply a structured task bundle import. Import defaults to a read-only plan; --write is required to change destination pack state.`;
+Export, inspect, plan, or explicitly apply a structured task bundle import.
+Export includes the latest task checkpoint preview when available; snapshots and global checkpoints are excluded.
+Import defaults to a read-only plan; --write is required to change destination pack state.`;
   }
 
   if (command === "diff") {
@@ -576,7 +578,7 @@ Notes:
   Write scopes are repo-relative paths; . means the repository root.
   task status is a compact current-task line; --full restores the detailed current view; --id inspects another task without switching.
   task audit is the diagnostic continuity check; --json exposes additive structured review candidates.
-  task handoff is the compact summary for another chat, client, worktree, or agent.
+  task handoff is the compact summary for another chat, client, worktree, or agent, including the latest task checkpoint when available.
   task finalize refuses unknown or pending verification by default.
   task finalize --status accepted refuses tasks with remaining next actions unless --force is passed.
   task audit and finalize print advisory-only adversarial-verification guidance: low risk needs a concrete self-challenge; medium/high needs independent read-only review plus a named disconfirming check. Generic risks-considered or tests-passed prose is not enough.

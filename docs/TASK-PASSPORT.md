@@ -54,8 +54,13 @@ Without it, resume can use legacy pack-level state. Checkpoint files remain in
 `.agentpack/checkpoints/`. A checkpoint created while the current Passport is
 active, blocked or verifying records its `taskId` in `checkpoint.json` and in
 the `checkpoint` event; older checkpoints and those taken while the current
-task is parked, closed or unreadable carry no task id and stay global. The link is informational: it is not migrated, not exported in
-bundles and not used by handoff. Evidence
+task is parked, closed or unreadable carry no task id and stay global. Task
+handoff includes the latest valid linked checkpoint's summary, timestamp, id,
+and origin task/Git ref. Global checkpoints and checkpoints from other tasks
+are excluded. The redacted portable record is limited to 2 KiB of serialized
+UTF-8 JSON; shortened summaries are explicitly marked. Pack-level checkpoint
+status and next actions are excluded; the Passport supplies the current plan
+and verification. Compaction retains the metadata used by handoff. Evidence
 files remain in `.agentpack/evidence/` and are referenced by id from task
 verification.
 
@@ -340,6 +345,17 @@ portable fields. Origin branch, head, task id, and verification remain
 provenance; importing them does not claim that the destination workspace has
 the same Git state or has locally re-verified the task.
 
+An optional `checkpoint` field carries the same bounded metadata shown in
+handoff. Bundles without it remain valid schema v1 bundles. Older importers
+retain the field in the stored bundle but do not display it. A destination
+handoff uses imported checkpoint metadata only until a valid local checkpoint
+exists for that task. Re-export preserves the origin task id and Git ref;
+`--as-new` changes the destination task id, not checkpoint provenance.
+Imported metadata stays in the retained bundle: it creates no local checkpoint
+files or events and does not update pack state, current-task pointers, next
+actions, or verification. Unreadable or unsafe metadata is skipped with a
+warning; ambiguous retained imports are not merged.
+
 The optional repository locator is credential-free and redacted; export drops
 user info, query strings, fragments, or nonportable local remote paths. Source
 entries contain only repo-relative path, hash, size, recorded time, summary,
@@ -354,7 +370,7 @@ Bundle contents are intentionally bounded:
 - include only text or JSON evidence referenced by the passport verification,
   unless evidence is explicitly disabled
 - exclude repo config/state, current-task pointers, client config, caches,
-  checkpoints, Git patches, source file contents, unreferenced evidence, and
+  checkpoint snapshots, Git patches, source file contents, unreferenced evidence, and
   the broad repo event stream
 - exclude repo-level decisions and dead ends from structured import because the
   current storage model cannot prove they belong to this task; users can still

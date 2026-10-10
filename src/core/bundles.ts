@@ -2,7 +2,8 @@ import { execFileSync } from "node:child_process";
 import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, statSync, type Stats, writeFileSync } from "node:fs";
 import path from "node:path";
 import { getGitInfo } from "./git.js";
-import { getFileRecord, normalizePath, sha256, sha256File } from "./hash.js";
+import { getFileRecord, normalizePath, resolveRegularFileWithin, sha256, sha256File } from "./hash.js";
+import { boundTaskCheckpoint, isTaskCheckpoint, MAX_TASK_CHECKPOINT_BYTES, readLocalTaskCheckpoint, type TaskCheckpointContext } from "./checkpoints.js";
 import { createId } from "./ids.js";
 import { redactForRoot } from "./redaction.js";
 import { getPackPath, PACK_FILE_MODE, readEvents, readJson, readSources, SCHEMA_VERSION, withPackWriteLock, writePackTransaction } from "./store.js";
@@ -36,6 +37,43 @@ const MAX_SOURCES = 100;
 const MAX_EVIDENCE = 50;
 const MAX_EVIDENCE_CONTENT_BYTES = 256 * 1024;
 
+export function readTaskCheckpoint(root: string, taskId: string): TaskCheckpointContext {
+  const context = readLocalTaskCheckpoint(root, taskId);
+  if (context.checkpoint) return context;
+  const directory = getPackPath(root, "tasks", taskId, "imports");
+  if (!existsSync(directory)) return context;
+  let candidates: string[];
+  try {
+    const stat = lstatSync(directory);
+    if (stat.isSymbolicLink() || !stat.isDirectory()) throw new Error("unsafe directory");
+    candidates = readdirSync(directory).filter((name) => /^sha256-[0-9a-f]{64}\.bundle\.json$/.test(name));
+  } catch {
+    context.warnings.push("Cannot read imported checkpoint: unreadable or unsafe import directory.");
+    return context;
+  }
+  // A task has one retained import. Multiple records are ambiguous provenance.
+  if (candidates.length > 1) {
+    context.warnings.push("Cannot select imported checkpoint: multiple retained bundles.");
+    return context;
+  }
+  for (const name of candidates) {
+    try {
+      const bundlePath = resolveRegularFileWithin(root, path.join(directory, name), "retained bundle");
+      const { bundle } = readValidatedTaskBundle(bundlePath);
+      if (name !== `${bundleStorageId(bundle.bundleId)}.bundle.json`) throw new Error("retained digest mismatch");
+      const manifestPath = resolveRegularFileWithin(root, path.join(directory, name.replace(/\.bundle\.json$/, ".import.json")), "import manifest");
+      if (lstatSync(manifestPath).size > MAX_BUNDLE_BYTES) throw new Error("oversized import manifest");
+      assertRetainedImportManifest(JSON.parse(readFileSync(manifestPath, "utf8")), bundle, taskId);
+      if (bundle.checkpoint) {
+        return { ...context, checkpoint: boundTaskCheckpoint(root, bundle.checkpoint), imported: true };
+      }
+    } catch {
+      context.warnings.push("Skipped unreadable, unsafe or invalid imported checkpoint provenance.");
+    }
+  }
+  return context;
+}
+
 export function exportTaskBundle(root: string, options: BundleExportOptions): BundleExportResult {
   if (!options.outputPath.trim()) {
     throw new Error("bundle export requires --output <file>");
@@ -55,7 +93,8 @@ export function exportTaskBundle(root: string, options: BundleExportOptions): Bu
   const git = getGitInfo(root);
   const config = readJson<Partial<AgentpackConfig>>(getPackPath(root, "config.json"), {});
   const origin = bundleOrigin(root, config.projectName || path.basename(root), git.branch, git.head);
-  const handoff = formatTaskPassportHandoff(root, passport);
+  const checkpointContext = readTaskCheckpoint(root, passport.id);
+  const handoff = formatTaskPassportHandoff(root, passport, [], checkpointContext);
 
   const bundleBase = deepRedact(root, {
     kind: BUNDLE_KIND,
@@ -78,6 +117,7 @@ export function exportTaskBundle(root: string, options: BundleExportOptions): Bu
       originVerification: passport.verification
     },
     handoffMarkdown: handoff,
+    ...(checkpointContext.checkpoint ? { checkpoint: checkpointContext.checkpoint } : {}),
     sources,
     evidence
   }) as Omit<TaskBundle, "bundleId" | "exportedAt">;
@@ -110,7 +150,8 @@ export function exportTaskBundle(root: string, options: BundleExportOptions): Bu
     taskId: passport.id,
     sources: bundle.sources.length,
     evidence: bundle.evidence.length,
-    bytes: Buffer.byteLength(content, "utf8")
+    bytes: Buffer.byteLength(content, "utf8"),
+    ...checkpointMetadata(bundle)
   };
 }
 
@@ -774,8 +815,24 @@ function bundleInspectResult(bundle: TaskBundle, warnings: string[]): BundleInsp
       sources: bundle.sources.length,
       evidence: bundle.evidence.length
     },
-    warnings
+    warnings,
+    ...checkpointMetadata(bundle)
   };
+}
+
+function checkpointMetadata(bundle: TaskBundle): Pick<BundleInspectResult, "checkpoint"> {
+  if (!bundle.checkpoint) return {};
+  return {
+    checkpoint: {
+      id: bundle.checkpoint.id,
+      taskId: bundle.checkpoint.taskId,
+      ...(bundle.checkpoint.truncated ? { truncated: true } : {})
+    }
+  };
+}
+
+function formatBundleCheckpoint(result: Pick<BundleInspectResult, "checkpoint">): string[] {
+  return result.checkpoint ? [`Checkpoint: ${result.checkpoint.id} (origin task ${result.checkpoint.taskId}${result.checkpoint.truncated ? "; summary truncated" : ""})`] : [];
 }
 
 export function formatBundleExportResult(result: BundleExportResult): string {
@@ -783,7 +840,8 @@ export function formatBundleExportResult(result: BundleExportResult): string {
     `Exported bundle ${result.bundleId}`,
     `Task: ${result.taskId}`,
     `Path: ${result.outputPath}`,
-    `Included: ${result.sources} source(s), ${result.evidence} evidence item(s), ${result.bytes} bytes`
+    `Included: ${result.sources} source(s), ${result.evidence} evidence item(s), ${result.bytes} bytes`,
+    ...formatBundleCheckpoint(result)
   ].join("\n");
 }
 
@@ -796,6 +854,7 @@ export function formatBundleInspectResult(result: BundleInspectResult): string {
     `Original status: ${result.task.originalStatus}`,
     `Verification: ${result.task.verificationStatus}`,
     `Included: ${result.counts.sources} source(s), ${result.counts.evidence} evidence item(s)`,
+    ...formatBundleCheckpoint(result),
     result.warnings.length > 0 ? `Warnings: ${result.warnings.join("; ")}` : "Warnings: none"
   ].join("\n");
 }
@@ -805,6 +864,7 @@ export function formatBundleImportPlan(plan: BundleImportPlan): string {
     `Bundle import plan ${plan.bundle.bundleId}`,
     "Mode: read-only (no pack writes)",
     `Task: ${plan.bundle.task.id} - ${plan.bundle.task.title}`,
+    ...formatBundleCheckpoint(plan.bundle),
     `Destination: ${plan.destination.status}`,
     `Outcome: ${plan.action.outcome}`,
     `Planned: task ${plan.action.task}, bundle ${plan.action.bundle}`,
@@ -1162,6 +1222,9 @@ function assertBundleShape(value: unknown): TaskBundle {
   }
   if (typeof value.handoffMarkdown !== "string") {
     throw new Error("Bundle handoffMarkdown must be a string.");
+  }
+  if (value.checkpoint !== undefined && !isTaskCheckpoint(value.checkpoint)) {
+    throw new Error(`Bundle checkpoint must be valid metadata within the ${MAX_TASK_CHECKPOINT_BYTES} byte limit.`);
   }
   if (!Array.isArray(value.sources) || value.sources.length > MAX_SOURCES) {
     throw new Error(`Bundle sources must be an array with at most ${MAX_SOURCES} items.`);

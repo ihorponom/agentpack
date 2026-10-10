@@ -331,7 +331,7 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
   {
     name: "bundle_export",
     annotations: ADDITIVE_TOOL_ANNOTATIONS,
-    description: "Export one Task Passport with its decisions, dead ends, source conclusions, and optionally evidence to a redacted agentpack.task-bundle JSON file, for sharing tasks across repos, machines, or agents. Writes only the new bundle file at outputPath; pack state is unchanged.",
+    description: "Export one Task Passport, compact handoff, latest task checkpoint when available, selected source conclusions, and optionally referenced evidence to a redacted agentpack.task-bundle JSON file. Writes only the new bundle file at outputPath; pack state is unchanged.",
     inputSchema: {
       type: "object",
       properties: {
@@ -428,7 +428,7 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
   {
     name: "task_handoff",
     annotations: READ_ONLY_TOOL_ANNOTATIONS,
-    description: "Generate a compact handoff for the current Task Passport — objective, constraints, write scope, next actions, verification, drift, and audit summary — so another chat, client, worktree, or agent can continue the work. Call before switching contexts. Read-only.",
+    description: "Generate a compact handoff for the current Task Passport — objective, constraints, write scope, next actions, verification, latest task checkpoint when available, drift, and audit summary — so another chat, client, worktree, or agent can continue the work. Call before switching contexts. Read-only.",
     inputSchema: {
       type: "object",
       properties: {}

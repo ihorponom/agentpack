@@ -4,6 +4,8 @@ import { getGitInfo, listDirtyFiles } from "./git.js";
 import { normalizePath, resolveRegularFileWithin } from "./hash.js";
 import { createId } from "./ids.js";
 import { redactForRoot } from "./redaction.js";
+import { readTaskCheckpoint } from "./bundles.js";
+import { formatTaskCheckpoint, type TaskCheckpointContext } from "./checkpoints.js";
 import {
   getPackPath,
   listCheckpoints,
@@ -1087,7 +1089,12 @@ export function formatCurrentTaskHandoff(root: string, sourceStatuses: TaskAudit
   return formatTaskPassportHandoff(root, passport, sourceStatuses);
 }
 
-export function formatTaskPassportHandoff(root: string, passport: TaskPassport, sourceStatuses: TaskAuditSourceStatus[] = []): string {
+export function formatTaskPassportHandoff(
+  root: string,
+  passport: TaskPassport,
+  sourceStatuses: TaskAuditSourceStatus[] = [],
+  checkpointContext: TaskCheckpointContext = readTaskCheckpoint(root, passport.id)
+): string {
   const git = getGitInfo(root);
   const warnings = taskHandoffWarnings(root, passport, git, sourceStatuses);
   const verification = passport.verification;
@@ -1108,6 +1115,7 @@ export function formatTaskPassportHandoff(root: string, passport: TaskPassport, 
     ...formatList(passport.writeScope),
     "Next actions:",
     ...formatList(passport.nextActions),
+    ...formatTaskCheckpoint(checkpointContext),
     `Drift: ${formatTaskDrift(passport, git)}`,
     `Audit: ${warnings.task.length > 0 ? warnings.task.join(" | ") : "No action-required task warnings."}`,
     `Metadata: ${warnings.metadata.length > 0 ? warnings.metadata.join(" | ") : "No source-cache metadata warnings."}`

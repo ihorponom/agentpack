@@ -1163,6 +1163,163 @@ test("validates MCP budget presets", async () => {
   assert.match(explicitBudget.result.content[0].text, /Budget: ~220 tokens/);
 });
 
+test("handoff and bundles use one bounded task checkpoint after redaction and compaction", async () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), "agentpack-checkpoint-handoff-"));
+  const prior = process.env.AGENTPACK_CHECKPOINT_TOKEN;
+  const secret = "checkpoint-private-value-123";
+  process.env.AGENTPACK_CHECKPOINT_TOKEN = secret;
+  try {
+    run(root, ["init"]);
+    const configPath = path.join(root, ".agentpack", "config.json");
+    const config = JSON.parse(readFileSync(configPath, "utf8"));
+    config.redactions.push("AGENTPACK_CHECKPOINT_TOKEN");
+    writeFileSync(configPath, JSON.stringify(config));
+    run(root, ["checkpoint", "-m", "global checkpoint must stay out"]);
+    run(root, ["task", "start", "Checkpoint context", "--next", "Current passport plan"]);
+    const taskId = JSON.parse(run(root, ["task", "passport"])).id;
+    run(root, ["checkpoint", "-m", "older linked checkpoint must stay out"]);
+    run(root, ["checkpoint", "-m", "latest linked checkpoint"]);
+    const id = readdirSync(path.join(root, ".agentpack", "checkpoints")).sort().at(-1)!;
+    const manifestPath = path.join(root, ".agentpack", "checkpoints", id, "checkpoint.json");
+    const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+    manifest.summary = `Latest progress ${realpathSync(root)} ${secret} ` + '🙂漢字"\n'.repeat(2000);
+    manifest.status = "Pack status must stay out";
+    manifest.nextActions = ["Pack next action must stay out"];
+    writeFileSync(manifestPath, JSON.stringify(manifest));
+    run(root, ["task", "park"]);
+    run(root, ["task", "start", "Other task"]);
+    run(root, ["checkpoint", "-m", "other task checkpoint must stay out"]);
+    run(root, ["task", "switch", taskId, "--park-current"]);
+    run(root, ["ledger", "compact", "--write", "--keep-checkpoints", "0"]);
+    assert.equal(existsSync(path.join(path.dirname(manifestPath), "resume.md")), false);
+    const before = packTreeSnapshot(path.join(root, ".agentpack"));
+    const handoff = run(root, ["task", "handoff"]);
+    assert.match(handoff, /Latest task checkpoint:/);
+    assert.match(handoff, /Latest progress/);
+    assert.match(handoff, /Current passport plan/);
+    assert.match(handoff, /Checkpoint summary truncated/);
+    assert.doesNotMatch(handoff, /global checkpoint must|older linked checkpoint|other task checkpoint|Pack status|Pack next action|\uFFFD/);
+    assert.equal(handoff.includes(secret), false);
+    assert.equal(handoff.includes(root), false);
+    run(root, ["bundle", "export", "--output", "checkpoint.json"]);
+    const bundle = JSON.parse(readFileSync(path.join(root, "checkpoint.json"), "utf8"));
+    assert.equal(bundle.checkpoint.id, id);
+    assert.equal(bundle.checkpoint.taskId, taskId);
+    assert.equal(bundle.checkpoint.truncated, true);
+    assert.ok(Buffer.byteLength(JSON.stringify(bundle.checkpoint), "utf8") <= 2048);
+    assert.equal(bundle.checkpoint.status, undefined);
+    assert.equal(bundle.checkpoint.nextActions, undefined);
+    assert.equal(bundle.handoffMarkdown + "\n", handoff);
+    const inspected = JSON.parse(run(root, ["bundle", "inspect", path.join(root, "checkpoint.json"), "--json"]));
+    assert.deepEqual(inspected.checkpoint, { id, taskId, truncated: true });
+    const mcp = createMcpHarness(root);
+    const response = await mcp.send({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "task_handoff", arguments: {} } });
+    assert.equal(response.result.content[0].text + "\n", handoff);
+    await mcp.send({ jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "bundle_export", arguments: { outputPath: "mcp-checkpoint.json" } } });
+    const mcpBundle = JSON.parse(readFileSync(path.join(root, "mcp-checkpoint.json"), "utf8"));
+    assert.deepEqual(mcpBundle.checkpoint, bundle.checkpoint);
+    assert.equal(mcpBundle.bundleId, bundle.bundleId);
+    assert.deepEqual(packTreeSnapshot(path.join(root, ".agentpack")), before, "handoff and export do not mutate the pack");
+  } finally {
+    if (prior === undefined) delete process.env.AGENTPACK_CHECKPOINT_TOKEN;
+    else process.env.AGENTPACK_CHECKPOINT_TOKEN = prior;
+  }
+});
+
+test("imported checkpoint provenance survives remapping and re-export until a local checkpoint exists", () => {
+  const source = mkdtempSync(path.join(os.tmpdir(), "agentpack-checkpoint-origin-"));
+  const destination = mkdtempSync(path.join(os.tmpdir(), "agentpack-checkpoint-destination-"));
+  run(source, ["init"]);
+  run(source, ["task", "start", "Portable checkpoint", "--next", "Original passport plan"]);
+  const sourceTaskId = JSON.parse(run(source, ["task", "passport"])).id;
+  run(source, ["checkpoint", "-m", "Portable progress"]);
+  run(source, ["bundle", "export", "--output", "origin.json"]);
+  const bundlePath = path.join(source, "origin.json");
+  const original = JSON.parse(readFileSync(bundlePath, "utf8"));
+  run(destination, ["init"]);
+  run(destination, ["task", "start", "Destination task", "--next", "Destination plan"]);
+  const statePath = path.join(destination, ".agentpack", "state.json");
+  const pointerPath = path.join(destination, ".agentpack", "tasks", "current");
+  const stateBefore = readFileSync(statePath, "utf8");
+  const pointerBefore = readFileSync(pointerPath, "utf8");
+  const imported = JSON.parse(run(destination, ["bundle", "import", bundlePath, "--write", "--json"]));
+  assert.equal(readFileSync(statePath, "utf8"), stateBefore);
+  assert.equal(readFileSync(pointerPath, "utf8"), pointerBefore);
+  assert.deepEqual(readdirSync(path.join(destination, ".agentpack", "checkpoints")), []);
+  assert.equal(imported.manifest.checkpoint, undefined, "retained bundle is the single provenance store");
+  const beforeRepeat = packTreeSnapshot(path.join(destination, ".agentpack"));
+  assert.equal(JSON.parse(run(destination, ["bundle", "import", bundlePath, "--write", "--json"])).idempotent, true);
+  assert.deepEqual(packTreeSnapshot(path.join(destination, ".agentpack")), beforeRepeat);
+  run(destination, ["task", "switch", sourceTaskId, "--park-current"]);
+  const handoff = run(destination, ["task", "handoff"]);
+  assert.match(handoff, /Latest task checkpoint \(imported origin\):/);
+  assert.match(handoff, /Portable progress/);
+  assert.equal(JSON.parse(run(destination, ["task", "passport"])).verification.status, "unknown");
+  run(destination, ["bundle", "export", "--output", "forward.json"]);
+  assert.deepEqual(JSON.parse(readFileSync(path.join(destination, "forward.json"), "utf8")).checkpoint, original.checkpoint);
+  const retainedPath = path.join(destination, ".agentpack", "tasks", sourceTaskId, "imports", original.bundleId.replace(":", "-") + ".bundle.json");
+  const retained = readFileSync(retainedPath, "utf8");
+  writeFileSync(retainedPath, retained.replace("Portable progress", "Tampered private progress"));
+  const tamperedHandoff = run(destination, ["task", "handoff"]);
+  assert.match(tamperedHandoff, /invalid imported checkpoint provenance/);
+  assert.doesNotMatch(tamperedHandoff, /Tampered private progress|Portable progress/);
+  unlinkSync(retainedPath);
+  symlinkSync(bundlePath, retainedPath);
+  assert.doesNotMatch(run(destination, ["task", "handoff"]), /Portable progress/);
+  unlinkSync(retainedPath);
+  writeFileSync(retainedPath, retained);
+  run(source, ["checkpoint", "-m", "Updated portable progress"]);
+  run(source, ["bundle", "export", "--output", "updated.json"]);
+  const remapped = JSON.parse(run(destination, ["bundle", "import", path.join(source, "updated.json"), "--write", "--as-new", "--json"]));
+  assert.notEqual(remapped.taskId, sourceTaskId);
+  run(destination, ["task", "switch", remapped.taskId, "--park-current"]);
+  assert.match(run(destination, ["task", "handoff"]), /Updated portable progress/);
+  run(destination, ["bundle", "export", "--output", "remapped.json"]);
+  const remappedBundle = JSON.parse(readFileSync(path.join(destination, "remapped.json"), "utf8"));
+  assert.equal(remappedBundle.task.id, remapped.taskId);
+  assert.equal(remappedBundle.checkpoint.taskId, sourceTaskId, "origin task identifier is immutable provenance");
+  run(destination, ["checkpoint", "-m", "Local progress takes precedence"]);
+  const localHandoff = run(destination, ["task", "handoff"]);
+  assert.match(localHandoff, /Local progress takes precedence/);
+  assert.doesNotMatch(localHandoff, /Updated portable progress|imported origin/);
+  run(destination, ["bundle", "export", "--output", "local.json"]);
+  assert.equal(JSON.parse(readFileSync(path.join(destination, "local.json"), "utf8")).checkpoint.taskId, remapped.taskId);
+});
+
+test("checkpoint handoff skips unsafe metadata and bundle import rejects malformed checkpoint records", () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), "agentpack-checkpoint-validation-"));
+  const outside = path.join(mkdtempSync(path.join(os.tmpdir(), "agentpack-checkpoint-outside-")), "checkpoint.json");
+  run(root, ["init"]);
+  run(root, ["task", "start", "Checkpoint validation"]);
+  run(root, ["checkpoint", "-m", "Valid progress"]);
+  run(root, ["checkpoint", "-m", "Invalid progress"]);
+  const directory = path.join(root, ".agentpack", "checkpoints");
+  const latest = path.join(directory, readdirSync(directory).sort().at(-1)!, "checkpoint.json");
+  const original = readFileSync(latest, "utf8");
+  for (const invalid of ["{", "x".repeat(65537), JSON.stringify({ ...JSON.parse(original), createdAt: "invalid" })]) {
+    writeFileSync(latest, invalid);
+    const handoff = run(root, ["task", "handoff"]);
+    assert.match(handoff, /Valid progress/);
+    assert.match(handoff, /\[warn\] Skipped/);
+  }
+  writeFileSync(outside, original.replace("Invalid progress", "Outside private content"));
+  unlinkSync(latest);
+  symlinkSync(outside, latest);
+  assert.doesNotMatch(run(root, ["task", "handoff"]), /Outside private content/);
+  run(root, ["bundle", "export", "--output", "valid.json"]);
+  const valid = JSON.parse(readFileSync(path.join(root, "valid.json"), "utf8"));
+  const before = packTreeSnapshot(path.join(root, ".agentpack"));
+  for (const checkpoint of [null, [], { ...valid.checkpoint, taskId: "../escape" }, { ...valid.checkpoint, summary: "🙂".repeat(600) }, { ...valid.checkpoint, status: "unexpected pack state" }, { ...valid.checkpoint, truncated: "yes" }, { ...valid.checkpoint, createdAt: "2026-02-30T00:00:00.000Z" }, { ...valid.checkpoint, git: { ...valid.checkpoint.git, diff: "private patch" } }]) {
+    const bundle = { ...valid, checkpoint };
+    const { bundleId: _id, exportedAt: _time, ...payload } = bundle;
+    bundle.bundleId = `sha256:${sha256(stableStringifyForTest(payload))}`;
+    const invalidPath = path.join(root, "invalid.json");
+    writeFileSync(invalidPath, JSON.stringify(bundle));
+    assert.match(runExpectError(root, ["bundle", "import", invalidPath, "--write"]), /Bundle checkpoint/);
+    assert.deepEqual(packTreeSnapshot(path.join(root, ".agentpack")), before);
+  }
+});
+
 test("exports, inspects, and plans read-only structured bundle imports", async () => {
   const dir = mkdtempSync(path.join(os.tmpdir(), "agentpack-bundle-test-"));
   const noPackDir = mkdtempSync(path.join(os.tmpdir(), "agentpack-bundle-inspect-no-pack-"));

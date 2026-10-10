@@ -108,7 +108,16 @@ next actions are used only when no current passport exists.
 Publisher wiring, then prints the manual release-prep commands. It does not
 push, tag, publish, or create GitHub Releases.
 
-`task_handoff` generates a compact current-passport handoff for switching chats, clients, worktrees, or agents. It includes objective, constraints, write scope, next actions, verification, drift, and audit summary without dumping the full passport JSON.
+`task_handoff` generates a compact current-passport handoff for switching chats, clients, worktrees, or agents. It includes objective, constraints, write scope, next actions, verification, drift, audit summary, and the latest task-linked checkpoint when available.
+
+The checkpoint is a redacted summary with timestamp, id and origin task/Git ref,
+bounded to 2 KiB of serialized UTF-8 JSON with explicit truncation. `bundle_export`
+carries the same metadata in an optional `checkpoint` field; old bundles without
+it remain valid. Imported metadata is historical context until a local linked
+checkpoint exists. It creates no checkpoint files/events and does not change
+local state or verification. Global checkpoints, patches, resume snapshots and
+pack-level checkpoint status/next actions are excluded. No new tool arguments
+are required.
 
 `task_start` creates a new current Task Passport. It accepts `title`, `objective`, `constraints`, `writeScope`, `nextActions`, `tags`, and `risk`, matching the CLI start semantics. It refuses to replace an active, blocked, or verifying current task; call `task_park` or close that task before starting unrelated MCP work.
 

@@ -129,6 +129,15 @@ export interface TaskBundleEvidence {
   contentDigest: string;
 }
 
+export interface TaskCheckpoint {
+  id: string;
+  taskId: string;
+  createdAt: string;
+  summary: string;
+  git: { branch: string | null; head: string | null };
+  truncated?: boolean;
+}
+
 export interface TaskBundle {
   kind: "agentpack.task-bundle";
   schemaVersion: 1;
@@ -138,6 +147,7 @@ export interface TaskBundle {
   origin: TaskBundleOrigin;
   task: TaskBundleTask;
   handoffMarkdown: string;
+  checkpoint?: TaskCheckpoint;
   sources: TaskBundleSource[];
   evidence: TaskBundleEvidence[];
 }
@@ -157,6 +167,7 @@ export interface BundleExportResult {
   sources: number;
   evidence: number;
   bytes: number;
+  checkpoint?: Pick<TaskCheckpoint, "id" | "taskId" | "truncated">;
 }
 
 export interface BundleInspectResult {
@@ -177,6 +188,7 @@ export interface BundleInspectResult {
     evidence: number;
   };
   warnings: string[];
+  checkpoint?: Pick<TaskCheckpoint, "id" | "taskId" | "truncated">;
 }
 
 export type BundleImportOutcome = "create" | "idempotent" | "conflict";
