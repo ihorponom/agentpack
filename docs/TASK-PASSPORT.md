@@ -239,7 +239,7 @@ target tasks remain unswitchable.
 
 `task status` prints a short current-task view without scanning source-cache status. Use it for a quick human check before reaching for `task audit`.
 
-MCP exposes the same start/status/list/switch path for connected agents through `task_start`, `task_status`, `task_list`, `task_switch`, and `task_park`. Blocking, explicit close, and full passport JSON inspection remain CLI-only until dogfooding shows they are needed through MCP.
+MCP exposes the same start/status/list/switch path for connected agents through `task_start`, `task_status`, `task_list`, `task_switch`, and `task_park`. Blocking, explicit close, and full passport JSON inspection are available through the CLI.
 
 Use `task_switch({ id, parkCurrent: true })` or CLI
 `agentpack task switch <id> --park-current` to combine parking a different
@@ -288,7 +288,7 @@ The first bundle format is one inspectable UTF-8 JSON file, conventionally
 named `*.agentpack-bundle.json`. It is not a zip archive and cannot contain
 scripts, binaries, source files, or hidden client configuration.
 
-Target envelope:
+Example bundle:
 
 ```json
 {
@@ -298,7 +298,7 @@ Target envelope:
   "exportedAt": "2026-06-23T12:00:00.000Z",
   "producer": {
     "name": "agentpack-cli",
-    "version": "0.1.x"
+    "version": "<installed-version>"
   },
   "origin": {
     "projectName": "example-app",
@@ -396,47 +396,17 @@ The applied bundle is retained under
 `.agentpack/tasks/<task-id>/imports/<portable-bundle-id>.bundle.json`; a sibling
 `<portable-bundle-id>.import.json` records created, reused, skipped, and
 remapped records. Apply rolls back synchronous write failures, but does not
-promise a general rollback command. A future removal operation must use that
-import manifest and delete only records created by the import that remain
-unreferenced; reused local sources or evidence are never rollback candidates.
+promise a general rollback command. The import manifest identifies which
+records were created or reused.
 
-The existing `agentpack export --to markdown`, `resume`, and `task handoff`
-contracts remain unchanged. Markdown import and automatic sync are out of scope
-for the first structured format.
+## Consistency Checks
 
-Required verification for the complete write-enabled implementation:
-
-- canonical export produces a stable payload digest and survives
-  export/inspect/import-plan round trips
-- redaction removes configured secrets, credential-bearing remote components,
-  and absolute workspace paths from every exported string
-- inspect and default import perform no pack writes; invalid schema, digest,
-  size, count, or path input fails before a plan can be applied
-- apply is atomic and leaves `tasks/current` unchanged on success or failure
-- imported tasks are parked with local verification unknown while origin status
-  and verification remain inspectable provenance
-- task/evidence idempotency, conflicting ids with `--as-new`, source hash
-  matches, and stale/missing source warnings have focused regression tests
-- CLI and MCP produce equivalent plans/results from the same core functions
-- a clean-repo dogfood smoke exports from one workspace, inspects without a
-  pack, imports into another workspace, and resumes the parked task explicitly
-
-## Consistency Rules
-
-Agentpack should warn before work continues when:
-
-- the current git branch does not match the passport branch
-- the current git head moved since the last passport update
-- the current worktree path does not match the passport worktree
-- a source conclusion in the current context is changed or missing
-- a new active passport would overlap another open passport's write scope
-- a task is marked completed without evidence or an explicit acceptance note
-
-Agentpack should not try to resolve code conflicts. It should point the user toward one of three safe paths:
-
-- reuse the current passport
-- park one task before starting another
-- move parallel work into a separate worktree
+`task audit` reports branch, HEAD, or worktree drift; changed or missing source
+records; missing next actions or write scope; open verification; and a closed
+current task. Review these warnings against the live repository before
+continuing. Agentpack does not resolve code conflicts. Reuse the current
+Passport, park it before switching tasks, or use a separate worktree for
+parallel work.
 
 ## Migration
 
@@ -462,4 +432,12 @@ Unresolved findings: none identified after <specific check>
 Residual risk: <remaining risk>
 ```
 
-For medium/high risk, use `review`, `adversarial-review`, or compatible historical `challenge` evidence, plus `Review mode: independent read-only` and an `Adversarial check type:` naming negative, differential, operational, or rollback. A missing or malformed bound HEAD leaves a code-scope advisory unsatisfied. Bare or padded generic values such as `none`, `checked`, `verified`, `risks considered`, `tests passed`, and `looks good` are not enough. Except for the explicit `none identified after <specific check>` form, each required value needs at least 32 characters and six words; this structural threshold reduces checkbox prose without interpreting technical meaning. After risk is calibrated, `task audit` and `task finalize` report exact missing or malformed labels for the best incomplete referenced candidate and print a copy-ready template; they do not judge the technical conclusion. The advisory examines newest evidence first, at most the latest 12 referenced evidence IDs, a 4 MiB tail of the event log, 64 KiB per evidence file, and 256 KiB total evidence content. This is lexical hygiene, not a semantic-correctness judgment. There is no blocking switch or config knob in this iteration: dogfood has not justified enforcement.
+For medium/high risk, use `review`, `adversarial-review`, or compatible
+historical `challenge` evidence. Include `Review mode: independent read-only`
+and an `Adversarial check type:` naming a negative, differential, operational,
+or rollback check. Code-scope evidence must include the bound `Reviewed HEAD`.
+
+`task audit` and `task finalize` report missing or malformed evidence fields
+and provide a template. They flag empty or generic entries such as `checked`
+or `tests passed`, but do not judge the technical conclusion or block task
+transitions. The check is bounded to recent referenced evidence.

@@ -3,7 +3,7 @@
 Agentpack publishes to npm as `agentpack-cli` from GitHub Actions, signed with
 npm provenance via a Trusted Publisher. No `NPM_TOKEN` is stored in the repo.
 
-## One-time setup (already done)
+## Trusted Publisher setup
 
 - npmjs.com → package `agentpack-cli` → Settings → Trusted Publisher:
   - Repository: `ihorponom/agentpack`
@@ -27,8 +27,7 @@ Release discipline:
   has been reviewed and pushed.
 - Re-run pre-flight after the version bump, because the package metadata and
   tarball have changed.
-- For small patch releases, write concise notes in the GitHub Release. Do not
-  add a weak release-notes file to the repo just to have one.
+- For small patch releases, write concise notes in the GitHub Release.
 - After a release is published, new commits on `main` are next-release
   candidates. Do not describe unreleased commands or behavior as available in
   the already-published npm version.
@@ -106,7 +105,7 @@ Before `npm version`:
 - `package.json` `mcpName` and `server.json` name match, and the release
   workflow can publish the Registry metadata separately from npm.
 - Changes to install flows, MCP launchers, or generated client config are
-  dogfooded in at least one non-Agentpack repo before release. Verify generated
+  tested in at least one other repository before release. Verify generated
   snippets point at stable package entrypoints, not transient shell shims.
 - Command-specific help is checked from the built or packed CLI, especially
   `agentpack resume --help`, so help flags do not accidentally execute the

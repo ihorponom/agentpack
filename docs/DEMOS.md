@@ -145,7 +145,7 @@ agentpack install codex --dry-run
 4. Record the result and finalize the task:
 
 ```bash
-agentpack evidence add --kind dogfood --content "Resume exposed the task objective, constraint, write scope, source conclusion, verification state, and next action."
+agentpack evidence add --kind test-output --content "Resume showed the task objective, constraint, write scope, source conclusion, verification state, and next action."
 agentpack task verify --status passed --evidence evt_... --summary "Fresh-agent handoff is understandable from Agentpack state alone."
 agentpack task finalize
 agentpack resume --preset quick --query "handoff clarity"

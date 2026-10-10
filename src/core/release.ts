@@ -188,7 +188,7 @@ function renderReleasePreflight(checks: ReleaseCheck[]): ReleasePreflightReport 
     "- npm test",
     "- agentpack doctor",
     "- npm pack --dry-run",
-    "- dogfood install/MCP changes in a non-Agentpack repo when relevant",
+    "- test install/MCP changes in another repository when relevant",
     "",
     "Release actions are intentionally manual:",
     "- npm version patch --no-git-tag-version",

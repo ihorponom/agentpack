@@ -85,18 +85,3 @@ Missing source records can be pruned explicitly:
 ```bash
 agentpack source prune --missing
 ```
-
-## Future Archive Direction
-
-Archive should come before destructive compaction. A task archive bundle should
-include at least:
-
-- `passport.json`
-- task event history
-- referenced evidence files
-- checkpoint metadata needed for handoff
-- a compact manifest
-
-Only after archive bundles are dogfooded should Agentpack add destructive prune
-or compact commands, and those commands should require explicit flags such as
-`--dry-run`, `--confirm`, or age filters.

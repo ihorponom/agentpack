@@ -14,7 +14,7 @@ The stdio server accepts both MCP protocol eras on the same process:
 - MCP `2026-07-28` clients call `server/discover` or send a request directly with the required protocol version and client capabilities in `params._meta`. Modern responses include `resultType: "complete"` and identify Agentpack through `io.modelcontextprotocol/serverInfo` result metadata. Cacheable `server/discover`, `tools/list`, `prompts/list`, `resources/list`, `resources/templates/list`, and `resources/read` results use the conservative `ttlMs: 0` and `cacheScope: "private"` defaults; legacy responses do not include these fields.
 - Unsupported modern protocol versions receive the structured `-32022` error with the requested and supported versions. Missing required modern metadata is rejected as invalid params.
 
-This is protocol-level statelessness, not application-level amnesia: every tool call remains self-contained at the MCP layer, while durable task state stays in the repo's `.agentpack/` files. Agentpack does not map Task Passports to the MCP Tasks extension. MCP Apps, Tasks, remote HTTP, OAuth/OIDC, tunnels, and hosted sync remain separate product decisions rather than requirements for the local stdio server.
+Every tool call remains self-contained at the MCP layer, while durable task state stays in the repo's `.agentpack/` files. Agentpack does not map Task Passports to the MCP Tasks extension. The server uses local stdio; it does not provide remote HTTP or hosted sync.
 
 ## Invalid Input
 

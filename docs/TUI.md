@@ -35,10 +35,6 @@ for the selected task. Evidence detail and the four known checkpoint files
 previews in separate scrollable views. These bounded direct reads are
 comfortably fast at current ledger size and avoid a second database, migration
 path, and stale-index failure mode.
-The repository benchmark measures the live ledger and a deterministic
-1,650-passport task-count fixture. It does not scale global events or linked
-evidence proportionally; its output is evidence for the current implementation
-and machine, not a permanent performance guarantee.
 
 The Health view is the Inspector's bounded inventory, not an exhaustive hygiene
 scan. Use `agentpack ledger status` when the complete ledger-health contract is
