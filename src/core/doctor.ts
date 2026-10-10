@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import { accessSync, constants, existsSync, lstatSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
@@ -129,13 +130,40 @@ function checkLocalIgnores(root: string): DoctorCheck {
 
   const lines = readIgnoreLines(excludePath);
   const missing = AGENTPACK_IGNORE_PATTERNS.filter((pattern) => !hasIgnorePattern(lines, pattern));
+  if (missing.length) {
+    return {
+      status: "warn",
+      name: "Local ignores",
+      detail: `missing local-only ignore entries: ${missing.join(", ")}`
+    };
+  }
+
+  // A directory probe checks the rule for its contents, including when the directory does not exist yet.
+  const probes = AGENTPACK_IGNORE_PATTERNS.map((pattern) =>
+    [".codex", ".claude", ".cursor"].includes(pattern) ? `${pattern}/` : pattern
+  );
+  const result = spawnSync("git", ["check-ignore", "--no-index", "--stdin", "-z"], {
+    cwd: root,
+    encoding: "utf8",
+    input: `${probes.join("\0")}\0`
+  });
+  if (result.error || (result.status !== 0 && result.status !== 1)) {
+    return {
+      status: "warn",
+      name: "Local ignores",
+      detail: "could not verify local ignore rules with Git"
+    };
+  }
+
+  const ignored = new Set(result.stdout.split("\0").filter(Boolean));
+  const ineffective = AGENTPACK_IGNORE_PATTERNS.filter((_, index) => !ignored.has(probes[index]!));
 
   return {
-    status: missing.length ? "warn" : "ok",
+    status: ineffective.length ? "warn" : "ok",
     name: "Local ignores",
-    detail: missing.length
-      ? `missing local-only ignore entries: ${missing.join(", ")}`
-      : "Agentpack local files are ignored"
+    detail: ineffective.length
+      ? `local ignore rules are overridden or ineffective for: ${ineffective.join(", ")}`
+      : "Agentpack local ignore rules are effective for untracked files"
   };
 }
 

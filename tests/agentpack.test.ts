@@ -1972,6 +1972,22 @@ test("init appends local patterns to Git exclude without changing project rules"
   assert.match(run(dir, ["doctor"]), /\[ok\] Local ignores/);
 });
 
+test("doctor warns when project Git rules override local excludes", () => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), "agentpack-exclude-override-"));
+  runGit(dir, ["init"]);
+  const gitignorePath = path.join(dir, ".gitignore");
+  const gitignore = "!.agentpack/\n!AGENTS.md\n";
+  writeFileSync(gitignorePath, gitignore, "utf8");
+
+  run(dir, ["init"]);
+  writeFileSync(path.join(dir, "AGENTS.md"), "Local instructions\n", "utf8");
+  const status = runGit(dir, ["status", "--short", "--untracked-files=all"]);
+  assert.match(status, /\.agentpack\/config\.json/);
+  assert.match(status, /AGENTS\.md/);
+  assert.equal(readFileSync(gitignorePath, "utf8"), gitignore);
+  assert.match(run(dir, ["doctor"]), /\[warn\] Local ignores: .*\.agentpack\/.*AGENTS\.md/);
+});
+
 test("init in a linked worktree updates the shared Git exclude", () => {
   const dir = mkdtempSync(path.join(os.tmpdir(), "agentpack-exclude-worktree-"));
   const worktree = path.join(dir, "linked");
