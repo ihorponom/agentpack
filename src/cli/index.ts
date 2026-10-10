@@ -55,6 +55,7 @@ import {
 import {
   appendEvent,
   findPackRoot,
+  getGitExcludePath,
   getPackPath,
   initPack,
   readState,
@@ -113,6 +114,9 @@ export async function runCli(argv: string[], cwd: string): Promise<void> {
   if (command === "init") {
     const packPath = initPack(cwd);
     process.stdout.write(`Initialized Agentpack at ${packPath}\n`);
+    if (!getGitExcludePath(cwd)) {
+      process.stdout.write("No Git repository detected; local ignore rules were not added.\n");
+    }
     return;
   }
 
@@ -402,7 +406,8 @@ Supported clients: Codex and Claude Code.`;
   if (command === "init") {
     return `agentpack init
 
-Initialize .agentpack/ in the current repository and add local Agentpack files to .gitignore.`;
+Initialize .agentpack/ and add local Agentpack files to Git info/exclude when inside a Git repository.
+The project .gitignore is not created or changed.`;
   }
 
   if (command === "install") {

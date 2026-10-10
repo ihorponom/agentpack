@@ -1,10 +1,10 @@
-import { accessSync, constants, existsSync, readFileSync, realpathSync, statSync } from "node:fs";
+import { accessSync, constants, existsSync, lstatSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { getGitInfo } from "./git.js";
 import { countFullCheckpoints } from "./compact.js";
-import { AGENTPACK_IGNORE_PATTERNS, findPackRoot, getPackPath, PACK_DIR } from "./store.js";
+import { AGENTPACK_IGNORE_PATTERNS, findPackRoot, getGitExcludePath, getPackPath, hasIgnorePattern } from "./store.js";
 import { getSourceStatuses } from "../operations.js";
 
 type CheckStatus = "ok" | "warn" | "fail";
@@ -42,7 +42,6 @@ export function buildDoctorReport(startDir: string): { ok: boolean; text: string
     });
   }
 
-  checks.push(checkGitignore(root));
   checks.push(checkLocalIgnores(root));
   checks.push(checkProjectMcpConfig(root));
   checks.push(checkCodexConfig(root));
@@ -102,39 +101,33 @@ function formatSourceHealth(recorded: number, changed: number, missing: number):
     : summary;
 }
 
-function checkGitignore(root: string): DoctorCheck {
-  const gitignorePath = path.join(root, ".gitignore");
-  if (!existsSync(gitignorePath)) {
-    return {
-      status: "warn",
-      name: ".gitignore",
-      detail: "missing; .agentpack/ may be committed accidentally"
-    };
-  }
-
-  const content = readFileSync(gitignorePath, "utf8");
-  const ignored = content.split(/\r?\n/).map((line) => line.trim()).some((line) => {
-    return line === `${PACK_DIR}/` || line === PACK_DIR;
-  });
-
-  return {
-    status: ignored ? "ok" : "warn",
-    name: ".gitignore",
-    detail: ignored ? ".agentpack/ ignored" : ".agentpack/ is not ignored"
-  };
-}
-
 function checkLocalIgnores(root: string): DoctorCheck {
-  const gitignorePath = path.join(root, ".gitignore");
-  if (!existsSync(gitignorePath)) {
+  const excludePath = getGitExcludePath(root);
+  if (!excludePath) {
     return {
       status: "warn",
       name: "Local ignores",
-      detail: "missing .gitignore; local Agentpack integration files may be committed accidentally"
+      detail: "not a git repository; local Git excludes are unavailable"
     };
   }
 
-  const lines = readGitignoreLines(gitignorePath);
+  if ([path.dirname(excludePath), excludePath].some((filePath) => lstatSync(filePath, { throwIfNoEntry: false })?.isSymbolicLink())) {
+    return {
+      status: "warn",
+      name: "Local ignores",
+      detail: "Git info/exclude path contains a symbolic link"
+    };
+  }
+
+  if (!existsSync(excludePath)) {
+    return {
+      status: "warn",
+      name: "Local ignores",
+      detail: "Git info/exclude is missing; local Agentpack files may be committed accidentally"
+    };
+  }
+
+  const lines = readIgnoreLines(excludePath);
   const missing = AGENTPACK_IGNORE_PATTERNS.filter((pattern) => !hasIgnorePattern(lines, pattern));
 
   return {
@@ -675,19 +668,11 @@ function claudeDesktopServerIssues(name: string, server: unknown): string[] {
   return issues;
 }
 
-function readGitignoreLines(gitignorePath: string): string[] {
-  return readFileSync(gitignorePath, "utf8")
+function readIgnoreLines(filePath: string): string[] {
+  return readFileSync(filePath, "utf8")
     .split(/\r?\n/)
     .map((line) => line.trim())
     .filter((line) => line && !line.startsWith("#"));
-}
-
-function hasIgnorePattern(lines: string[], pattern: string): boolean {
-  const normalized = pattern.endsWith("/") ? pattern.slice(0, -1) : pattern;
-  return lines.some((line) => {
-    const normalizedLine = line.endsWith("/") ? line.slice(0, -1) : line;
-    return normalizedLine === normalized;
-  });
 }
 
 function getAgentpackServerName(root: string): string {

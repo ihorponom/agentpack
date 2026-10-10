@@ -1,5 +1,6 @@
 import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, renameSync, rmdirSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import path from "node:path";
+import { getGitRepoBounds } from "./git.js";
 import { createId } from "./ids.js";
 import type { AgentpackEvent, AgentpackState, SourcesFile } from "./types.js";
 
@@ -98,20 +99,39 @@ export function initPack(root: string): string {
 }
 
 export function ensurePackIgnored(root: string): void {
-  const gitignorePath = path.join(root, ".gitignore");
-  const existing = existsSync(gitignorePath) ? readFileSync(gitignorePath, "utf8") : "";
-  const lines = existing.split(/\r?\n/).map((line) => line.trim());
-  const missing = AGENTPACK_IGNORE_PATTERNS.filter((pattern) => !hasIgnorePattern(lines, pattern));
-
-  if (!missing.length) {
+  const excludePath = getGitExcludePath(root);
+  if (!excludePath) {
     return;
   }
-
-  const prefix = existing && !existing.endsWith("\n") ? "\n" : "";
-  writeFileSync(gitignorePath, `${existing}${prefix}${missing.join("\n")}\n`, "utf8");
+  for (const filePath of [path.dirname(excludePath), excludePath]) {
+    if (lstatSync(filePath, { throwIfNoEntry: false })?.isSymbolicLink()) {
+      throw new Error(`Git exclude path contains a symbolic link: ${filePath}`);
+    }
+  }
+  const existing = existsSync(excludePath) ? readFileSync(excludePath, "utf8") : "";
+  const updated = appendIgnorePatterns(existing, AGENTPACK_IGNORE_PATTERNS);
+  if (updated !== existing) {
+    mkdirSync(path.dirname(excludePath), { recursive: true });
+    writeFileSync(excludePath, updated, "utf8");
+  }
 }
 
-function hasIgnorePattern(lines: string[], pattern: string): boolean {
+export function getGitExcludePath(root: string): string | null {
+  const bounds = getGitRepoBounds(root);
+  return bounds ? path.join(bounds.commonDir, "info", "exclude") : null;
+}
+
+export function appendIgnorePatterns(existing: string, patterns: readonly string[]): string {
+  const lines = existing.split(/\r?\n/).map((line) => line.trim());
+  const missing = patterns.filter((pattern) => !hasIgnorePattern(lines, pattern));
+  if (!missing.length) {
+    return existing;
+  }
+  const prefix = existing && !existing.endsWith("\n") ? "\n" : "";
+  return `${existing}${prefix}${missing.join("\n")}\n`;
+}
+
+export function hasIgnorePattern(lines: readonly string[], pattern: string): boolean {
   const normalized = pattern.endsWith("/") ? pattern.slice(0, -1) : pattern;
   return lines.some((line) => {
     const normalizedLine = line.endsWith("/") ? line.slice(0, -1) : line;

@@ -10,7 +10,9 @@ Repo-native task continuity for AI coding agents.
 
 > Agent memory remembers how you work. Agentpack remembers where the task stands.
 
-Every session ends the same way: the context window gets compacted, the chat closes, the task waits until tomorrow. The next session starts without the task. It re-reads files, rediscovers decisions, and retries approaches that already failed.
+When a chat closes or its context is compacted, the next session may need to
+reconstruct the task from files and conversation history. Decisions and failed
+approaches can be easy to miss.
 
 Agentpack keeps a small, reviewable task ledger in `.agentpack/` inside your repo. Connected agents record durable state as they work: the goal, decisions, dead ends, verification evidence, and checkpoints. The next session loads it back and continues. That next session can be the same agent after compaction, a different client, or you returning next week.
 
@@ -52,6 +54,10 @@ agentpack init                     # once per repo
 agentpack install claude --write   # per client: codex | claude | cursor | claude-desktop
 ```
 
+In a Git repository, `init` adds patterns for untracked local files to Git's
+`info/exclude`. It leaves the project's `.gitignore` untouched. Files already
+tracked by Git remain tracked.
+
 Restart or reconnect the coding-agent client. From then on the agent loads Agentpack context at session start, records decisions and evidence while working, and checkpoints meaningful progress.
 
 Run `agentpack doctor` to verify the setup, and `agentpack resume --preset agent --query "<topic>"` to see the task state yourself.
@@ -82,7 +88,8 @@ Codex, Claude Code, and Cursor installs also include an optional builder subagen
 - Another agent continues from your checkpoint.
 - You work across parts of a monorepo (`api/`, `frontend/`, `cron/`) with short scoped tasks, and the task gate keeps the agent inside the folder the current task owns.
 
-Agentpack calls use some tokens too. The payoff is that the next session gets compact task state instead of re-reading unchanged files and re-explaining old decisions.
+Agentpack context uses tokens too. Its compact output keeps the task state
+available without including the full ledger history.
 
 ## Security posture
 
@@ -100,7 +107,7 @@ See [SECURITY.md](SECURITY.md) for the full policy.
 - [docs/MCP.md](docs/MCP.md): the MCP server contract and tool list
 - [docs/TASK-PASSPORT.md](docs/TASK-PASSPORT.md): task lifecycle, handoffs, and portable bundles
 - [docs/DEMOS.md](docs/DEMOS.md): compact continuity demos you can run yourself
-- [docs/VISION.md](docs/VISION.md): the strategic north star
+- [docs/DIRECTIONAL-INTEGRITY.md](docs/DIRECTIONAL-INTEGRITY.md): what a useful task handoff should preserve
 
 ## Contributing / local development
 
@@ -113,7 +120,7 @@ npm run mcp:smoke
 node dist/src/agentpack.js --help
 ```
 
-This repo uses Agentpack on itself through MCP. [docs/DOGFOOD.md](docs/DOGFOOD.md) describes the working protocol, [docs/SETUP.md](docs/SETUP.md) the full setup, and [docs/RELEASING.md](docs/RELEASING.md) the release process.
+See [docs/SETUP.md](docs/SETUP.md) for development setup and [docs/RELEASING.md](docs/RELEASING.md) for release steps.
 
 ---
 

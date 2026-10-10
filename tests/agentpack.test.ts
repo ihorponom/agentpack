@@ -30,7 +30,7 @@ import { sha256 } from "../src/core/hash.js";
 import { formatCurrentTaskStatus, formatTaskStatus } from "../src/core/tasks.js";
 import { buildResume } from "../src/core/resume.js";
 import { buildTuiModel, loadTuiCheckpointDetails, loadTuiTaskDetails, reduceTuiNavigation, renderTuiSnapshot, runTuiSession, sanitizeTerminalText } from "../src/core/tui.js";
-import { writePackTransaction } from "../src/core/store.js";
+import { getGitExcludePath, writePackTransaction } from "../src/core/store.js";
 import { formatClientGateCommand, installIntegration, mergeClaudeDesktopConfig } from "../src/integrations/install.js";
 import { startMcpServer, TOOL_DEFINITIONS } from "../src/mcp/server.js";
 
@@ -910,8 +910,8 @@ test("creates a pack, records source context, checkpoints, and exports handoff",
   const dir = mkdtempSync(path.join(os.tmpdir(), "agentpack-test-"));
   writeFileSync(path.join(dir, "index.js"), "console.log('hello agentpack')\n", "utf8");
 
-  run(dir, ["init"]);
-  assert.match(readFileSync(path.join(dir, ".gitignore"), "utf8"), /\.agentpack\//);
+  assert.match(run(dir, ["init"]), /No Git repository detected; local ignore rules were not added/);
+  assert.equal(existsSync(path.join(dir, ".gitignore")), false);
   run(dir, ["set", "goal", "Ship a tiny Agentpack MVP"]);
   run(dir, ["source", "add", "index.js", "--summary", "Entry point already inspected."]);
   const initialSourceStatus = run(dir, ["source", "status"]);
@@ -1000,7 +1000,7 @@ test("creates a pack, records source context, checkpoints, and exports handoff",
   const doctor = run(dir, ["doctor"]);
   assert.match(doctor, /Agentpack doctor/);
   assert.match(doctor, /\[ok\] Pack/);
-  assert.match(doctor, /\[ok\] \.gitignore/);
+  assert.match(doctor, /\[warn\] Local ignores: not a git repository/);
   assert.match(doctor, /\[warn\] Sources: 1 recorded, 1 changed, 0 missing; run `agentpack source status --changed --missing` for details/);
 });
 
@@ -1940,38 +1940,79 @@ test("rolls back a pack transaction after a mid-install failure", () => {
   );
 });
 
-test("init appends to existing gitignore without overwriting project rules", () => {
-  const dir = mkdtempSync(path.join(os.tmpdir(), "agentpack-gitignore-test-"));
+test("init appends local patterns to Git exclude without changing project rules", () => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), "agentpack-exclude-test-"));
+  runGit(dir, ["init"]);
   const gitignorePath = path.join(dir, ".gitignore");
+  const excludePath = path.join(dir, ".git", "info", "exclude");
   const existingGitignore = [
     "# Project rules",
     "dist/",
     "*.log"
   ].join("\n");
   writeFileSync(gitignorePath, existingGitignore, "utf8");
+  const existingExclude = readFileSync(excludePath, "utf8");
 
   run(dir, ["init"]);
-  const expectedGitignore = [
-    existingGitignore,
+  const expectedExclude = `${existingExclude}${existingExclude.endsWith("\n") ? "" : "\n"}${[
     ".agentpack/",
     ".codex",
     ".claude",
     ".cursor",
     ".mcp.json",
     "AGENTS.md",
-    "CLAUDE.md",
-    ""
-  ].join("\n");
-  assert.equal(readFileSync(gitignorePath, "utf8"), expectedGitignore);
+    "CLAUDE.md"
+  ].join("\n")}\n`;
+  assert.equal(readFileSync(gitignorePath, "utf8"), existingGitignore);
+  assert.equal(readFileSync(excludePath, "utf8"), expectedExclude);
 
   run(dir, ["init"]);
-  assert.equal(readFileSync(gitignorePath, "utf8"), expectedGitignore);
+  assert.equal(readFileSync(gitignorePath, "utf8"), existingGitignore);
+  assert.equal(readFileSync(excludePath, "utf8"), expectedExclude);
+  assert.match(run(dir, ["doctor"]), /\[ok\] Local ignores/);
+});
+
+test("init in a linked worktree updates the shared Git exclude", () => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), "agentpack-exclude-worktree-"));
+  const worktree = path.join(dir, "linked");
+  runGit(dir, ["init"]);
+  writeFileSync(path.join(dir, "index.js"), "export {};\n", "utf8");
+  runGit(dir, ["add", "index.js"]);
+  runGit(dir, ["-c", "user.name=Agentpack Test", "-c", "user.email=test@example.com", "-c", "commit.gpgsign=false", "commit", "-m", "initial"]);
+  runGit(dir, ["worktree", "add", "-b", "linked", worktree]);
+
+  const excludePath = path.join(dir, ".git", "info", "exclude");
+  const before = readFileSync(excludePath, "utf8");
+  assert.equal(realpathSync(getGitExcludePath(worktree) || ""), realpathSync(excludePath));
+  run(worktree, ["init"]);
+  assert.equal(existsSync(path.join(worktree, ".gitignore")), false);
+  assert.match(readFileSync(excludePath, "utf8"), /^\.agentpack\/$/m);
+  assert.match(runGit(worktree, ["check-ignore", "-v", "--no-index", "AGENTS.md"]), /info\/exclude.*AGENTS\.md/);
+  run(worktree, ["init"]);
+  assert.equal(readFileSync(excludePath, "utf8").split(".agentpack/").length, 2);
+  assert.ok(readFileSync(excludePath, "utf8").length > before.length);
+});
+
+test("init refuses a symlinked Git exclude", { skip: process.platform === "win32" }, () => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), "agentpack-exclude-symlink-"));
+  const outside = path.join(mkdtempSync(path.join(os.tmpdir(), "agentpack-exclude-outside-")), "exclude");
+  runGit(dir, ["init"]);
+  const excludePath = path.join(dir, ".git", "info", "exclude");
+  writeFileSync(outside, "# preserved\n", "utf8");
+  unlinkSync(excludePath);
+  symlinkSync(outside, excludePath);
+
+  assert.match(runExpectFailureOutput(dir, ["init"]), /Git exclude path contains a symbolic link/);
+  assert.match(run(dir, ["doctor"]), /\[warn\] Local ignores: Git info\/exclude path contains a symbolic link/);
+  assert.equal(readFileSync(outside, "utf8"), "# preserved\n");
+  assert.equal(existsSync(path.join(dir, ".gitignore")), false);
 });
 
 test("doctor warns about local-only ignore gaps and generic project MCP names", () => {
   const dir = mkdtempSync(path.join(os.tmpdir(), "example-app-doctor-test-"));
+  runGit(dir, ["init"]);
   run(dir, ["init"]);
-  writeFileSync(path.join(dir, ".gitignore"), ".agentpack/\n", "utf8");
+  writeFileSync(path.join(dir, ".git", "info", "exclude"), ".agentpack/\n", "utf8");
   writeFileSync(path.join(dir, ".mcp.json"), JSON.stringify({
     mcpServers: {
       agentpack: {
@@ -2192,7 +2233,7 @@ test("distinguishes source-cache status from git working tree status", () => {
 
   runGit(dir, ["init"]);
   run(dir, ["init"]);
-  runGit(dir, ["add", "index.js", ".gitignore"]);
+  runGit(dir, ["add", "index.js"]);
   runGit(dir, [
     "-c",
     "user.name=Agentpack Test",
@@ -2300,7 +2341,7 @@ test("release preflight is read-only and checks release prep basics", async () =
     readFileSync(path.join(repoRoot, "..", "docs", "RELEASING.md")));
   runGit(dir, ["init"]);
   run(dir, ["init"]);
-  runGit(dir, ["add", ".gitignore", ".github", "docs", "package.json", "package-lock.json"]);
+  runGit(dir, ["add", ".github", "docs", "package.json", "package-lock.json"]);
   runGit(dir, [
     "-c",
     "user.name=Agentpack Test",
@@ -3544,7 +3585,7 @@ test("serializes concurrent source record writes", async () => {
   assert.equal(existsSync(path.join(dir, ".agentpack", ".lock")), false);
 });
 
-test("init stays ledger-only and Claude Desktop CLI merge stays explicit", () => {
+test("init leaves Claude Desktop config unchanged and its merge stays explicit", () => {
   const root = mkdtempSync(path.join(os.tmpdir(), "agentpack-init-only-root-"));
   const home = mkdtempSync(path.join(os.tmpdir(), "agentpack-init-only-home-"));
   const configPath = path.join(home, "Library", "Application Support", "Claude", "claude_desktop_config.json");
@@ -3675,14 +3716,14 @@ test("previews and writes project-local MCP client install files", () => {
       /Read `\.agentpack\/instructions\/verification\.md` before a final verdict, external review, or release/
     ]) assert.match(instructions, boundary, `${relativeFile} must retain ${boundary}`);
   };
-  const gitignorePath = path.join(dir, ".gitignore");
-  writeFileSync(gitignorePath, readFileSync(gitignorePath, "utf8").replace(".cursor\n", ""), "utf8");
+  const excludePath = path.join(dir, ".git", "info", "exclude");
+  writeFileSync(excludePath, readFileSync(excludePath, "utf8").replace(".cursor\n", ""), "utf8");
 
   const defaultPreview = run(dir, ["install", "cursor"]);
   assert.match(defaultPreview, /dry run/);
   assert.match(defaultPreview, /No files were changed/);
-  assert.match(defaultPreview, /UPDATE \.gitignore/);
-  assert.doesNotMatch(readFileSync(gitignorePath, "utf8"), /^\.cursor\/?$/m);
+  assert.match(defaultPreview, /UPDATE \.git\/info\/exclude/);
+  assert.doesNotMatch(readFileSync(excludePath, "utf8"), /^\.cursor\/?$/m);
   assert.equal(existsSync(path.join(dir, ".cursor", "mcp.json")), false);
 
   const claudePreview = run(dir, ["install", "claude", "--dry-run"]);
@@ -3825,6 +3866,8 @@ test("previews and writes project-local MCP client install files", () => {
   }), "utf8");
 
   const cursorInstall = run(dir, ["install", "cursor", "--write"]);
+  assert.equal(existsSync(path.join(dir, ".gitignore")), false);
+  assert.match(readFileSync(excludePath, "utf8"), /^\.cursor$/m);
   assert.match(cursorInstall, /warn mode allows silently/);
   assert.match(cursorInstall, /inherits the parent model/);
   assert.match(cursorInstall, /read-only MCP tools/);
@@ -3873,6 +3916,7 @@ test("previews and writes project-local MCP client install files", () => {
   assert.match(runGit(dir, ["check-ignore", ".cursor/hooks.json"]), /\.cursor\/hooks\.json/);
 
   run(dir, ["install", "cursor", "--write"]);
+  assert.equal(readFileSync(excludePath, "utf8").match(/^\.cursor$/gm)?.length, 1);
   const reinstalledCursorCli = JSON.parse(readFileSync(path.join(dir, ".cursor", "cli.json"), "utf8"));
   for (const permission of expectedCursorReadOnlyPermissions) {
     assert.equal(reinstalledCursorCli.permissions.allow.filter((entry: string) => entry === permission).length, 1);
@@ -6565,7 +6609,7 @@ function writeReleaseFixture(dir: string, publishWorkflow?: string): void {
 function initializeReleaseRepo(dir: string): string {
   runGit(dir, ["init"]);
   run(dir, ["init"]);
-  runGit(dir, ["add", ".gitignore", ".github", "docs", "package.json", "package-lock.json"]);
+  runGit(dir, ["add", ".github", "docs", "package.json", "package-lock.json"]);
   commit(dir, "initial");
   runGit(dir, ["branch", "-M", "main"]);
   return addReleaseRemote(dir);

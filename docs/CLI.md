@@ -8,8 +8,11 @@ Use the CLI directly when you want to inspect state yourself, debug an MCP setup
 
 Use `agentpack <command> --help` for command-specific help. These help screens do not require an initialized `.agentpack/` directory and do not execute the command.
 
-`agentpack init` only initializes the repo-local ledger. Client integration
-remains explicit through `agentpack install <target>`. In particular,
+`agentpack init` initializes the repo-local ledger and, in a Git repository,
+adds local Agentpack paths to Git's `info/exclude`. It does not create or edit
+`.gitignore`. Outside Git, the ledger still initializes, and `doctor` warns
+that local Git excludes are unavailable. Client integration remains explicit
+through `agentpack install <target>`. In particular,
 `agentpack install claude-desktop --write` writes its local recovery files and
 merges the repo-specific server entry into the existing macOS Claude Desktop
 config. Agentpack installers serialize through a lock and check external drift

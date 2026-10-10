@@ -3,7 +3,7 @@ import { homedir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { getGitHooksPath, getGitRepoBounds } from "../core/git.js";
-import { getPackPath, readJson } from "../core/store.js";
+import { appendIgnorePatterns, getGitExcludePath, getPackPath, readJson } from "../core/store.js";
 
 const INSTALL_TARGETS = ["codex", "claude", "claude-desktop", "cursor", "git-hooks"] as const;
 const GATE_HOOK_MARKER = "# agentpack:gate";
@@ -315,10 +315,11 @@ function buildInstallPlan(root: string, target: InstallTarget): InstallPlan {
     };
   }
 
+  const cursorIgnorePlan = ignorePatternPlan(root, ".cursor", "Keep project-local Cursor integration files out of git.");
   return {
     target,
     files: [
-      ignorePatternPlan(root, ".cursor", "Keep project-local Cursor integration files out of git."),
+      ...(cursorIgnorePlan ? [cursorIgnorePlan] : []),
       writeFilePlan(root, ".agentpack/instructions/cursor.md", "Write Cursor-specific Agentpack workflow instructions.", cursorInstructions()),
       writeFilePlan(root, ".agentpack/instructions/verification.md", "Write detailed Agentpack verification instructions.", VERIFICATION_INSTRUCTIONS),
       writeFilePlan(root, ".cursor/rules/agentpack.mdc", "Write a Cursor project rule for Agentpack.", cursorInstructions()),
@@ -439,16 +440,16 @@ function writeFilePlan(root: string, relativeFilePath: string, description: stri
   };
 }
 
-function ignorePatternPlan(root: string, pattern: string, description: string): InstallFile {
-  const filePath = path.join(root, ".gitignore");
+function ignorePatternPlan(root: string, pattern: string, description: string): InstallFile | null {
+  const filePath = getGitExcludePath(root);
+  if (!filePath) {
+    return null;
+  }
   const existing = existsSync(filePath) ? readFileSync(filePath, "utf8") : "";
-  const normalized = pattern.replace(/\/$/, "");
-  const present = existing.split(/\r?\n/).some((line) => line.trim().replace(/\/$/, "") === normalized);
-  const prefix = existing && !existing.endsWith("\n") ? "\n" : "";
   return {
     filePath,
     description,
-    content: present ? existing : `${existing}${prefix}${pattern}\n`
+    content: appendIgnorePatterns(existing, [pattern])
   };
 }
 

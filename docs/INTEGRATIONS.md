@@ -17,7 +17,7 @@ Coding-agent clients use the same `agentpack mcp` server. The difference is wher
 
 Generated integration files are local developer setup by default. Until Agentpack has an explicit shared/team mode, keep `.agentpack/`, `.codex/`, `.claude/`, `.mcp.json`, `AGENTS.md`, `CLAUDE.md`, and similar client config files out of origin unless a repo deliberately chooses to version its own agent policy.
 
-Generated files under `.agentpack/instructions/` are local helper snippets. They are created only when you run the matching installer, and `agentpack init` adds the Agentpack local-only patterns to `.gitignore` without replacing existing project rules.
+Generated files under `.agentpack/instructions/` are local helper snippets. They are created only when you run the matching installer. In a Git repository, `agentpack init` adds local Agentpack patterns to Git's `info/exclude` without changing the project's `.gitignore`. Outside Git, it creates the pack without adding ignore rules; `agentpack doctor` reports that local Git excludes are unavailable.
 
 ## Where Files Live
 
@@ -41,7 +41,7 @@ If a snippet is missing, run the matching `agentpack install <target> --write`. 
 
 ## Safe Install Flow
 
-Run `agentpack init` once per repo to create `.agentpack/` and local ignore rules. Then install the client integrations you actually want to use in that repo. Each `agentpack install <target> --write` command configures one client surface; it does not replace `init`, and installing one client does not create files for the others.
+Run `agentpack init` once per repo to create `.agentpack/`. In Git repositories it also adds local ignore rules to `info/exclude`, including linked worktrees through their shared Git directory. Then install the client integrations you want to use. Each `agentpack install <target> --write` command configures one client surface; it does not replace `init`, and installing one client does not create files for the others.
 
 Preview first:
 
@@ -227,7 +227,18 @@ The installer creates `.cursor/agents/builder.md` with `model: inherit`. This re
 
 Current Cursor CLI versions do not consistently use standard MCP ToolAnnotations when deciding whether a headless tool call needs approval. The installer therefore merges explicit `Mcp(<server>:<tool>)` allow entries into project-local `.cursor/cli.json` for Agentpack's read-only tools only. Existing settings, allow entries, and deny entries are preserved. State-changing tools such as `record_decision`, `checkpoint`, and `task_finalize` are not allowlisted and continue to follow Cursor's approval policy. Agentpack does not use blanket `--approve-mcps` as an installation default.
 
-The `.cursor/hooks.json` merge adds one `preToolUse` hook for `Write|Delete`. Block mode returns `permission: "deny"` with user and agent feedback. Warn mode returns a silent `permission: "allow"`: Cursor only guarantees `agent_message` feedback when an action is denied, so Agentpack does not claim model-visible warning context on allowed edits. Existing hooks and top-level settings are preserved, and repeated installs are idempotent. Cursor hook failures are fail-open by default, so MCP warnings and the git pre-commit gate remain the reliable client-neutral layers. `agentpack init` and `agentpack install cursor --write` keep `.cursor` local through `.gitignore`; rerun the installer when the pinned Node or Agentpack path no longer exists. `agentpack doctor` treats another stable Agentpack `>=1.2.0 <2.0.0` launcher as structurally compatible only after non-executing file and package checks; it does not claim to prove runtime startup.
+The `.cursor/hooks.json` merge adds one `preToolUse` hook for `Write|Delete`.
+Block mode returns `permission: "deny"` with feedback. Warn mode returns a
+silent `permission: "allow"`, because Cursor only guarantees `agent_message`
+feedback for denied actions. Existing hooks and top-level settings are
+preserved, and repeated installs are idempotent.
+
+Cursor hooks can fail open. MCP warnings and the Git pre-commit gate provide
+additional checks. `agentpack init` and `agentpack install cursor --write` add
+`.cursor` to Git's `info/exclude`. Rerun the installer if the pinned Node or
+Agentpack path moves. `agentpack doctor` checks whether another stable
+Agentpack `>=1.2.0 <2.0.0` launcher has a compatible file and package layout;
+it does not execute that launcher.
 
 After writing the config, open this folder as the Cursor workspace and reload the Cursor window so project MCP is re-read. Then open Cursor's MCP Servers menu and enable `agentpack` if it appears toggled off. Cursor empty-window sessions do not load project `.cursor/mcp.json`.
 
