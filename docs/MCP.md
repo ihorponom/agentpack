@@ -119,7 +119,29 @@ local state or verification. Global checkpoints, patches, resume snapshots and
 pack-level checkpoint status/next actions are excluded. No new tool arguments
 are required.
 
-`task_start` creates a new current Task Passport. It accepts `title`, `objective`, `constraints`, `writeScope`, `nextActions`, `tags`, and `risk`, matching the CLI start semantics. It refuses to replace an active, blocked, or verifying current task; call `task_park` or close that task before starting unrelated MCP work.
+`task_start` creates a new current Task Passport. It accepts `title`, `objective`, `constraints`, `writeScope`, `repositories`, `nextActions`, `tags`, and `risk`, matching the CLI start semantics. It refuses to replace an active, blocked, or verifying current task; call `task_park` or close that task before starting unrelated MCP work.
+
+`repositories` on `task_start` and `task_update` declares explicit additional Git
+checkouts in this ledger, for example:
+
+```json
+{
+  "repositories": [
+    { "id": "web", "worktree": "../web", "writeScope": ["src/features/search"] }
+  ]
+}
+```
+
+Each binding requires `id`, `worktree` and non-empty `writeScope`. Agentpack
+captures local checkout identity, branch and full HEADs. Updates require an
+active task with unknown or pending verification. Existing local scopes append;
+the first binding after import uses only the supplied local scope. The ledger
+root is the implicit `primary` checkout.
+
+Multi-repository Passports and bundles use schema v2; single-repository data
+remains v1. Imported bindings require explicit local checkout paths. See the
+[cross-repository workflow](TASK-PASSPORT.md#changes-across-repositories) for
+scope, gate and portability rules.
 
 `task_status` without arguments prints a compact current-task state line,
 matching `agentpack task status`. Pass `{ "full": true }` for the prior detailed
@@ -145,7 +167,7 @@ every call and its enforcement behavior is unchanged. Inspection by id always sh
 
 `task_park` marks the current Task Passport as `parked` without finalizing verification. Use it when work is intentionally deferred and a different task or phase should become current. A parked task remains switchable and can be resumed later with `task_switch`.
 
-`task_list` without `status` lists open Task Passports (active, parked, blocked, and verifying), in text and JSON; the current task is marked with `*`, and text notes how many closed tasks are hidden. `all: true` includes completed and abandoned history and cannot combine with `open: true` or `status`. `open: true` states the default explicitly and cannot combine with `status`; `open: false` removes the open restriction. `status` accepts a status string or non-empty array (OR); `scope` accepts a path string or non-empty array of overlapping write-scope paths (OR), matching CLI filters. Status and scope filters combine with AND. Closed history remains available with `all: true` or `status: ["completed", "abandoned"]`.
+`task_list` without `status` lists open Task Passports (active, parked, blocked, and verifying), in text and JSON; the current task is marked with `*`, and text notes how many closed tasks are hidden. `all: true` includes completed and abandoned history and cannot combine with `open: true` or `status`. `open: true` states the default explicitly and cannot combine with `status`; `open: false` removes the open restriction. `status` accepts a status string or non-empty array (OR); `scope` accepts one prefix or a non-empty array (OR). Unqualified paths match primary scopes; `id:path` matches an additional binding, as in CLI filters. Status and scope filters combine with AND. Closed history remains available with `all: true` or `status: ["completed", "abandoned"]`.
 
 `compact: true` omits branch/scope from text. With `json: true`, it removes JSON whitespace but preserves every array item field. JSON remains an array, including `[]` for empty results. `limit` is an optional integer from 1 to 1000, applied after filtering in newest-updated-first order. There is no implicit limit. Limited responses report `matched`, `returned`, and `omitted` counts in result metadata under `io.agentpack/taskListPage`; text also notes omitted matches. Increase the limit or narrow filters to see omitted tasks; this is not cursor pagination. Unreadable passports are skipped and warnings remain in text or JSON result metadata under `io.agentpack/taskListWarnings`, even when filters exclude all readable tasks. Listing does not modify the ledger.
 
@@ -167,7 +189,7 @@ unswitchable.
 
 `task close` intentionally has no MCP equivalent. Closing a task without a verification verdict bypasses the lifecycle discipline that `task_park` and `task_finalize` enforce, so it stays a human CLI operation (`agentpack task close`). The full passport JSON view also stays CLI-only (`agentpack task passport`); `task_status` is the MCP summary equivalent.
 
-`task_update` patches the current Task Passport without changing lifecycle status. It accepts `objective`, `constraints`, `writeScope`, `nextActions`, `tags`, and `risk`; list fields append and deduplicate, and omitted fields are preserved. `clearNextActions: true` replaces the next actions with the provided `nextActions` (or clears them) instead of appending, so a stale plan can be corrected before finalize. `replaceConstraints: true` likewise replaces superseded constraints with the provided `constraints`; removed ones are kept as `removedConstraints` in the task-update event. `task_status` with `id` labels gate findings as concerning the actual current task, which gates editing but not that read-only inspection. Empty or no-op updates fail, and unknown risk values are rejected.
+`task_update` patches the current Task Passport without changing lifecycle status. It accepts `objective`, `constraints`, `writeScope`, `repositories`, `nextActions`, `tags`, and `risk`; list fields append and deduplicate, repository bindings upsert by ID, and omitted fields are preserved. `clearNextActions: true` replaces the next actions with the provided `nextActions` (or clears them) instead of appending, so a stale plan can be corrected before finalize. `replaceConstraints: true` likewise replaces superseded constraints with the provided `constraints`; removed ones are kept as `removedConstraints` in the task-update event. `task_status` with `id` labels gate findings as concerning the actual current task, which gates editing but not that read-only inspection. Empty or no-op updates fail, and unknown risk values are rejected.
 
 Batch related fields in one `task_update`. Task mutations return one line with
 lifecycle state, verification status, and the first next action (trimmed for

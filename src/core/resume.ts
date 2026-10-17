@@ -1,6 +1,7 @@
 import { closeSync, existsSync, openSync, readFileSync, readSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { formatRepositories } from "./repositories.js";
 import { clipToTokenBudget, estimateTokens, packSections } from "./budget.js";
 import { getGitInfo } from "./git.js";
 import { resolveRegularFileWithin, sha256File } from "./hash.js";
@@ -219,6 +220,7 @@ function formatCurrentTaskPassport(passport: TaskPassport, git: GitInfo): string
     `- Branch: ${passport.branch || "unknown"}`,
     passport.writeScope.length ? "- Write scope:" : "- Write scope: Not set",
     ...passport.writeScope.map((item) => `  - ${item}`),
+    ...formatRepositories(passport.repositories),
     `- Verification: ${passport.verification.status}${passport.verification.summary ? ` - ${passport.verification.summary}` : ""}`,
     passport.verification.evidence.length ? `- Verification evidence: ${passport.verification.evidence.join(", ")}` : null,
     passport.nextActions.length ? `- ${nextActionsLabel}:` : `- ${nextActionsLabel}: Not set`,

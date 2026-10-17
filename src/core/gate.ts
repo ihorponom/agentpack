@@ -1,9 +1,10 @@
 import path from "node:path";
-import { getGitBranchState, listStagedFiles } from "./git.js";
+import { isWithin, physicalPath, repositoryGit } from "./repositories.js";
+import { getGitBranchState, listStagedEntries, listStagedFiles, readStagedEntries } from "./git.js";
 import { normalizePath } from "./hash.js";
 import { getPackPath, readJson } from "./store.js";
 import { getCurrentPassport, isInWriteScope } from "./tasks.js";
-import type { AgentpackConfig, GateMode, TaskStatus } from "./types.js";
+import type { AgentpackConfig, GateMode, TaskStatus, TaskRepository } from "./types.js";
 
 export type GateDecision = "allow" | "warn" | "block";
 
@@ -35,6 +36,8 @@ export interface GateOptions {
   files?: string[];
   staged?: boolean;
   mode?: GateMode;
+  /** Restrict --staged to one additional repository (or primary). */
+  repository?: string;
 }
 
 const GATE_MODES: readonly GateMode[] = ["off", "warn", "block"];
@@ -99,16 +102,42 @@ export function evaluateGate(root: string, options: GateOptions = {}): GateRepor
     ));
   }
 
-  const { files, outsideRoot } = collectGateFiles(root, options);
+  const repositories = passport?.repositories || [];
+  const bound = collectRepositoryFiles(root, repositories, options);
+  const { files, outsideRoot } = collectGateFiles(root, {
+    ...options,
+    files: bound.primary,
+    // Staged paths are routed with explicit paths above.
+    staged: false
+  });
+  const repositoryTouched = bound.files.some(entry => entry.files.length > 0);
+  for (const file of bound.unsafePrimary) findings.push(violation("out-of-scope", `Path escapes the primary checkout through a symlink: ${file}.`));
 
-  // The gate protects repo code: when every checked path resolves outside the
-  // repository, or a --staged run stages nothing under this pack root (the
-  // commit does not touch this pack), lifecycle findings must not escalate,
-  // and the no-write-scope/branch-drift advisories must not fire either, or
-  // every unrelated commit in a multi-pack repo would get spammed with them.
-  // Invocations with no paths at all keep lifecycle checks and advisories;
-  // they back the MCP gate-warnings layer.
-  const packUntouched = files.length === 0 && (outsideRoot.length > 0 || options.staged === true);
+  // Suppress lifecycle and branch/scope advisories for untouched ledgers.
+  // Calls without paths retain these checks for MCP clients.
+  const packUntouched = !repositoryTouched && files.length === 0 && (outsideRoot.length > 0 || options.staged === true);
+
+  if (options.repository && options.repository !== "primary" && !repositories.some(repo => repo.id === options.repository)) {
+    findings.push(violation("out-of-scope", `Unknown repository binding: ${options.repository}.`));
+  }
+  for (const entry of bound.files) {
+    const repo = entry.repository;
+    if (entry.error) {
+      findings.push(violation("passport-unreadable", entry.error));
+      continue;
+    }
+    const invalid = entry.files.filter(file => {
+      try {
+        const physical = physicalPath(path.resolve(repo.worktree!, file));
+        return !isInWriteScope(file, repo.writeScope) || !isWithin(repo.worktree!, physical) ||
+          !isInWriteScope(path.relative(repo.worktree!, physical), repo.writeScope);
+      } catch { return true; }
+    });
+    if (invalid.length) findings.push(violation("out-of-scope", `Outside repository ${repo.id} write scope: ${invalid.join(", ")}.`));
+    if (!packUntouched && entry.branch !== repo.branch) findings.push({
+      code: "branch-drift", level: "warn", message: `Repository ${repo.id} branch drift: ${repo.branch} -> ${entry.branch}.`
+    });
+  }
 
   if (outsideRoot.length > 0) {
     findings.push({
@@ -134,7 +163,7 @@ export function evaluateGate(root: string, options: GateOptions = {}): GateRepor
           `Outside the task write scope: ${outOfScope.join(", ")}. Extend the scope with \`agentpack task update --write-scope <path>\`, switch tasks, or start the right task.`
         ));
       }
-    } else if (passport.writeScope.length === 0 && mode === "block" && !packUntouched) {
+    } else if (passport.writeScope.length === 0 && mode === "block" && !packUntouched && !repositoryTouched && (files.length > 0 || repositories.length === 0)) {
       findings.push({
         code: "no-write-scope",
         level: "warn",
@@ -168,6 +197,62 @@ export function evaluateGate(root: string, options: GateOptions = {}): GateRepor
       : "allow";
 
   return { mode, decision, taskId, taskStatus, findings };
+}
+
+function collectRepositoryFiles(root: string, repositories: TaskRepository[], options: GateOptions): {
+  primary: string[];
+  unsafePrimary: string[];
+  files: Array<{ repository: TaskRepository; files: string[]; branch?: string; error?: string }>;
+} {
+  const primary: string[] = [];
+  const candidates = new Map((options.files || []).map(file => [path.resolve(root, file), file]));
+  if (options.staged && (!options.repository || options.repository === "primary")) {
+    for (const entry of listStagedEntries(root)) {
+      // A Git link is an entry in its parent's index, not an edit of the child root.
+      if (entry.gitlink) primary.push(entry.path);
+      else candidates.set(path.resolve(root, entry.path), entry.path);
+    }
+  }
+  const entries = repositories.map(repository => {
+    const entry: { repository: TaskRepository; files: string[]; branch?: string; error?: string } = { repository, files: [] };
+    if (!repository.worktree) entry.error = `Repository ${repository.id} is unbound; bind its local worktree explicitly.`;
+    else try {
+      const git = repositoryGit(repository.worktree, repository.identity!);
+      entry.branch = git.branch;
+      if (options.staged && (!options.repository || options.repository === repository.id)) {
+        for (const staged of readStagedEntries(repository.worktree, repository.worktree)) {
+          if (staged.gitlink) entry.files.push(staged.path);
+          else {
+            const absolute = path.resolve(repository.worktree, staged.path);
+            candidates.set(absolute, absolute);
+          }
+        }
+      }
+    } catch { entry.error = `Repository ${repository.id} is unavailable, its checkout identity changed, or its staged state cannot be read.`; }
+    return entry;
+  });
+  const unsafePrimary: string[] = [];
+  const bySpecificity = [...entries].sort((a, b) => (b.repository.worktree?.length || 0) - (a.repository.worktree?.length || 0));
+  const owner = (file: string) => bySpecificity.find(entry => entry.repository.worktree && isWithin(entry.repository.worktree, file));
+  // Check both owners so aliases cannot bypass a narrower checkout scope.
+  for (const [absolute, display] of candidates) {
+    const lexicalOwner = owner(absolute);
+    let physical: string;
+    try { physical = physicalPath(absolute); } catch {
+      if (repositories.length && !lexicalOwner) unsafePrimary.push(display);
+      else if (lexicalOwner) lexicalOwner.files.push(path.relative(lexicalOwner.repository.worktree!, absolute) || ".");
+      else primary.push(display);
+      continue;
+    }
+    const physicalOwner = owner(physical);
+    if (lexicalOwner) lexicalOwner.files.push(path.relative(lexicalOwner.repository.worktree!, absolute) || ".");
+    if (physicalOwner && physicalOwner !== lexicalOwner) physicalOwner.files.push(path.relative(physicalOwner.repository.worktree!, physical) || ".");
+    if (!lexicalOwner && !physicalOwner) {
+      if (repositories.length && isWithin(root, absolute) && !isWithin(physicalPath(root), physical)) unsafePrimary.push(display);
+      else primary.push(display);
+    }
+  }
+  return { primary, unsafePrimary, files: entries };
 }
 
 export function formatGateReport(report: GateReport): string {

@@ -43,6 +43,24 @@ export interface TaskVerification {
   summary: string;
 }
 
+export interface RepositoryIdentity {
+  gitDir: string;
+  device: string;
+  inode: string;
+  createdNs: string;
+}
+
+/** An additional Git checkout; null worktree means portable provenance awaiting local binding. */
+export interface TaskRepository {
+  id: string;
+  worktree: string | null;
+  identity: RepositoryIdentity | null;
+  branch: string | null;
+  baseHead: string | null;
+  currentHead: string | null;
+  writeScope: string[];
+}
+
 export interface TaskPassport {
   schemaVersion: number;
   id: string;
@@ -58,6 +76,7 @@ export interface TaskPassport {
   currentHead: string | null;
   worktree: string;
   writeScope: string[];
+  repositories?: TaskRepository[];
   risk: TaskRisk;
   verification: TaskVerification;
   nextActions: string[];
@@ -104,6 +123,7 @@ export interface TaskBundleTask {
   objective: string;
   constraints: string[];
   writeScope: string[];
+  repositories?: TaskRepository[];
   risk: TaskRisk;
   tags: string[];
   nextActions: string[];
@@ -140,7 +160,7 @@ export interface TaskCheckpoint {
 
 export interface TaskBundle {
   kind: "agentpack.task-bundle";
-  schemaVersion: 1;
+  schemaVersion: 1 | 2;
   bundleId: string;
   exportedAt: string;
   producer: TaskBundleProducer;

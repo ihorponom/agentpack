@@ -78,18 +78,40 @@ export function getGitBranchState(root: string): GitBranchState {
   };
 }
 
-export function listStagedFiles(root: string): string[] {
+export interface StagedEntry {
+  path: string;
+  gitlink: boolean;
+}
+
+/** Strict read for callers that must distinguish failure from an empty index. */
+export function readStagedEntries(root: string, topLevel: string): StagedEntry[] {
+  // --no-renames exposes both sides of a rename; -z preserves arbitrary file names.
+  const raw = execFileSync("git", ["diff", "--cached", "--raw", "--no-renames", "-z", "--"], {
+    cwd: root, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"]
+  }).split("\0");
+  const entries: StagedEntry[] = [];
+  for (let i = 0; i < raw.length - 1; i += 2) {
+    const modes = raw[i]!.match(/^:(\d{6}) (\d{6}) [0-9a-f]+ [0-9a-f]+ [A-Z]\d*$/);
+    const gitPath = raw[i + 1];
+    if (!modes || !gitPath) throw new Error("Cannot parse staged Git entry");
+    const relativePath = path.relative(root, path.resolve(topLevel, gitPath));
+    if (relativePath && relativePath !== ".." && !relativePath.startsWith(`..${path.sep}`) && !path.isAbsolute(relativePath)) {
+      entries.push({ path: relativePath, gitlink: modes[1] === "160000" || modes[2] === "160000" });
+    }
+  }
+  return entries;
+}
+
+export function listStagedEntries(root: string): StagedEntry[] {
   const topLevel = runGit(root, ["rev-parse", "--show-toplevel"]);
   if (!topLevel) {
     return [];
   }
-  // -z disables core.quotePath C-quoting of non-ASCII paths, matching the
-  // NUL-delimited parsing used by listDirtyFiles below.
-  return runGit(root, ["diff", "--cached", "--name-only", "-z"])
-    .split("\0")
-    .filter(Boolean)
-    .map((gitPath) => path.relative(root, path.resolve(topLevel, gitPath)))
-    .filter((relativePath) => relativePath && !relativePath.startsWith("..") && !path.isAbsolute(relativePath));
+  try { return readStagedEntries(root, topLevel); } catch { return []; }
+}
+
+export function listStagedFiles(root: string): string[] {
+  return listStagedEntries(root).map(entry => entry.path);
 }
 
 export function listDirtyFiles(root: string): string[] {

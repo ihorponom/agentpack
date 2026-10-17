@@ -1,6 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, statSync, type Stats, writeFileSync } from "node:fs";
 import path from "node:path";
+import { validRepositories } from "./repositories.js";
 import { getGitInfo } from "./git.js";
 import { getFileRecord, normalizePath, resolveRegularFileWithin, sha256, sha256File } from "./hash.js";
 import { boundTaskCheckpoint, isTaskCheckpoint, MAX_TASK_CHECKPOINT_BYTES, readLocalTaskCheckpoint, type TaskCheckpointContext } from "./checkpoints.js";
@@ -98,7 +99,7 @@ export function exportTaskBundle(root: string, options: BundleExportOptions): Bu
 
   const bundleBase = deepRedact(root, {
     kind: BUNDLE_KIND,
-    schemaVersion: BUNDLE_SCHEMA_VERSION,
+    schemaVersion: passport.repositories?.length ? 2 : BUNDLE_SCHEMA_VERSION,
     producer: {
       name: "agentpack-cli",
       version: options.producerVersion || "unknown"
@@ -110,6 +111,7 @@ export function exportTaskBundle(root: string, options: BundleExportOptions): Bu
       objective: passport.objective,
       constraints: passport.constraints,
       writeScope: passport.writeScope,
+      ...(passport.repositories?.length ? { repositories: passport.repositories.map(repo => ({ ...repo, worktree: null, identity: null })) } : {}),
       risk: passport.risk,
       tags: passport.tags,
       nextActions: passport.nextActions,
@@ -120,7 +122,10 @@ export function exportTaskBundle(root: string, options: BundleExportOptions): Bu
     ...(checkpointContext.checkpoint ? { checkpoint: checkpointContext.checkpoint } : {}),
     sources,
     evidence
-  }) as Omit<TaskBundle, "bundleId" | "exportedAt">;
+  }, (passport.repositories || []).flatMap(repo => repo.worktree ? [repo.worktree] : [])) as Omit<TaskBundle, "bundleId" | "exportedAt">;
+
+  // Recompute evidence digests after path redaction.
+  for (const item of bundleBase.evidence) item.contentDigest = `sha256:${sha256(item.content)}`;
 
   const bundleId = digestBundlePayload(bundleBase);
   const bundle: TaskBundle = {
@@ -373,7 +378,7 @@ export function importTaskBundle(root: string, filePath: string, options: Bundle
       .filter((id) => !evidenceImport.idMap.has(id));
     const git = getGitInfo(root);
     const passport: TaskPassport = {
-      schemaVersion: SCHEMA_VERSION,
+      schemaVersion: bundle.task.repositories?.length ? 2 : SCHEMA_VERSION,
       id: taskId,
       title: bundle.task.title,
       status: "parked",
@@ -387,6 +392,7 @@ export function importTaskBundle(root: string, filePath: string, options: Bundle
       currentHead: git.head,
       worktree: realpathSync(root),
       writeScope: [...bundle.task.writeScope],
+      ...(bundle.task.repositories?.length ? { repositories: bundle.task.repositories.map(repo => ({ ...repo, worktree: null, identity: null, writeScope: [...repo.writeScope] })) } : {}),
       risk: bundle.task.risk,
       verification: {
         status: "unknown",
@@ -1154,16 +1160,17 @@ function sanitizeRepositoryLocator(raw: string): string | undefined {
   return undefined;
 }
 
-function deepRedact(root: string, value: unknown): unknown {
+function deepRedact(root: string, value: unknown, repositoryPaths: string[] = []): unknown {
   if (typeof value === "string") {
-    return redactExportString(root, value);
+    const portable = repositoryPaths.reduce((text, worktree) => text.split(worktree).join("[REDACTED:REPOSITORY]"), value);
+    return redactExportString(root, portable);
   }
   if (Array.isArray(value)) {
-    return value.map((item) => deepRedact(root, item));
+    return value.map((item) => deepRedact(root, item, repositoryPaths));
   }
   if (value && typeof value === "object") {
     return Object.fromEntries(
-      Object.entries(value).map(([key, item]) => [key, deepRedact(root, item)])
+      Object.entries(value).map(([key, item]) => [key, deepRedact(root, item, repositoryPaths)])
     );
   }
   return value;
@@ -1181,7 +1188,7 @@ function assertBundleShape(value: unknown): TaskBundle {
   if (value.kind !== BUNDLE_KIND) {
     throw new Error("Unsupported bundle kind.");
   }
-  if (value.schemaVersion !== BUNDLE_SCHEMA_VERSION) {
+  if (value.schemaVersion !== BUNDLE_SCHEMA_VERSION && value.schemaVersion !== 2) {
     throw new Error(`Unsupported bundle schema version: ${String(value.schemaVersion)}`);
   }
   if (typeof value.bundleId !== "string" || !/^sha256:[0-9a-f]{64}$/.test(value.bundleId)) {
@@ -1209,6 +1216,8 @@ function assertBundleShape(value: unknown): TaskBundle {
     typeof value.task.objective !== "string" ||
     !stringArrayValue(value.task.constraints) ||
     !stringArrayValue(value.task.writeScope) ||
+    (value.task.repositories !== undefined && (!validRepositories(value.task.repositories, true) || value.schemaVersion !== 2)) ||
+    (value.schemaVersion === 2 && (!Array.isArray(value.task.repositories) || value.task.repositories.length === 0)) ||
     !taskRiskValue(value.task.risk) ||
     !stringArrayValue(value.task.tags) ||
     !stringArrayValue(value.task.nextActions) ||
@@ -1265,6 +1274,7 @@ function assertBundleShape(value: unknown): TaskBundle {
 function validateBundleRecords(bundle: TaskBundle): string[] {
   const warnings: string[] = [];
   validateBundleTaskId(bundle.task.id);
+  if (bundle.task.repositories?.length) warnings.push("Additional repositories require explicit local bindings after import; origin HEADs are provenance, not local verification.");
   const sourcePaths = new Set<string>();
   for (const source of bundle.sources) {
     validateRelativeBundlePath(source.path, "source");

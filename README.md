@@ -86,6 +86,7 @@ Codex, Claude Code, and Cursor installs also include an optional builder subagen
 - You switch between Claude Code, Cursor, Codex, or another MCP client.
 - You return to a refactor or bugfix days later.
 - Another agent continues from your checkpoint.
+- You coordinate [one task across multiple repositories](docs/TASK-PASSPORT.md#changes-across-repositories).
 - You work across parts of a monorepo (`api/`, `frontend/`, `cron/`) with short scoped tasks, and the task gate keeps the agent inside the folder the current task owns.
 
 Agentpack context uses tokens too. Its compact output keeps the task state

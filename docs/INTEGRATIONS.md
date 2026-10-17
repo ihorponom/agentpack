@@ -198,7 +198,7 @@ Node executable and absolute Agentpack entrypoint instead of relying on GUI
 
 Claude Desktop has no project-local repo config. If it lists several Agentpack servers, use the repo-specific server key from the generated snippet for the repo you are working in. If you switch one Claude Desktop server from one repo to another, update both that server's `--root` value and `AGENTPACK_ROOT`, then restart Claude Desktop.
 
-One Claude Desktop server entry points to one Agentpack repo at a time. To expose multiple repos at once, add multiple `mcpServers` entries with different names and different `AGENTPACK_ROOT` values, but expect duplicated Agentpack tool names in the client UI.
+One Claude Desktop server entry points to one ledger. Use [repository bindings](TASK-PASSPORT.md#changes-across-repositories) for one task spanning several checkouts. Separate ledgers require separate `mcpServers` entries with distinct names and `AGENTPACK_ROOT` values; their tool names may appear more than once in the client.
 
 For a future low-friction Desktop install, Agentpack should ship a Desktop Extension/MCP bundle instead of asking users to edit JSON manually.
 

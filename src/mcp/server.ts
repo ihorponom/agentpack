@@ -1,3 +1,4 @@
+import { parseRepositoryInputs } from "../core/repositories.js";
 import { appendEvent, requirePackRoot } from "../core/store.js";
 import { buildUsageReport, formatUsageReport } from "../core/usage.js";
 import { buildTaskUsageReport, formatTaskUsageReport, usageTaskId } from "../core/usage-manifest.js";
@@ -37,7 +38,7 @@ import {
   listTasks,
   OPEN_TASK_STATUSES,
   TASK_LIST_STATUSES,
-  scopeOverlaps,
+  taskScopeOverlaps,
   parkCurrentTask,
   startTask,
   switchTask,
@@ -454,6 +455,20 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
           items: { type: "string" },
           description: "Rules the work must respect."
         },
+        repositories: {
+          type: "array",
+          description: "Additional checkouts keyed by id; the ledger root is primary. Local updates append scopes; imported bindings use only the supplied local scope. Requires an active task with pending or unknown verification.",
+          items: {
+            type: "object",
+            properties: {
+              id: { type: "string", description: "Stable unique repository id; primary is reserved." },
+              worktree: { type: "string", description: "Local Git checkout root, absolute or relative to the pack root." },
+              writeScope: { type: "array", items: { type: "string" }, minItems: 1, description: "Non-empty repository-relative prefix paths; dot means the whole checkout." }
+            },
+            required: ["id", "worktree", "writeScope"],
+            additionalProperties: false
+          }
+        },
         writeScope: {
           type: "array",
           items: { type: "string" },
@@ -504,7 +519,7 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
           oneOf: [{ type: "string", enum: [...TASK_LIST_STATUSES] }, { type: "array", minItems: 1, items: { type: "string", enum: [...TASK_LIST_STATUSES] } }]
         },
         scope: {
-          description: "One path or a non-empty array of paths overlapping task write scopes, matching CLI --scope semantics.",
+          description: "One write-scope prefix filter or a non-empty array: unqualified paths select primary; id:path selects an additional repository. Matches CLI --scope.",
           oneOf: [{ type: "string", minLength: 1 }, { type: "array", minItems: 1, items: { type: "string", minLength: 1 } }]
         },
         compact: { type: "boolean", description: "Omit branch/scope in text or JSON whitespace; JSON fields remain unchanged." },
@@ -596,7 +611,7 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
   {
     name: "task_update",
     annotations: UPDATING_TOOL_ANNOTATIONS,
-    description: "Patch the current Task Passport without changing lifecycle status. List fields (constraints, writeScope, nextActions, tags) append and deduplicate; omitted fields are preserved; empty or no-op updates fail. Pass clearNextActions to replace the next-actions list instead of appending, e.g. to clear a stale plan before finalizing. Pass replaceConstraints to replace constraints that are obsolete or superseded; removed constraints stay in the task history.",
+    description: "Patch the current Task Passport without changing lifecycle status. List fields (constraints, writeScope, nextActions, tags) append and deduplicate; repositories upsert by id; omitted fields are preserved; empty or no-op updates fail. Pass clearNextActions to replace the next-actions list instead of appending, e.g. to clear a stale plan before finalizing. Pass replaceConstraints to replace constraints that are obsolete or superseded; removed constraints stay in the task history.",
     inputSchema: {
       type: "object",
       properties: {
@@ -608,6 +623,20 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
           type: "array",
           items: { type: "string" },
           description: "Constraints to append, or the full replacement list when replaceConstraints is true."
+        },
+        repositories: {
+          type: "array",
+          description: "Additional checkouts keyed by id; the ledger root is primary. Local updates append scopes; imported bindings use only the supplied local scope. Requires an active task with pending or unknown verification.",
+          items: {
+            type: "object",
+            properties: {
+              id: { type: "string", description: "Stable unique repository id; primary is reserved." },
+              worktree: { type: "string", description: "Local Git checkout root, absolute or relative to the pack root." },
+              writeScope: { type: "array", items: { type: "string" }, minItems: 1, description: "Non-empty repository-relative prefix paths; dot means the whole checkout." }
+            },
+            required: ["id", "worktree", "writeScope"],
+            additionalProperties: false
+          }
         },
         writeScope: {
           type: "array",
@@ -1144,6 +1173,7 @@ function callTool(root: string, name: string, args: Record<string, unknown>, war
       title: redactForRoot(root, text(args.title)),
       constraints: stringArray(args.constraints).map((item) => redactForRoot(root, item)),
       writeScope: stringArray(args.writeScope),
+      repositories: parseRepositoryInputs(args.repositories),
       nextActions: stringArray(args.nextActions).map((item) => redactForRoot(root, item)),
       tags: stringArray(args.tags)
     };
@@ -1173,7 +1203,7 @@ function callTool(root: string, name: string, args: Record<string, unknown>, war
   if (name === "task_list") {
     const options = taskListOptions(args);
     const { tasks: all, warnings } = listTasks(root);
-    const scoped = all.filter((task) => options.scope.length === 0 || scopeOverlaps(task.writeScope, options.scope));
+    const scoped = all.filter((task) => options.scope.length === 0 || taskScopeOverlaps(task, options.scope));
     const matching = scoped.filter((task) => options.status.length === 0 || options.status.includes(task.status));
     const hidden = options.defaultOpen ? scoped.length - matching.length : 0;
     const tasks = options.limit === undefined ? matching : matching.slice(0, options.limit);
@@ -1245,6 +1275,7 @@ function callTool(root: string, name: string, args: Record<string, unknown>, war
     const updateOptions: TaskUpdateOptions = {
       constraints: stringArray(args.constraints).map((item) => redactForRoot(root, item)),
       writeScope: stringArray(args.writeScope),
+      repositories: parseRepositoryInputs(args.repositories),
       nextActions: stringArray(args.nextActions).map((item) => redactForRoot(root, item)),
       tags: stringArray(args.tags)
     };

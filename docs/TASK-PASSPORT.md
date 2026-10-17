@@ -1,12 +1,7 @@
 # Task Passport
 
-Task Passport is the handoff artifact for one coherent unit of agent work.
-
-It exists for continuity, not bureaucracy.
-
-It captures the reviewed state a future agent needs in order to continue the current task without rediscovering context, repeating dead ends, or guessing what is safe to touch.
-
-It stores reviewed durable state, not raw agent activity.
+A Task Passport records one task's objective, constraints, scope, lifecycle,
+verification and next actions for handoff between sessions or clients.
 
 Read-only `task audit` can surface bounded ceremony review candidates from retained
 evidence and lifecycle history. These are observable patterns for human judgment,
@@ -16,10 +11,12 @@ never lifecycle gates or proof that a workflow was wasteful.
 
 Default rule:
 
-- one active Task Passport owns a repo worktree
-- a repo may keep many completed or parked passports over time
-- worktrees can carry different active passports
-- the shared repo source cache remains repo-level
+- one current Task Passport per ledger
+- a ledger may retain completed and parked passports
+- separate worktrees can maintain separate ledgers
+- source-cache paths are relative to the ledger root
+- one integration Passport may explicitly bind additional Git checkouts;
+  they share the lifecycle and verification but retain separate scopes and HEADs
 - each passport owns its objective, constraints, write scope, next actions,
   lifecycle events, and verification references
 - source records, decisions, dead ends, evidence files, and checkpoints remain
@@ -135,6 +132,76 @@ Optional but recommended:
 - `verification`
 - `tags`
 - `closedAt`
+
+### Changes across repositories
+
+Use one ledger for a task that spans several Git checkouts. Additional checkouts
+do not need a separate `.agentpack/` directory. The existing worktree, branch,
+HEAD and scope fields describe the primary checkout.
+
+Run commands from the ledger root. Repeat `--repository` to add checkouts:
+
+```sh
+agentpack task start "Integrate search" --write-scope src/search \
+  --repository '{"id":"web","worktree":"../web","writeScope":["src/features/search","tests"]}' \
+  --repository '{"id":"infra","worktree":"../infra","writeScope":["environments/staging"]}'
+
+agentpack task update \
+  --repository '{"id":"web","worktree":"../web","writeScope":["src/api-client"]}'
+
+agentpack task gate --staged
+agentpack task gate --staged --repository web
+agentpack task list --scope web:src/features/search
+```
+
+Each binding requires:
+
+- A unique `id`. The name `primary` is reserved for the ledger checkout.
+- An existing Git checkout root in `worktree`. Linked worktrees are supported.
+  The checkout must have a commit.
+- A non-empty `writeScope` of repository-relative literal prefixes. `.` selects
+  the whole checkout. Globs are unsupported.
+
+Worktree paths resolve from the ledger root and are stored canonically. Duplicate
+paths and scopes that escape their checkout are rejected.
+
+Before binding a checkout, create the intended branch. To change bindings, the
+task must be active with unknown or pending verification. Local scope updates
+append paths. They preserve the original branch and base HEAD. A bound checkout
+must retain its path and Git-directory identity. To replace it, create a new
+task. Removing bindings is unsupported.
+
+Use `--staged` to check all bound indexes. Use `--repository <id>` to select one
+index, including `primary`. The selector does not change how file paths resolve.
+Explicit `--file` paths remain relative to the ledger root or absolute.
+Ordinary staged files follow the most specific lexical and physical checkout
+scopes. Git-link pointer updates use the parent scope.
+
+For task-list filters, use `id:path` to select an additional checkout. Use
+unqualified paths to select primary scopes.
+
+If an additional checkout is unavailable or unbound, the gate reports a finding.
+Branch drift produces an advisory. Final verification requires each additional
+checkout to be readable and on its recorded branch. It captures full HEADs.
+Park, switch and finalize preserve those HEADs. Record repository and integration
+checks in shared evidence. Source-cache paths remain relative to the ledger root.
+
+Configure external hooks to invoke the selected ledger explicitly. Repository
+bindings do not configure hooks. See [integration setup](INTEGRATIONS.md).
+
+Multi-repository Passports and bundles use schema v2. They require a compatible
+Agentpack version. Single-repository data remains schema v1.
+
+Export clears local worktree paths and checkout identities. Import creates a
+parked task with unknown local verification and unbound checkouts. To continue:
+
+1. Switch to the imported task.
+2. Bind each ID with `task update --repository ...`.
+3. Verify the result locally.
+
+The first local binding uses only the supplied scope. Later local updates append
+paths to that scope. The retained bundle preserves the original scopes and Git
+state as provenance.
 
 ## Statuses
 
@@ -258,15 +325,15 @@ bound HEAD remain frozen. The option never finalizes work or clears blockers.
 
 **`task audit`** is a diagnostic pass for continuity risk. It checks the current passport for branch/head drift, missing next actions, open verification, closed-current-task anomalies, and source-cache metadata drift. Metadata warnings are shown separately so stale source records do not look like action-required task failures.
 
-`task update` patches the current passport without changing lifecycle status. It can add objective, constraints, write scope, next actions, tags, and risk after the task has already started. List fields append and deduplicate; omitted fields are preserved. `--clear-next-actions` replaces the next actions with the provided `--next` items (or empties the list) so a stale plan can be corrected before handoff or finalize. `--replace-constraints` replaces constraints the same way when they are obsolete or superseded; the removed constraints are recorded as `removedConstraints` in the task-update event and shown in the TUI Timeline, so history is kept without a schema change. `task status --id` and handoff label `Verification evidence:` to show only evidence linked to the verdict, not all stored evidence. Empty or no-op updates fail, and unknown risk values are rejected.
+`task update` patches the current passport without changing lifecycle status. It updates objective, constraints, write scope, repository bindings, next actions, tags, and risk. List fields append and deduplicate; bindings follow the [repository update rules](#changes-across-repositories). Omitted fields are preserved. `--clear-next-actions` replaces the next actions with the provided `--next` items (or empties the list) so a stale plan can be corrected before handoff or finalize. `--replace-constraints` replaces constraints the same way when they are obsolete or superseded; the removed constraints are recorded as `removedConstraints` in the task-update event and shown in the TUI Timeline, so history is kept without a schema change. `task status --id` and handoff label `Verification evidence:` to show only evidence linked to the verdict, not all stored evidence. Empty or no-op updates fail, and unknown risk values are rejected.
 
 `task verify` updates the verification state. Without flags it marks verification as `pending`; with `--status`, `--evidence`, and `--summary` it links verification to recorded evidence so the audit warning can become a reviewed result. Pending output makes clear that the task stays active for fixes and intermediate checks. A final verdict (`passed`, `failed`, or `accepted`) binds the reviewed HEAD, moves the task lifecycle to `verifying`, and reports the freeze consequence; only an explicit later verification update may rebind that HEAD. Recording `pending` (or `unknown`) again — verification found more work — moves it back to `active` so the gate stops treating continued edits as out of lifecycle. `task update-verification` remains available as a compatibility alias.
 
 New `--evidence` IDs on `task verify` and `task finalize` must match recorded evidence events in the bounded recent event-log window. An unknown ID rejects the whole update before the Passport or task event is written; the error names id-shaped missing IDs and only counts other values. Already linked IDs can be repeated after their events leave that window; existing links in older Passports remain readable and are not migrated.
 
-`task finalize` is the compact end-of-task ritual. It closes the current task only after verification is already `passed`, `failed`, or `accepted`, or when that final status is passed explicitly with `--status`. It refuses to close unknown or pending verification by default. Direct finalization binds the live HEAD when verification was non-final; finalizing an already-final verdict preserves its bound HEAD. Its output reports the bound HEAD and completed/frozen consequence. `task finalize --status accepted` also refuses to close a task with remaining next actions unless `--force` is passed; use `task park` for deferred work. `task close` remains available for explicit manual closure.
+`task finalize` closes the current task only after verification is already `passed`, `failed`, or `accepted`, or when that final status is passed explicitly with `--status`. It refuses to close unknown or pending verification by default. Direct finalization binds the live HEAD when verification was non-final; finalizing an already-final verdict preserves its bound HEAD. Its output reports the bound HEAD and completed/frozen consequence. `task finalize --status accepted` also refuses to close a task with remaining next actions unless `--force` is passed; use `task park` for deferred work. `task close` remains available for explicit manual closure.
 
-After closing, `task finalize` prints hygiene advisories when they apply: uncommitted changes still inside the task write scope (commit first, or park until committed), remaining next actions that will now read as historical, and no repo checkpoint recorded since the task started. Advisories never block and have no configuration: finalize is a ritual, not a gate.
+After closing, `task finalize` prints hygiene advisories when they apply: uncommitted changes still inside the task write scope (commit first, or park until committed), remaining next actions that will now read as historical, and no repo checkpoint recorded since the task started. These advisories are informational and do not block finalization.
 
 ## Monorepo Focus Pattern
 
@@ -289,11 +356,11 @@ the Git working tree. Export, inspect, read-only import planning, and explicit
 apply are all implemented: `bundle import` defaults to a read-only plan, and
 `--write` is required to change destination pack state.
 
-The first bundle format is one inspectable UTF-8 JSON file, conventionally
+A task bundle is one inspectable UTF-8 JSON file, conventionally
 named `*.agentpack-bundle.json`. It is not a zip archive and cannot contain
 scripts, binaries, source files, or hidden client configuration.
 
-Example bundle:
+Single-repository bundle (schema v1):
 
 ```json
 {
@@ -346,8 +413,8 @@ provenance; importing them does not claim that the destination workspace has
 the same Git state or has locally re-verified the task.
 
 An optional `checkpoint` field carries the same bounded metadata shown in
-handoff. Bundles without it remain valid schema v1 bundles. Older importers
-retain the field in the stored bundle but do not display it. A destination
+handoff. The field is optional in both bundle schemas. Schema v1 importers
+without checkpoint support retain the field but do not display it. A destination
 handoff uses imported checkpoint metadata only until a valid local checkpoint
 exists for that task. Re-export preserves the origin task id and Git ref;
 `--as-new` changes the destination task id, not checkpoint provenance.

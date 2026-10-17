@@ -710,6 +710,7 @@ function passportLines(task: TuiTask): string[] {
     `Blocked reason: ${passport.blockedReason || "—"}`,
     `Tags: ${passport.tags.join(", ") || "—"}`,
     `Scope: ${passport.writeScope.join(", ") || "—"}`,
+    ...(passport.repositories || []).map(repo => `Repository ${repo.id}: ${repo.worktree || "(unbound)"}; branch ${repo.branch || "—"}; HEAD ${repo.currentHead || "—"}; scope ${repo.writeScope.join(", ")}`),
     `Verification: ${passport.verification.status} — ${passport.verification.summary}`,
     `Evidence IDs: ${passport.verification.evidence.join(", ") || "—"}`,
     "",

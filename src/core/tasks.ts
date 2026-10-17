@@ -1,5 +1,6 @@
 import { closeSync, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, readSync, realpathSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
+import { bindRepositories, formatRepositories, repositoryWarnings, snapshotRepositories, validRepositories, type RepositoryInput } from "./repositories.js";
 import { getGitInfo, listDirtyFiles } from "./git.js";
 import { normalizePath, resolveRegularFileWithin } from "./hash.js";
 import { createId } from "./ids.js";
@@ -21,6 +22,7 @@ import {
 import type {
   AgentpackEvent,
   TaskPassport,
+  TaskRepository,
   TaskRisk,
   TaskStatus,
   TaskVerification
@@ -36,6 +38,7 @@ export interface TaskStartOptions {
   objective?: string;
   constraints?: string[];
   writeScope?: string[];
+  repositories?: RepositoryInput[];
   nextActions?: string[];
   tags?: string[];
   risk?: TaskRisk;
@@ -49,6 +52,7 @@ export interface TaskListItem {
   current: boolean;
   updatedAt: string;
   writeScope: string[];
+  repositories?: TaskRepository[];
 }
 
 export interface TaskVerificationUpdateOptions {
@@ -70,6 +74,7 @@ export interface TaskUpdateOptions {
   objective?: string;
   constraints?: string[];
   writeScope?: string[];
+  repositories?: RepositoryInput[];
   nextActions?: string[];
   clearNextActions?: boolean;
   /** Replace constraints with the provided list; removed ones stay in the task-update event. */
@@ -182,7 +187,7 @@ export function startTask(root: string, options: TaskStartOptions): TaskPassport
     const git = getGitInfo(root);
     const id = createTaskId(options.title);
     const passport: TaskPassport = {
-      schemaVersion: SCHEMA_VERSION,
+      schemaVersion: options.repositories?.length ? 2 : SCHEMA_VERSION,
       id,
       title: options.title.trim(),
       status: "active",
@@ -196,6 +201,7 @@ export function startTask(root: string, options: TaskStartOptions): TaskPassport
       currentHead: git.head,
       worktree: root,
       writeScope: normalizeWriteScope(root, options.writeScope || []),
+      ...(options.repositories?.length ? { repositories: bindRepositories(root, [], options.repositories) } : {}),
       risk: options.risk || "unknown",
       verification: {
         status: "unknown",
@@ -211,7 +217,8 @@ export function startTask(root: string, options: TaskStartOptions): TaskPassport
     appendTaskEvent(root, passport.id, "task-start", {
       title: passport.title,
       status: passport.status,
-      writeScope: passport.writeScope
+      writeScope: passport.writeScope,
+      ...(passport.repositories ? { repositories: passport.repositories } : {})
     });
     return passport;
   });
@@ -244,7 +251,8 @@ export function listTasks(root: string): TaskListResult {
       branch: passport.branch,
       current: passport.id === current,
       updatedAt: passport.updatedAt,
-      writeScope: passport.writeScope
+      writeScope: passport.writeScope,
+      ...(passport.repositories ? { repositories: passport.repositories } : {})
     }));
 
   return { tasks, warnings };
@@ -257,7 +265,8 @@ export function formatTaskList(tasks: TaskListItem[], compact = false): string {
     `[${task.status}]`,
     task.title,
     !compact && task.branch ? `(branch: ${task.branch})` : "",
-    !compact && task.writeScope.length > 0 ? `(scope: ${formatWriteScope(task.writeScope)})` : ""
+    !compact && task.writeScope.length > 0 ? `(scope: ${formatWriteScope(task.writeScope)})` : "",
+    task.repositories?.length ? `(repositories: ${task.repositories.map(repo => repo.id).join(", ")})` : ""
   ].filter(Boolean).join(" ")).join("\n");
 }
 
@@ -265,6 +274,20 @@ function formatWriteScope(writeScope: string[]): string {
   const shown = writeScope.slice(0, 3);
   const rest = writeScope.length - shown.length;
   return rest > 0 ? `${shown.join(", ")} +${rest} more` : shown.join(", ");
+}
+
+/** Unqualified paths retain primary semantics; id:path selects an additional binding. */
+export function taskScopeOverlaps(task: TaskListItem, filters: string[]): boolean {
+  return filters.some(filter => {
+    const separator = filter.indexOf(":");
+    if (separator < 0) return scopeOverlaps(task.writeScope, [filter]);
+    const id = filter.slice(0, separator);
+    const target = filter.slice(separator + 1);
+    if (!target) return false;
+    if (id === "primary") return scopeOverlaps(task.writeScope, [target]);
+    const repo = task.repositories?.find(repo => repo.id === id);
+    return repo ? scopeOverlaps(repo.writeScope, [target]) : false;
+  });
 }
 
 export function scopeOverlaps(writeScope: string[], filters: string[]): boolean {
@@ -452,11 +475,17 @@ export function updateCurrentTaskPassport(root: string, options: TaskUpdateOptio
     const nextActions = uniqueStrings(options.nextActions || []);
     const tags = uniqueStrings(options.tags || []);
 
-    if (!options.clearNextActions && !options.replaceConstraints && !hasTaskUpdate({ objective, constraints, writeScope, nextActions, tags }, options.risk)) {
+    if (!options.clearNextActions && !options.replaceConstraints && !hasTaskUpdate({ objective, constraints, writeScope, nextActions, tags, ...(options.repositories ? { repositories: options.repositories } : {}) }, options.risk)) {
       throw new Error("task update requires at least one non-empty field");
     }
 
     const patch: Partial<TaskPassport> = {};
+    if (options.repositories?.length) {
+      if (existing.status !== "active" || FINAL_VERIFICATION_STATUSES.has(existing.verification.status)) {
+        throw new Error("Repository bindings can only change on an active task with pending or unknown verification");
+      }
+      patch.repositories = bindRepositories(root, existing.repositories || [], options.repositories);
+    }
     if (objective) {
       patch.objective = objective;
     }
@@ -535,6 +564,8 @@ export function updateCurrentTaskVerification(root: string, options: TaskVerific
       status: nextStatus,
       verification,
       currentHead: git.head,
+      ...(existing.repositories && FINAL_VERIFICATION_STATUSES.has(verification.status)
+        ? { repositories: snapshotRepositories(existing.repositories) } : {}),
       updatedAt: now
     };
     // A verify-driven unblock (blocked -> active/verifying) resolves the block,
@@ -548,6 +579,7 @@ export function updateCurrentTaskVerification(root: string, options: TaskVerific
       status: passport.status,
       objective: passport.objective,
       writeScope: passport.writeScope,
+      ...(passport.repositories ? { repositories: passport.repositories } : {}),
       nextActions: passport.nextActions,
       risk: passport.risk,
       reason: passport.blockedReason || "",
@@ -595,10 +627,14 @@ export function finalizeCurrentTask(root: string, options: TaskFinalizeOptions =
   });
 }
 
-// Advisory by design: finalize is a ritual, not a gate. These never block and
-// have no config knob; they only surface hygiene gaps at the moment of closure.
+// Finalization advisories report incomplete task hygiene without blocking closure.
 export function finalizeAdvisories(root: string, passport: TaskPassport): string[] {
-  const advisories: string[] = [];
+  const advisories: string[] = repositoryWarnings(passport.repositories || []);
+  for (const repo of passport.repositories || []) {
+    if (!repo.worktree) continue;
+    const dirty = listDirtyFiles(repo.worktree).filter(file => isInWriteScope(file, repo.writeScope));
+    if (dirty.length) advisories.push(`Repository ${repo.id} has uncommitted in-scope changes: ${dirty.slice(0, 5).join(", ")}.`);
+  }
 
   const adversarialAdvisory = adversarialVerificationAdvisory(root, passport);
   if (adversarialAdvisory) advisories.push(adversarialAdvisory);
@@ -671,12 +707,14 @@ export function auditCurrentTask(root: string, sourceStatuses: TaskAuditSourceSt
     issues.push({ level: "warn", message: `Verification is ${passport.verification.status}. Attach evidence or close the loop before handoff.` });
   }
 
+  for (const warning of repositoryWarnings(passport.repositories || [])) issues.push({ level: "warn", message: warning });
+
   const adversarialAdvisory = adversarialVerificationAdvisory(root, passport);
   if (adversarialAdvisory) {
     issues.push({ level: "warn", category: "adversarial-verification", message: adversarialAdvisory });
   }
 
-  if (!passport.writeScope.length) {
+  if (!passport.writeScope.length && !passport.repositories?.some(repo => repo.writeScope.length)) {
     issues.push({ level: "warn", message: "Task has no write scope; future agents may not know the intended blast radius." });
   }
 
@@ -981,7 +1019,7 @@ function hasAdversarialPlaceholder(value: string): boolean {
 }
 
 function hasCodeScope(passport: TaskPassport): boolean {
-  return passport.writeScope.some((scope) => !isDocumentationScope(scope));
+  return [...passport.writeScope, ...(passport.repositories || []).flatMap(repo => repo.writeScope)].some((scope) => !isDocumentationScope(scope));
 }
 
 function isDocumentationScope(scope: string): boolean {
@@ -1018,6 +1056,7 @@ export function formatTaskStatus(root: string, id?: string, full = false): strin
     ...formatList(passport.constraints),
     "Write scope:",
     ...formatList(passport.writeScope),
+    ...formatRepositories(passport.repositories),
     "Next actions:",
     ...formatList(passport.nextActions),
     `Drift: ${formatTaskDrift(passport, git)}`,
@@ -1048,7 +1087,7 @@ export function formatCurrentTaskStatus(root: string, full = false): string {
   const drift = formatTaskDrift(passport, git);
   if (!full) {
     const writeScope = passport.writeScope.length > 0 ? passport.writeScope.join(", ") : "(none)";
-    return `Task ${passport.id}. ${formatTaskStateLine(root, passport)}; Branch: ${passport.branch || "(unknown)"}; Write scope: ${redactForRoot(root, writeScope).replace(/\s+/gu, " ")}; Drift: ${redactForRoot(root, drift).replace(/\s+/gu, " ")}`;
+    return `Task ${passport.id}. ${formatTaskStateLine(root, passport)}; Branch: ${passport.branch || "(unknown)"}; Write scope: ${redactForRoot(root, writeScope).replace(/\s+/gu, " ")}; ${redactForRoot(root, formatRepositories(passport.repositories).join(" | ")).replace(/\s+/gu, " ")}${passport.repositories?.length ? "; " : ""}Drift: ${redactForRoot(root, drift).replace(/\s+/gu, " ")}`;
   }
   const nextAction = passport.nextActions[0] || "(none)";
   const writeScope = passport.writeScope.length > 0 ? passport.writeScope.join(", ") : "(none)";
@@ -1063,6 +1102,7 @@ export function formatCurrentTaskStatus(root: string, full = false): string {
     `Verification: ${verification}`,
     `Next: ${nextAction}`,
     `Write scope: ${writeScope}`,
+    ...formatRepositories(passport.repositories),
     `Drift: ${drift}`
   ].filter((line): line is string => Boolean(line)).join("\n");
 }
@@ -1113,6 +1153,7 @@ export function formatTaskPassportHandoff(
     ...formatList(passport.constraints),
     "Write scope:",
     ...formatList(passport.writeScope),
+    ...formatRepositories(passport.repositories),
     "Next actions:",
     ...formatList(passport.nextActions),
     ...formatTaskCheckpoint(checkpointContext),
@@ -1128,7 +1169,7 @@ function taskHandoffWarnings(
   git: ReturnType<typeof getGitInfo>,
   sourceStatuses: TaskAuditSourceStatus[]
 ): { task: string[]; metadata: string[] } {
-  const task: string[] = [];
+  const task: string[] = repositoryWarnings(passport.repositories || []);
   const metadata: string[] = [];
   const staleSources = sourceStatuses.filter((source) => source.status !== "unchanged");
 
@@ -1141,7 +1182,7 @@ function taskHandoffWarnings(
   if (passport.verification.status === "unknown" || passport.verification.status === "pending") {
     task.push(`Verification is ${passport.verification.status}. Attach evidence or close the loop before handoff.`);
   }
-  if (!passport.writeScope.length) {
+  if (!passport.writeScope.length && !passport.repositories?.some(repo => repo.writeScope.length)) {
     task.push("Task has no write scope; future agents may not know the intended blast radius.");
   }
   if (git.available) {
@@ -1213,9 +1254,13 @@ function patchCurrentTask(
     const now = new Date().toISOString();
     const git = getGitInfo(root);
     const resolvedPatch = typeof patch === "function" ? patch(existing) : patch;
+    const repositories = resolvedPatch.repositories || existing.repositories;
+    const finalizing = eventType === "task-finalize" && !FINAL_VERIFICATION_STATUSES.has(existing.verification.status);
     const passport: TaskPassport = {
       ...existing,
       ...resolvedPatch,
+      ...(repositories?.length ? { schemaVersion: 2 } : {}),
+      ...(repositories && finalizing ? { repositories: snapshotRepositories(repositories) } : {}),
       // A final verdict binds the reviewed code state. Routine metadata
       // updates, parking, switching, and finalization must preserve it; an
       // explicit verification update below is the deliberate rebinding path.
@@ -1236,6 +1281,7 @@ function patchCurrentTask(
       status: passport.status,
       objective: passport.objective,
       writeScope: passport.writeScope,
+      ...(passport.repositories ? { repositories: passport.repositories } : {}),
       nextActions: passport.nextActions,
       risk: passport.risk,
       reason: passport.blockedReason || "",
@@ -1248,6 +1294,7 @@ function patchCurrentTask(
 
 function hasTaskUpdate(options: Omit<TaskUpdateOptions, "risk">, risk: TaskRisk | undefined): boolean {
   return Boolean(
+    (options.repositories && options.repositories.length > 0) ||
     options.objective ||
     risk !== undefined ||
     (options.constraints && options.constraints.length > 0) ||
@@ -1263,6 +1310,7 @@ function mergeStringLists(existing: string[], incoming: string[] | undefined): s
 
 function changesTaskPassport(existing: TaskPassport, patch: Partial<TaskPassport>): boolean {
   return Boolean(
+    (patch.repositories !== undefined && JSON.stringify(patch.repositories) !== JSON.stringify(existing.repositories || [])) ||
     (patch.objective !== undefined && patch.objective !== existing.objective) ||
     (patch.risk !== undefined && patch.risk !== existing.risk) ||
     (patch.constraints !== undefined && !sameStringList(patch.constraints, existing.constraints)) ||
@@ -1321,7 +1369,9 @@ function validateTaskPassport(value: unknown, taskId: string): TaskPassport {
   const risk = value.risk;
   const verification = value.verification;
   if (
-    value.schemaVersion !== SCHEMA_VERSION ||
+    (value.schemaVersion !== SCHEMA_VERSION && value.schemaVersion !== 2) ||
+    (value.schemaVersion === 2 && (!Array.isArray(value.repositories) || value.repositories.length === 0)) ||
+    (value.repositories !== undefined && value.schemaVersion !== 2) ||
     value.id !== taskId ||
     typeof value.title !== "string" ||
     !TASK_STATUSES.has(status as TaskStatus) ||
@@ -1335,6 +1385,7 @@ function validateTaskPassport(value: unknown, taskId: string): TaskPassport {
     !(value.currentHead === null || typeof value.currentHead === "string") ||
     typeof value.worktree !== "string" ||
     !stringArrayValue(value.writeScope) ||
+    (value.repositories !== undefined && !validRepositories(value.repositories)) ||
     !(risk === "low" || risk === "medium" || risk === "high" || risk === "unknown") ||
     !isRecord(verification) ||
     !VERIFICATION_STATUSES.has(verification.status as TaskVerification["status"]) ||

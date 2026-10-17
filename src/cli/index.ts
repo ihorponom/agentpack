@@ -2,6 +2,7 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
+import { parseRepositoryInputs } from "../core/repositories.js";
 import { createCheckpoint, diffCheckpoints } from "../core/checkpoints.js";
 import {
   exportTaskBundle,
@@ -45,7 +46,7 @@ import {
   TASK_LIST_STATUSES,
   parkCurrentTask,
   readPassport,
-  scopeOverlaps,
+  taskScopeOverlaps,
   startTask,
   switchTask,
   type TaskUpdateOptions,
@@ -322,7 +323,7 @@ Setup:
   agentpack mcp [--root <path>]
 
 Task Passport:
-  agentpack task start <title> [--objective <text>] [--write-scope <path>] [--next <item>] [--risk low|medium|high]
+  agentpack task start <title> [--objective <text>] [--write-scope <path>] [--repository <json>] [--next <item>] [--risk low|medium|high]
   agentpack task status [--id <id>] [--full]
   agentpack task handoff
   agentpack task verify --status passed|failed|accepted [--evidence <id>] [--summary <text>]
@@ -557,9 +558,9 @@ objective, constraints, write scope, next actions, verification, evidence,
 handoff context, and lifecycle status.
 
 Common workflow:
-  agentpack task start <title> [--objective <text>] [--write-scope <path>] [--next <item>] [--risk low|medium|high]
+  agentpack task start <title> [--objective <text>] [--write-scope <path>] [--repository <json>] [--next <item>] [--risk low|medium|high]
   agentpack task status [--id <id>] [--full]
-  agentpack task update [--objective <text>] [--constraint <text>] [--replace-constraints] [--write-scope <path>] [--next <item>] [--clear-next-actions] [--risk low|medium|high]
+  agentpack task update [--objective <text>] [--constraint <text>] [--replace-constraints] [--write-scope <path>] [--repository <json>] [--next <item>] [--clear-next-actions] [--risk low|medium|high]
   agentpack task verify [--status pending|passed|failed|accepted] [--evidence <id>] [--summary <text>]
   agentpack task handoff
   agentpack task finalize [--status passed|failed|accepted] [--evidence <id>] [--summary <text>] [--force]
@@ -569,7 +570,7 @@ Inspection and coordination:
   agentpack task passport
   agentpack task switch <id> [--park-current]
   agentpack task audit [--json]
-  agentpack task gate [--file <path> ...] [--staged] [--client claude|codex|cursor] [--json]
+  agentpack task gate [--file <path> ...] [--staged] [--repository <id>] [--client claude|codex|cursor] [--json]
   agentpack task park
   agentpack task block --reason <text>
   agentpack task close
@@ -584,6 +585,8 @@ Notes:
   task audit and finalize print advisory-only adversarial-verification guidance: low risk needs a concrete self-challenge; medium/high needs independent read-only review plus a named disconfirming check. Generic risks-considered or tests-passed prose is not enough.
   task finalize prints advisories (uncommitted in-scope changes, remaining next actions, missing checkpoint); they never block.
   task gate checks the current passport lifecycle, write scope, and branch before edits or commits.
+  Repeat --repository on task start/update with JSON {"id":"api","worktree":"../api","writeScope":["src"]}.
+  task gate --staged checks all bound checkouts; --repository <id> selects one (primary is reserved).
   task gate --client adapts native Claude, Codex, or Cursor pre-tool hook JSON on stdin.
   task gate warns by default; set "gateMode": "block" in .agentpack/config.json to enforce (exit code 2).
   task gate exits 0 quietly when no .agentpack exists, so hooks are safe in non-Agentpack repos.
@@ -656,6 +659,11 @@ function taskListStatusFilters(options: Record<string, ArgValue>): { statuses: s
   return { statuses: values, defaultOpen: false };
 }
 
+function requiredRepositoryId(value: unknown): string {
+  if (typeof value !== "string" || !value.trim()) throw new Error("task gate --repository requires one binding id");
+  return value;
+}
+
 function gateCommand(root: string | null, args: string[]): void {
   const parsed = parseArgs(args);
   const client = stringOption(parsed.options.client);
@@ -672,7 +680,8 @@ function gateCommand(root: string | null, args: string[]): void {
 
   const gateOptions: GateOptions = {
     files: toArray(parsed.options.file),
-    staged: Boolean(parsed.options.staged)
+    staged: Boolean(parsed.options.staged),
+    ...(parsed.options.repository !== undefined ? { repository: requiredRepositoryId(parsed.options.repository) } : {})
   };
 
   if (client) {
@@ -809,6 +818,7 @@ function taskCommand(root: string, rest: string[]): void {
       objective: redactForRoot(root, stringOption(parsed.options.objective)),
       constraints: toArray(parsed.options.constraint).map((item) => redactForRoot(root, item)),
       writeScope: toArray(parsed.options["write-scope"]),
+      repositories: parseRepositoryInputs(parsed.options.repository === undefined ? undefined : (typeof parsed.options.repository === "boolean" ? true : toArray(parsed.options.repository))),
       nextActions: toArray(parsed.options.next).map((item) => redactForRoot(root, item)),
       tags: toArray(parsed.options.tag)
     };
@@ -840,7 +850,7 @@ function taskCommand(root: string, rest: string[]): void {
     }
 
     const scoped = scopeFilters.length > 0
-      ? all.filter((task) => scopeOverlaps(task.writeScope, scopeFilters))
+      ? all.filter((task) => taskScopeOverlaps(task, scopeFilters))
       : all;
     const tasks = statusFilters.length > 0 ? scoped.filter((task) => statusFilters.includes(task.status)) : scoped;
     const hidden = defaultOpen ? scoped.length - tasks.length : 0;
@@ -885,6 +895,7 @@ function taskCommand(root: string, rest: string[]): void {
     const updateOptions: TaskUpdateOptions = {
       constraints: toArray(parsed.options.constraint).map((item) => redactForRoot(root, item)),
       writeScope: toArray(parsed.options["write-scope"]),
+      repositories: parseRepositoryInputs(parsed.options.repository === undefined ? undefined : (typeof parsed.options.repository === "boolean" ? true : toArray(parsed.options.repository))),
       nextActions: toArray(parsed.options.next).map((item) => redactForRoot(root, item)),
       tags: toArray(parsed.options.tag)
     };
