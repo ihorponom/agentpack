@@ -4887,17 +4887,18 @@ test("task gate rejects unknown modes, fail-closes on unreadable passports, and 
   assert.equal(noScope.decision, "warn", "missing write scope must surface, not block");
   assert.deepEqual(noScope.findings.map((finding) => finding.code), ["no-write-scope"]);
 
-  const outside = JSON.parse(run(dir, ["task", "gate", "--file", "../elsewhere.txt", "--file", "/tmp/elsewhere.txt", "--json"])) as {
+  const absoluteOutside = path.resolve(dir, "../absolute-elsewhere.txt");
+  const outside = JSON.parse(run(dir, ["task", "gate", "--file", "../elsewhere.txt", "--file", absoluteOutside, "--json"])) as {
     findings: Array<{ code: string; level: string; message: string }>;
   };
   const outsideFinding = outside.findings.find((finding) => finding.code === "outside-root");
   assert.ok(outsideFinding, "paths outside the repository must produce a finding, not a silent skip");
   assert.equal(outsideFinding?.level, "warn");
   assert.match(outsideFinding?.message || "", /\.\.\/elsewhere\.txt/);
-  assert.match(outsideFinding?.message || "", /\/tmp\/elsewhere\.txt/);
+  assert.ok(outsideFinding?.message.includes(absoluteOutside));
 
   run(dir, ["task", "park"]);
-  const outsideParked = JSON.parse(run(dir, ["task", "gate", "--file", "/tmp/elsewhere.txt", "--json"])) as {
+  const outsideParked = JSON.parse(run(dir, ["task", "gate", "--file", absoluteOutside, "--json"])) as {
     decision: string;
     findings: Array<{ code: string }>;
   };
