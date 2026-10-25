@@ -18,7 +18,7 @@ Agentpack keeps the task state in your repo. Connected agents record the goal, d
 
 Here it is in action. In session 1, an agent works on a flaky test and records a decision, a dead end, and a checkpoint through the Agentpack MCP tools. In session 2, the next day with an empty context, one `load_context` call brings the task back:
 
-![Demo: an agent records a decision, a dead end, and a checkpoint through Agentpack MCP tools, then a new session the next day loads the task state with one call](assets/demo.gif)
+https://github.com/user-attachments/assets/a727b37d-cdf6-45bc-aad9-33b5296c0fcc
 
 To try the same flow by hand from the CLI, see [docs/DEMOS.md](docs/DEMOS.md).
 
