@@ -1,60 +1,73 @@
 # Read-only Inspector
 
-`agentpack tui` is a small keyboard-driven terminal browser for the canonical
-`.agentpack` ledger. It is for inspecting an historical Task Passport without
-switching the current task: task details, task-scoped timeline, linked
-verification evidence, repository checkpoints, ledger health, and task usage
-are available from one screen. Checkpoints are one repository list; those
-taken while the selected task was current are marked `[this task]`, those of
-other tasks `[other task]`, and older ones stay unmarked because they carry no
-task link. Decisions are not joined to a task: the ledger schema does not
-encode that relationship.
+`agentpack tui` opens the Inspector. It is a small keyboard-driven terminal browser for the `.agentpack` ledger. Use it to inspect a historical Task Passport. It does not change the current task.
 
-Controls: `j`/`k` or arrows move or scroll, `Enter` advances through task views
-and opens the selected Evidence or Checkpoint, `Tab` changes the primary view,
-`/` filters Tasks, `Esc` or backspace returns from a detail to its list and then
-goes back, and `q` exits. Evidence is a task-linked selectable list;
-Checkpoints is a repository-wide selectable list with task marks. When stdin or stdout is not a TTY, the command prints a
-deterministic static Tasks/Health snapshot and exits, which makes it safe in CI
-and pipes.
+One screen shows these views:
 
-In an interactive terminal, the Inspector uses restrained ANSI styling to
-separate the active view, selected task, task status, warnings, and secondary
-context. Selection markers, status labels, and section boundaries remain
-visible without color. Set `NO_COLOR` or use `TERM=dumb` to disable styling;
-non-interactive output never contains color codes.
+- Tasks, Passport and Timeline for the selected task
+- Evidence linked to the task verification
+- Checkpoints for the repository
+- Health, a bounded ledger inventory
+- Usage for the selected task
 
-This is deliberately not a task manager. It has no mutation commands, no
-preferences or cache, and never changes `.agentpack`, the current-task pointer,
-or lifecycle state. The source of truth remains the existing JSON and JSONL
-files. The initial inventory caps task directories, individual and aggregate
-Passport bytes, global-event bytes/events, checkpoints, warnings, and rendered
-rows. Timeline and Evidence are loaded lazily and within separate limits only
-for the selected task. Evidence detail and the four known checkpoint files
-(`checkpoint.json`, `git-status.txt`, `diff.patch`, and `resume.md`) use bounded
-previews in separate scrollable views. These bounded direct reads are
-comfortably fast at current ledger size and avoid a second database, migration
-path, and stale-index failure mode.
+Checkpoints are one repository list. A checkpoint taken while the selected task was current has the mark `[this task]`. A checkpoint of another task has the mark `[other task]`. Older checkpoints have no mark because they have no task link. Decisions are not joined to a task. The ledger schema does not store that relationship.
 
-The Health view is the Inspector's bounded inventory, not an exhaustive hygiene
-scan. Use `agentpack ledger status` when the complete ledger-health contract is
-required.
+## Controls
+
+| Key | Action |
+|---|---|
+| `j`, `k` or arrow keys | Move or scroll. |
+| `Enter` | Go through the task views. Open the selected Evidence or Checkpoint item. |
+| `Tab` | Change the primary view. |
+| `/` | Filter the Tasks list. |
+| `Esc` or backspace | Go from a detail view back to its list, then go back. |
+| `q` | Exit. |
+
+In filter mode, type to change the filter. `Enter` confirms the filter. `Esc` clears the filter and leaves filter mode. `Ctrl-C` quits.
+
+Evidence is a selectable list linked to the task. Checkpoints is a selectable list for the whole repository.
+
+If stdin or stdout is not a terminal, the command prints a static snapshot and exits. The snapshot is the same on each run, so it is safe in CI and pipes. It contains:
+
+- the task list (at most 40 tasks)
+- the counts of Tasks, Events and Checkpoints
+- warnings
+
+The static snapshot does not show the Health view.
+
+In an interactive terminal, the Inspector uses plain ANSI styling to separate the active view, the selected task, the task status, warnings and secondary context. Selection markers, status labels and section boundaries stay visible without color. Set `NO_COLOR` or `TERM=dumb` to turn styling off. Non-interactive output never contains color codes.
+
+## Limits
+
+The Inspector is not a task manager. It has no commands that change state, no preferences and no cache of ledger data. It never changes `.agentpack`, the current-task pointer or the lifecycle state. The existing JSON and JSONL files stay the source of truth.
+
+The initial inventory limits these items:
+
+- task directories
+- the size of each Passport and the total size of all Passports
+- global event bytes and event count
+- checkpoints
+- warnings
+- rendered rows
+
+Timeline and Evidence load only for the selected task, with separate limits. Evidence detail and the four known checkpoint files have bounded previews in separate scrollable views. The four files are `checkpoint.json`, `git-status.txt`, `diff.patch` and `resume.md`.
+
+The Health view is a bounded inventory. It is not a full hygiene scan. Use `agentpack ledger status` for the complete ledger health report.
+
+## Usage view
+
+The Usage view shows the linked sessions of the selected task. It also shows the traced sessions, which are the sessions that ran Agentpack for the task. If there are none, the view lists candidate sessions.
+
+To find candidates, the Inspector reads Claude Code and Codex transcripts outside `.agentpack`. The locations are `$CLAUDE_CONFIG_DIR` and `$CODEX_HOME`. The defaults are `~/.claude` and `~/.codex`. The bounds are the same as for `agentpack usage link`. The view shows only counts, ids and paths. It never shows transcript content. It links nothing.
+
+Discovery runs synchronously the first time you open the Usage view of a task. A loading line shows while it runs. The cache holds one task only. If you switch to another task, discovery runs again.
 
 ## Safety boundary
 
-Ledger, evidence, and checkpoint content is treated as untrusted terminal
-input. Previews are bounded, redacted with the pack configuration, and stripped
-of ANSI/control sequences. Evidence paths must remain regular non-symlink files
-below `.agentpack/evidence`; checkpoint detail reads only the known regular
-non-symlink files below the selected `.agentpack/checkpoints/<id>` directory.
-The Usage view reports the selected task's linked sessions plus the sessions
-that ran Agentpack for it. When there are none it lists candidate sessions, which reads Claude Code and Codex
-transcripts outside `.agentpack` (`$CLAUDE_CONFIG_DIR`, `$CODEX_HOME`, by
-default `~/.claude` and `~/.codex`) with the same bounds as `agentpack usage
-link`; it shows only counts, ids and paths, never transcript content, and
-links nothing. Discovery runs synchronously on first open of a task's Usage
-view, behind a loading line, and is cached for the session.
-Malformed retained event lines and unsafe or unreadable detail files become
-visible warnings instead of crashing the inspector. The terminal alternate
-screen, cursor, and raw mode are restored on normal exit, Ctrl-C, SIGTERM,
-input end, stream errors, and rendering failures.
+The Inspector treats ledger, evidence and checkpoint content as untrusted terminal input.
+
+- Previews are bounded. They are redacted with the pack configuration. Agentpack removes ANSI and control sequences.
+- Evidence paths must be regular files that are not symlinks, below `.agentpack/evidence`.
+- Checkpoint detail reads only the known regular files that are not symlinks, below the selected `.agentpack/checkpoints/<id>` directory.
+- Malformed event lines, and unsafe or unreadable detail files, become visible warnings. They do not crash the Inspector.
+- The terminal alternate screen, cursor and raw mode are restored on normal exit, `Ctrl-C`, SIGTERM, end of input, stream errors and rendering failures.

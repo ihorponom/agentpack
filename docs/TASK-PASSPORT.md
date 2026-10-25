@@ -1,34 +1,25 @@
 # Task Passport
 
-A Task Passport records one task's objective, constraints, scope, lifecycle,
-verification and next actions for handoff between sessions or clients.
-
-Read-only `task audit` can surface bounded ceremony review candidates from retained
-evidence and lifecycle history. These are observable patterns for human judgment,
-never lifecycle gates or proof that a workflow was wasteful.
+A Task Passport records the objective, constraints, write scope, lifecycle,
+verification and next actions of one task. Use it to hand off work between
+sessions or clients.
 
 ## Model
 
-Default rule:
-
-- one current Task Passport per ledger
-- a ledger may retain completed and parked passports
-- separate worktrees can maintain separate ledgers
-- source-cache paths are relative to the ledger root
-- one integration Passport may explicitly bind additional Git checkouts;
-  they share the lifecycle and verification but retain separate scopes and HEADs
-- each passport owns its objective, constraints, write scope, next actions,
-  lifecycle events, and verification references
-- source records, decisions, dead ends, evidence files, and checkpoints remain
-  pack-level; a passport can reference evidence by id
-
-This keeps shared knowledge reusable while separating each task's plan and
-verification state. Pack-level records and checkpoints are not automatically
-isolated by task.
+- A ledger has one current Passport.
+- A ledger can keep completed and parked Passports.
+- Separate worktrees can have separate ledgers.
+- Source cache paths are relative to the pack root.
+- Each Passport owns its objective, constraints, write scope, next actions,
+  lifecycle events and verification references.
+- Source conclusions, decisions, dead ends and the repository event log are
+  shared by all tasks.
+- Checkpoints and evidence files are also shared. A Passport links to evidence
+  by id.
+- One Passport can bind additional repositories. They share the lifecycle and
+  the verification. Each keeps its own scope and HEAD.
 
 ## File Shape
-
-Main files used by the current implementation:
 
 ```text
 .agentpack/
@@ -39,107 +30,107 @@ Main files used by the current implementation:
   checkpoints/
   evidence/
   exports/
+  usage/
+  cache/
+  archive/
+  instructions/
   tasks/
     current
-    task_20260518_source_cleanup/
+    task_2026-10-25T07-56-15-791Z_2c160d_source-cleanup/
       passport.json
       events.jsonl
+      checkpoints/   (created, currently empty)
+      evidence/      (created, currently empty)
+      exports/       (created, currently empty)
+      imports/
 ```
 
-`tasks/current` is a small pointer to the active task id for this worktree.
-Without it, resume can use legacy pack-level state. Checkpoint files remain in
-`.agentpack/checkpoints/`. A checkpoint created while the current Passport is
-active, blocked or verifying records its `taskId` in `checkpoint.json` and in
-the `checkpoint` event; older checkpoints and those taken while the current
-task is parked, closed or unreadable carry no task id and stay global. Task
-handoff includes the latest valid linked checkpoint's summary, timestamp, id,
-and origin task/Git ref. Global checkpoints and checkpoints from other tasks
-are excluded. The redacted portable record is limited to 2 KiB of serialized
-UTF-8 JSON; shortened summaries are explicitly marked. Pack-level checkpoint
-status and next actions are excluded; the Passport supplies the current plan
-and verification. Compaction retains the metadata used by handoff. Evidence
-files remain in `.agentpack/evidence/` and are referenced by id from task
-verification.
+`tasks/current` holds the id of the current task. The task can have any status,
+including parked or completed. If the file is missing, `resume` uses legacy
+repository state.
+
+A checkpoint records its `taskId` when the current task is active, blocked or
+verifying. Older checkpoints, and checkpoints made while the task is parked,
+closed or unreadable, have no task id and stay global.
+
+`task handoff` shows the latest checkpoint that is linked to the task. It shows
+the summary, time, id and origin task and Git ref. It does not show global
+checkpoints, checkpoints of other tasks, or the status and next actions of a
+checkpoint. The portable record has a limit of 2 KiB of UTF-8 JSON. A shortened
+summary is marked. Compaction keeps the checkpoint metadata that handoff uses.
 
 ## Passport Schema
 
-`passport.json` should be compact, readable, and safe to inspect manually.
+`passport.json` is compact and safe to read by hand.
 
 ```json
 {
   "schemaVersion": 1,
-  "id": "task_20260518_source_cleanup",
+  "id": "task_2026-10-25T07-56-15-791Z_2c160d_source-cleanup",
   "title": "Add source cache cleanup commands",
   "status": "active",
-  "createdAt": "2026-05-18T11:00:00.000Z",
-  "updatedAt": "2026-05-18T11:30:00.000Z",
+  "createdAt": "2026-10-25T07:56:15.713Z",
+  "updatedAt": "2026-10-25T08:16:39.384Z",
   "closedAt": null,
-  "objective": "Let Agentpack remove stale source records safely.",
+  "objective": "Let Agentpack remove stale source conclusions safely.",
   "constraints": [
-    "Preserve existing source add/status behavior",
-    "Do not delete source records broadly without an explicit guard"
+    "Keep the behavior of source add and source status",
+    "Do not delete source conclusions without an explicit guard"
   ],
   "branch": "main",
-  "baseHead": "8d22011",
-  "currentHead": "21fe674",
+  "baseHead": "ee35e4a",
+  "currentHead": "476d090",
   "worktree": "/path/to/repo",
   "writeScope": [
-    "src/checkout.ts",
-    "src/cart.ts",
-    "tests/checkout.test.ts",
-    "docs/checkout.md"
+    "src/core/sources.ts",
+    "src/cli/index.ts",
+    "tests/agentpack.test.ts"
   ],
-  "risk": "low",
+  "risk": "medium",
   "verification": {
-    "status": "passed",
-    "evidence": [
-      "evt_example_test_output"
-    ],
-    "summary": "npm test passed; doctor clean after source cache refresh."
+    "status": "unknown",
+    "evidence": [],
+    "summary": ""
   },
   "nextActions": [
-    "Design Task Passport schema and state transitions"
+    "Add the source prune command"
   ],
   "tags": [
-    "source-cache",
-    "trust-foundation"
+    "source-cache"
   ]
 }
 ```
 
-Required fields for v1:
+All of these fields must exist:
 
-- `schemaVersion`
-- `id`
-- `title`
-- `status`
-- `createdAt`
-- `updatedAt`
-- `objective`
-- `branch`
-- `baseHead`
-- `worktree`
-- `writeScope`
-- `nextActions`
+- `schemaVersion`, `id`, `title`, `status`, `objective`, `worktree`
+- `createdAt`, `updatedAt`
+- `closedAt`, `branch`, `baseHead`, `currentHead` (the value can be `null`)
+- `constraints`, `writeScope`, `nextActions`, `tags` (arrays of strings)
+- `risk`: `low`, `medium`, `high` or `unknown` (the default)
+- `verification`: `status`, `evidence` (array of ids) and `summary`
 
-Write scopes are repo-relative paths. `.` means the repository root. A directory entry such as `api` covers every file under `api/`, so a scope can pin a task to one part of the project without enumerating files.
+Two fields are optional:
 
-Optional but recommended:
+- `blockedReason`: the reason given to `task block`.
+- `repositories`: the additional repositories. It is required, and not empty,
+  when `schemaVersion` is 2.
 
-- `constraints`
-- `currentHead`
-- `risk`
-- `verification`
-- `tags`
-- `closedAt`
+A write scope is a list of repository-relative paths. The path `.` means the
+whole repository. A directory such as `api` covers every file under `api/`.
+
+The `baseHead` and `currentHead` of the repository at the pack root are short
+commit ids. Additional repositories store full HEADs (40 or 64 hex characters).
 
 ### Changes across repositories
 
-Use one ledger for a task that spans several Git checkouts. Additional checkouts
-do not need a separate `.agentpack/` directory. The existing worktree, branch,
-HEAD and scope fields describe the primary checkout.
+Use one ledger for a task that spans several Git checkouts. An additional
+repository does not need its own `.agentpack/` directory. The fields `worktree`,
+`branch`, `baseHead`, `currentHead` and `writeScope` describe the repository at
+the pack root.
 
-Run commands from the ledger root. Repeat `--repository` to add checkouts:
+Run the commands from the pack root. Repeat `--repository` to bind more
+checkouts.
 
 ```sh
 agentpack task start "Integrate search" --write-scope src/search \
@@ -154,97 +145,113 @@ agentpack task gate --staged --repository web
 agentpack task list --scope web:src/features/search
 ```
 
-Each binding requires:
+Each binding needs:
 
-- A unique `id`. The name `primary` is reserved for the ledger checkout.
-- An existing Git checkout root in `worktree`. Linked worktrees are supported.
-  The checkout must have a commit.
-- A non-empty `writeScope` of repository-relative literal prefixes. `.` selects
-  the whole checkout. Globs are unsupported.
+- `id`: a unique name of 1 to 64 characters that matches
+  `[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}`. The name `primary` is reserved.
+- `worktree`: the root of an existing Git checkout with at least one commit.
+  Linked worktrees work.
+- `writeScope`: a list of repository-relative literal prefixes that is not
+  empty. The path `.` selects the whole checkout. Globs do not work.
 
-Worktree paths resolve from the ledger root and are stored canonically. Duplicate
-paths and scopes that escape their checkout are rejected.
+Agentpack rejects these bindings:
 
-Before binding a checkout, create the intended branch. To change bindings, the
-task must be active with unknown or pending verification. Local scope updates
-append paths. They preserve the original branch and base HEAD. A bound checkout
-must retain its path and Git-directory identity. To replace it, create a new
-task. Removing bindings is unsupported.
+- A `worktree` that contains the pack root or is the pack root ("overlaps the
+  primary pack root"). A Git repository nested inside the pack root is accepted.
+- A path that another binding already uses.
+- A scope that leaves its checkout.
 
-Use `--staged` to check all bound indexes. Use `--repository <id>` to select one
-index, including `primary`. The selector does not change how file paths resolve.
-Explicit `--file` paths remain relative to the ledger root or absolute.
-Ordinary staged files follow the most specific lexical and physical checkout
-scopes. Git-link pointer updates use the parent scope.
+Worktree paths resolve from the pack root. Agentpack stores them as canonical
+paths.
 
-For task-list filters, use `id:path` to select an additional checkout. Use
-unqualified paths to select primary scopes.
+Create the branch before you bind a checkout. To change bindings, the task must
+be active and its verification must be unknown or pending. A repeated update
+appends paths to the scope. The branch and base HEAD do not change. A bound
+checkout must keep its path and its Git directory. To replace a checkout, start a
+new task. You cannot remove a binding.
 
-If an additional checkout is unavailable or unbound, the gate reports a finding.
-Branch drift produces an advisory. Final verification requires each additional
-checkout to be readable and on its recorded branch. It captures full HEADs.
-Park, switch and finalize preserve those HEADs. Record repository and integration
-checks in shared evidence. Source-cache paths remain relative to the ledger root.
+The task gate treats additional repositories this way:
 
-Configure external hooks to invoke the selected ledger explicitly. Repository
-bindings do not configure hooks. See [integration setup](INTEGRATIONS.md).
+- `task gate --staged` checks the index of every bound repository.
+- `--repository <id>` selects one index. `primary` selects the repository at the
+  pack root.
+- `--file` paths stay relative to the pack root, or absolute. The selector does
+  not change this.
+- A staged file follows the most specific scope of its checkout. An update of a
+  Git submodule pointer follows the scope of the parent.
+- If an additional repository is unavailable or unbound, the gate reports a
+  finding. Branch drift gives an advisory.
+- A commit inside an additional repository does not run the pre-commit hook of
+  the pack root. Add a hook to that repository to gate its commits. See
+  [integration setup](INTEGRATIONS.md).
 
-Multi-repository Passports and bundles use schema v2. They require a compatible
-Agentpack version. Single-repository data remains schema v1.
+In `task list`, `--scope id:path` selects an additional repository. A path
+without `id:` selects scopes of the repository at the pack root.
 
-Export clears local worktree paths and checkout identities. Import creates a
-parked task with unknown local verification and unbound checkouts. To continue:
+A final verdict needs each additional repository to be readable and on its
+recorded branch. The verdict stores the full HEAD of each one. If you finalize
+from non-final verification, `task finalize` takes the same snapshot and has
+the same requirement. Park, switch and finalize keep these HEADs. Record
+cross-repository checks as shared evidence.
+
+A Passport with additional repositories, and its bundles, use schema v2. Older
+Agentpack versions cannot read them. Single-repository data stays schema v1.
+
+Export removes local worktree paths and checkout identities. Import creates a
+parked task with unknown verification and unbound repositories. To continue:
 
 1. Switch to the imported task.
-2. Bind each ID with `task update --repository ...`.
-3. Verify the result locally.
+2. Bind each id with `task update --repository ...`.
+3. Verify the result on the local checkout.
 
-The first local binding uses only the supplied scope. Later local updates append
-paths to that scope. The retained bundle preserves the original scopes and Git
-state as provenance.
+The first local binding uses only the scope that you supply. Later updates
+append paths. The retained bundle keeps the original scopes and Git state as
+provenance.
 
 ## Statuses
 
-Initial statuses:
+| Status | Meaning |
+|---|---|
+| `active` | Work is in progress. |
+| `parked` | Work is set aside. Another task can be current. |
+| `blocked` | Work waits for input, a dependency or a risk decision. |
+| `verifying` | A final verdict (`passed`, `failed` or `accepted`) is recorded. Code is frozen. |
+| `completed` | The task is closed. |
+| `abandoned` | Closed. Only Passports from older versions or imported bundles can have it. No current command sets it. |
 
-- `active`: current work is in progress in this worktree
-- `parked`: intentionally paused and not the current task
-- `blocked`: waiting on user input, external dependency, or unresolved risk
-- `verifying`: a final verification verdict is recorded; code is frozen while the task is finalized or awaits an external outcome
-- `completed`: task finished with verification or explicit acceptance
-- `abandoned`: task stopped and should not be resumed without a new decision
-
-Default context should show the active passport in full, and show parked or blocked passports only as compact references unless explicitly requested.
+`completed` and `abandoned` are the closed statuses. A closed Passport stays in
+the history. `resume` shows it only when it matches the query.
 
 ## State Transitions
 
-Allowed transitions:
+`resume` and `load_context` never change a status. Only `task switch` resumes a
+parked task.
 
-```text
-none -> active              task start
-active -> parked            task park
-parked -> active            task switch/resume with unknown or pending verification
-parked -> verifying         task switch/resume with a final verification verdict
-active -> blocked           task block
-blocked -> active           task unblock/resume
-active -> verifying         task verify records a final verdict
-verifying -> active         verification found more work (pending verdict)
-blocked -> verifying        task verify records a final verdict
-blocked -> active           task verify records a pending verdict
-verifying -> completed      task finalize
-active -> completed         task finalize --status accepted [--force when next actions remain]
-active -> abandoned         task abandon
-parked -> abandoned         stale parked task is discarded
-blocked -> abandoned        blocked task is discarded
-```
+| Command | From | To |
+|---|---|---|
+| `task start` | no current task, a parked task, or a completed task | `active` |
+| `task park` | any open status | `parked` |
+| `task block --reason <text>` | any open status | `blocked` |
+| `task switch <id>` | `parked`, verification `unknown` or `pending` | `active` |
+| `task switch <id>` | `parked`, final verdict | `verifying` |
+| `task verify` with a final verdict | `active`, `blocked` or `verifying` | `verifying` |
+| `task verify` with `pending` or `unknown` | `active`, `blocked` or `verifying` | `active` |
+| `task finalize` | any open status | `completed` |
+| `task close` | any open status | `completed` |
 
-Closed statuses are `completed` and `abandoned`. Closed passports remain inspectable history but should not appear in the default resume unless they are query-relevant.
+Notes:
 
-`task verify` (`task_update_verification`) is rejected while the current task is `parked`, since `parked -> active`/`parked -> verifying` only happen via `task switch`/resume, as shown above.
+- `task verify` (MCP `task_update_verification`) fails on a parked task.
+  Switch to the task first.
+- A `pending` or `unknown` verdict on a blocked task also clears `blockedReason`.
+- `task finalize` needs a final verdict. It accepts `passed`, `failed` or
+  `accepted` with `--status`, or uses the verdict that is already recorded.
+- `task finalize --status accepted` fails if next actions remain. Add `--force`
+  to close the task anyway.
+- `task close` closes a task without a verification check. Use it only for
+  manual cleanup. MCP has no close tool.
 
 ## CLI Shape
-
-Current CLI surface:
 
 ```bash
 agentpack task start "Fix checkout discount bug" \
@@ -253,112 +260,173 @@ agentpack task start "Fix checkout discount bug" \
   --write-scope src/cart.ts
 
 agentpack task list [--scope <path>] [--status <status>] [--open] [--all]
-agentpack task status
+agentpack task status [--id <id>] [--full]
 agentpack task handoff
-agentpack task passport
-agentpack task switch task_20260518_source_cleanup
+agentpack task passport [<id>]
+agentpack task switch <id> [--park-current]
 agentpack task update --next "Run focused regression tests" --write-scope tests/checkout.test.ts --risk medium
+agentpack task update --constraint "Keep the public API" --replace-constraints
 agentpack task audit
+agentpack task gate [--file <path>] [--staged] [--repository <id>]
 agentpack task park
 agentpack task block --reason "Waiting for API decision"
 agentpack task verify --status passed --evidence evt_... --summary "Focused checks passed"
 agentpack task finalize
-agentpack task --help
+agentpack task close
 ```
 
-`resume` and MCP `load_context` read the current passport automatically when one
-exists. Its status and next actions become authoritative in Current State, then
-the full passport and broader repo-level ledger follow. Without a current
-passport, Current State uses the legacy repo-level fallback. If the current
-pointer still references a closed passport, `resume` labels its next actions as
-historical so they are not mistaken for active instructions.
+See [CLI.md](CLI.md) for all options. The MCP tools are `task_start`,
+`task_status`, `task_list`, `task_switch`, `task_park`, `task_update`,
+`task_update_verification`, `task_finalize`, `task_handoff` and `task_audit`.
+Blocking, closing and the full Passport JSON are CLI only.
 
-The normal human-facing sequence is: start the task, keep status/scope/next actions current, record verification with evidence, print a handoff when another agent or chat may continue, then finalize only after verification is final.
+`resume` and MCP `load_context` read the current Passport. Its status and next
+actions are the authority in Current State. If no Passport exists, Current State
+uses the legacy repository state. If the current task is closed, `resume` marks
+its next actions as historical.
 
-The verification order matters: keep verification `pending` throughout the
-active fix loop and aggregate intermediate green checks as evidence/checkpoints.
-When no edits remain, commit the in-scope changes and confirm
-the commit changed nothing (clean tree, hooks silent) before recording the
-final verdict. From there the task has two endings. With no external wait, end
-with one `task finalize --status passed` call carrying evidence and the commit
-hash, so no `verifying` window opens. With an external wait (review, PR merge,
-re-score), record `passed`, then `task park`; switching back keeps the task in
-`verifying`, so after the external result finalize — or return verification to
-`pending` before making changes. A
-recorded final verdict binds `currentHead` to the reviewed HEAD, moves the task
-to `verifying`, and freezes code changes. Normal iteration should not create a
-passed-to-pending reset: record the final verdict only after edits end.
+### Normal sequence
 
-Temporary work switching uses `task park`, not `task finalize`. Parking keeps a
-passport open and switchable while unrelated work becomes current. Finalization
-means the task is complete, failed, or explicitly accepted as-is.
+Start the task, keep status, scope and next actions current, record verification
+with evidence, print a handoff if someone else will continue, and finalize after
+the verdict is final.
 
-Review requests follow the same current-task check. A review that verifies the
-current active or verifying task is verification work for that passport; record
-the review evidence and checkpoint there. Start, switch, or park into a separate
-review task only when it has an unrelated objective, materially different
-authorization boundary, or must own an independent frozen snapshot.
+Keep verification `pending` while you fix problems. Collect intermediate green
+checks as evidence and checkpoints. When no edits remain:
 
-`task start` creates a new current passport only when there is no current task, the current task is closed, or the current task is parked. If the current task is active, blocked, or verifying, Agentpack asks you to park or close it first so unrelated work does not silently overwrite the handoff pointer. Invalid risk values are rejected instead of being treated as unknown.
+1. Commit the in-scope changes.
+2. Check that the tree is clean and that hooks changed no files.
+3. Record the final verdict in one of two ways:
+   - No external wait: run `task finalize --status passed` with the evidence and
+     the commit hash. No `verifying` window opens.
+   - External wait (review, merge, re-score): run `task verify --status passed`,
+     then `task park`. When you switch back, the task stays `verifying`. After
+     the result, finalize the task, or run `task verify` to return the
+     verification to `pending` before you change code.
 
-`task switch <id>` resumes a parked passport as `active` when verification is
-`unknown` or `pending`. A parked passport with `passed`, `failed`, or `accepted`
-verification resumes as `verifying`, preserving the frozen final verdict and
-its bound HEAD until
-verification explicitly returns to `pending`. When a different current task is
-active, blocked, or verifying, park or finalize it before switching; closed
-target tasks remain unswitchable.
+A final verdict stores the current HEAD in `currentHead` (the bound HEAD),
+moves the task to `verifying` and freezes code changes. Record it only after
+the last edit.
 
-`task status` prints a short current-task view without scanning source-cache status. Use it for a quick human check before reaching for `task audit`.
+To pause work for unrelated work, use `task park`, not `task finalize`. A review
+of the current task is verification work. Record its evidence and a checkpoint in
+that task. Start a separate review task only for an unrelated objective, a
+different authorization boundary, or an independent frozen snapshot.
 
-MCP exposes the same start/status/list/switch path for connected agents through `task_start`, `task_status`, `task_list`, `task_switch`, and `task_park`. Blocking, explicit close, and full passport JSON inspection are available through the CLI.
+### Commands
 
-Use `task_switch({ id, parkCurrent: true })` or CLI
-`agentpack task switch <id> --park-current` to combine parking a different
-current open task and switching. The target is validated first; passports,
-events, and pointer are changed together under the pack lock with rollback for
-ordinary write failures. This uses the existing file transaction and does not
-guarantee crash recovery. Pending work resumes active; final verdicts and their
-bound HEAD remain frozen. The option never finalizes work or clears blockers.
+- `task start` fails if the current task is active, blocked or verifying. Park or
+  finalize it first. An invalid risk value is an error.
+- `task switch --park-current` (MCP `parkCurrent: true`) parks the current task
+  and switches in one step. Agentpack checks the target first. It changes both
+  Passports, the events and the pointer under the pack lock, and rolls back
+  ordinary write failures. It does not recover from a crash. It never finalizes
+  work or clears a blocker. A closed task cannot be the target.
+- `task status` prints one line and does not scan the source cache. `--full`
+  prints the detailed view. `--id <id>` shows another task without a switch,
+  with `Bound HEAD:` and `Verification evidence:` (only evidence linked to the
+  verdict).
+- `task update` appends to list fields and removes duplicates. Omitted fields do
+  not change. `--clear-next-actions` replaces the next actions with the `--next`
+  items. `--replace-constraints` replaces the constraints and keeps the removed
+  ones in the event as `removedConstraints` (the TUI Timeline shows them). An
+  empty update or an unknown risk value fails.
+- `task verify` with no flags sets `pending`. `task update-verification` is an
+  alias. An unchanged repeat call writes nothing.
+- `--evidence` ids on `task verify` and `task finalize` must match evidence events
+  in the last 4 MiB of `events.jsonl`. One unknown id rejects the whole update
+  before anything is written. You can repeat ids that are already linked. Older
+  Passport links stay readable.
+- `task finalize` prints the bound HEAD and the completed and frozen result. A
+  verdict that is already final keeps its bound HEAD. Finalizing from non-final
+  verification binds the current HEAD. With `accepted`, use `task park` for
+  deferred work instead of `--force`.
 
-**`task handoff`** prints a compact current-passport handoff for switching chats, clients, worktrees, or agents. It includes objective, constraints, write scope, next actions, verification, drift, and audit summary without dumping the full passport JSON.
+After closing, `task finalize` prints advisories. They never block the close.
 
-**`task audit`** is a diagnostic pass for continuity risk. It checks the current passport for branch/head drift, missing next actions, open verification, closed-current-task anomalies, and source-cache metadata drift. Metadata warnings are shown separately so stale source records do not look like action-required task failures.
+- Uncommitted changes in the write scope. Commit them, or park the task.
+- Next actions that will now read as historical.
+- No checkpoint since the task started.
+- For each additional repository: unbound or drifted state, and uncommitted
+  changes in its scope.
+- Missing evidence for the risk (see
+  [Advisory verification evidence](#advisory-verification-evidence)).
 
-`task update` patches the current passport without changing lifecycle status. It updates objective, constraints, write scope, repository bindings, next actions, tags, and risk. List fields append and deduplicate; bindings follow the [repository update rules](#changes-across-repositories). Omitted fields are preserved. `--clear-next-actions` replaces the next actions with the provided `--next` items (or empties the list) so a stale plan can be corrected before handoff or finalize. `--replace-constraints` replaces constraints the same way when they are obsolete or superseded; the removed constraints are recorded as `removedConstraints` in the task-update event and shown in the TUI Timeline, so history is kept without a schema change. `task status --id` and handoff label `Verification evidence:` to show only evidence linked to the verdict, not all stored evidence. Empty or no-op updates fail, and unknown risk values are rejected.
+`task audit` checks continuity: branch, HEAD and worktree drift, missing next
+actions or write scope, open verification, a closed current task, changed or
+missing source conclusions, and repository warnings. It shows source cache
+warnings apart from task warnings. It also lists review candidates from retained
+evidence and lifecycle history. They are patterns for a person to judge. They
+never block a task. Agentpack does not resolve code conflicts. For parallel
+work, park the task before you switch, or use a separate worktree.
 
-`task verify` updates the verification state. Without flags it marks verification as `pending`; with `--status`, `--evidence`, and `--summary` it links verification to recorded evidence so the audit warning can become a reviewed result. Pending output makes clear that the task stays active for fixes and intermediate checks. A final verdict (`passed`, `failed`, or `accepted`) binds the reviewed HEAD, moves the task lifecycle to `verifying`, and reports the freeze consequence; only an explicit later verification update may rebind that HEAD. Recording `pending` (or `unknown`) again — verification found more work — moves it back to `active` so the gate stops treating continued edits as out of lifecycle. `task update-verification` remains available as a compatibility alias.
+## Handoff
 
-New `--evidence` IDs on `task verify` and `task finalize` must match recorded evidence events in the bounded recent event-log window. An unknown ID rejects the whole update before the Passport or task event is written; the error names id-shaped missing IDs and only counts other values. Already linked IDs can be repeated after their events leave that window; existing links in older Passports remain readable and are not migrated.
+`task handoff` (MCP `task_handoff`) prints a compact summary for another chat,
+client, worktree or agent. It does not print the Passport JSON.
 
-`task finalize` closes the current task only after verification is already `passed`, `failed`, or `accepted`, or when that final status is passed explicitly with `--status`. It refuses to close unknown or pending verification by default. Direct finalization binds the live HEAD when verification was non-final; finalizing an already-final verdict preserves its bound HEAD. Its output reports the bound HEAD and completed/frozen consequence. `task finalize --status accepted` also refuses to close a task with remaining next actions unless `--force` is passed; use `task park` for deferred work. `task close` remains available for explicit manual closure.
+| Item | Command that shows it |
+|---|---|
+| Title, status, id, objective, branch, risk | `task handoff` |
+| Constraints, write scope, next actions | `task handoff` |
+| Verification and linked evidence | `task handoff` |
+| Additional repositories | `task handoff` |
+| Latest checkpoint of the task | `task handoff` |
+| Current HEAD (the live commit), and drift (the bound HEAD only if it differs, as `x -> y`) | `task handoff` |
+| Audit summary, and a `Metadata:` line with source cache warnings | `task handoff` |
+| Bound HEAD in full | `task status --id <id>` |
+| Changed files and source conclusions that changed since you recorded them | `resume`, `load_context` |
 
-After closing, `task finalize` prints hygiene advisories when they apply: uncommitted changes still inside the task write scope (commit first, or park until committed), remaining next actions that will now read as historical, and no repo checkpoint recorded since the task started. These advisories are informational and do not block finalization.
+The agent or person must state these items in the Passport or a checkpoint,
+because Agentpack has no field for them:
+
+- the authorization: which actions are allowed, and which still need approval
+- the open findings that nobody has resolved
+
+Limits:
+
+- A matching hash proves only that a file did not change. It does not prove
+  that the recorded conclusion is correct.
+- Local test results do not authorize a push, a merge or a release.
+- Hooks are client-specific. When you continue in another client, check the
+  Passport and the live Git state.
+- Agentpack does not decide whether code is correct. Evidence still needs human
+  or independent review.
 
 ## Monorepo Focus Pattern
 
-In a repository with several parts — for example `api/`, `frontend/`, `cron/`, `service/` — one ledger serves the whole pack root, and short-lived Task Passports carry the folder boundary:
+One ledger can serve a repository with several parts, for example `api/`,
+`frontend/`, `cron/` and `service/`. Short tasks carry the folder boundary.
 
 ```bash
 agentpack task start "API auth fix" --write-scope api
 ```
 
-A directory write scope covers every file under it. The task gate turns that boundary into enforcement rather than a convention: in the default `warn` mode the agent is told when an edit leaves `api/`, and with `gateMode: "block"` in `.agentpack/config.json` the native Claude Code, Codex, and Cursor hooks deny the edit before it happens. Start a task when you enter one part of the project, finalize it when that slice is verified, and `task list` shows which part each task owned via its scope. `task list --all --scope api` narrows the history to the tasks that owned that part; without `--all` it shows the open ones.
+A directory write scope covers every file under it. The task gate enforces the
+boundary:
 
-This keeps one session focused on one part of the repo without splitting the ledger. The pack also does not have to sit at the repository root: a subfolder project can run `agentpack init` and keep its own ledger. Separate ledgers per part work too, but require switching working directories between packs, so prefer one ledger plus scoped tasks unless the parts really are independent projects.
+- In `warn` mode (the default), the agent gets a warning when an edit leaves
+  `api/`.
+- With `gateMode: "block"` in `.agentpack/config.json`, the native hooks of
+  Claude Code, Codex and Cursor deny the edit.
+
+Start a task when you enter one part. Finalize it when you verify that part.
+`task list --all --scope api` shows the tasks that owned `api`. Without `--all`
+it shows the open tasks.
+
+A subfolder can also run `agentpack init` and keep its own ledger. Separate
+ledgers mean you switch the working directory between them. Use them only when
+the parts are independent projects.
 
 ## Portable Bundle Contract
 
-Structured bundles are an explicit handoff surface, separate from the current
-markdown export. A bundle moves reviewed task continuity between local
-workspaces without committing live `.agentpack/` state or pretending to move
-the Git working tree. Export, inspect, read-only import planning, and explicit
-apply are all implemented: `bundle import` defaults to a read-only plan, and
-`--write` is required to change destination pack state.
+A bundle moves reviewed task continuity between local workspaces. It does not
+move live `.agentpack/` state or the Git working tree. `bundle import` plans
+only, unless you pass `--write`.
 
-A task bundle is one inspectable UTF-8 JSON file, conventionally
-named `*.agentpack-bundle.json`. It is not a zip archive and cannot contain
-scripts, binaries, source files, or hidden client configuration.
+A bundle is one UTF-8 JSON file. Name it `*.agentpack-bundle.json`. It is not a
+zip file. It cannot contain scripts, binaries, source files or client
+configuration.
 
 Single-repository bundle (schema v1):
 
@@ -400,112 +468,99 @@ Single-repository bundle (schema v1):
 }
 ```
 
-`bundleId` is computed from a canonicalized payload that excludes `bundleId`
-and `exportedAt`. Stable key ordering and array ordering make inspection and
-duplicate detection deterministic even when two exports have different
-timestamps.
+`bundleId` is a hash of the canonical payload. The hash leaves out `bundleId`
+and `exportedAt`. Two exports have the same id when the task and the Git state
+are the same, even when the times differ.
 
-The portable task payload includes the title, objective, constraints, write
-scope, risk, tags, next actions, original status, and original verification.
-Absolute worktree paths and the source pack's `tasks/current` pointer are never
-portable fields. Origin branch, head, task id, and verification remain
-provenance; importing them does not claim that the destination workspace has
-the same Git state or has locally re-verified the task.
+The task payload holds the title, objective, constraints, write scope, risk,
+tags, next actions, original status and original verification. Absolute
+worktree paths and the `tasks/current` pointer are never exported. The origin
+branch, HEAD, task id and verification are provenance only. An import does not
+claim that the destination has the same Git state or has verified the task.
 
-An optional `checkpoint` field carries the same bounded metadata shown in
-handoff. The field is optional in both bundle schemas. Schema v1 importers
-without checkpoint support retain the field but do not display it. A destination
-handoff uses imported checkpoint metadata only until a valid local checkpoint
-exists for that task. Re-export preserves the origin task id and Git ref;
-`--as-new` changes the destination task id, not checkpoint provenance.
-Imported metadata stays in the retained bundle: it creates no local checkpoint
-files or events and does not update pack state, current-task pointers, next
-actions, or verification. Unreadable or unsafe metadata is skipped with a
-warning; ambiguous retained imports are not merged.
+The optional `checkpoint` field holds the same bounded metadata as the handoff.
+Old bundles without it stay valid. A destination handoff uses the imported
+metadata until a valid local checkpoint exists. Re-export keeps the origin task
+id and Git ref. `--as-new` changes only the destination task id. Import creates
+no checkpoint files or events and changes no state, pointer, next action or
+verification. Agentpack skips unreadable or unsafe metadata with a warning.
 
-The optional repository locator is credential-free and redacted; export drops
-user info, query strings, fragments, or nonportable local remote paths. Source
-entries contain only repo-relative path, hash, size, recorded time, summary,
-and optional snippet. Evidence entries contain origin id, kind, redacted
-command/exit code, UTF-8 text or JSON content, and a content digest.
+The repository locator is optional and has no credentials. Export removes user
+info, query strings, fragments and nonportable local remote paths. A source entry has the
+path, hash, size, time, summary and optional snippet. An evidence entry has the
+origin id, kind, redacted command, exit code, content and a content digest.
 
-Bundle contents are intentionally bounded:
+A bundle contains a redacted compact handoff, the source conclusions that you
+select with repeatable source paths (a write scope, including `.`, never selects
+sources), and the text or JSON evidence that the Passport verification
+references (unless you turn evidence off).
 
-- include a redacted compact handoff for human inspection
-- include source conclusions selected explicitly with repeatable source paths;
-  write scope, including `.`, never implicitly exports recorded sources
-- include only text or JSON evidence referenced by the passport verification,
-  unless evidence is explicitly disabled
-- exclude repo config/state, current-task pointers, client config, caches,
-  checkpoint snapshots, Git patches, source file contents, unreferenced evidence, and
-  the broad repo event stream
-- exclude repo-level decisions and dead ends from structured import because the
-  current storage model cannot prove they belong to this task; users can still
-  carry broader read-only context through the existing markdown export
+A bundle never contains config, state, current-task pointers, client config,
+caches, checkpoint snapshots, Git patches, source file contents, unreferenced
+evidence, the repository event stream, decisions or dead ends. Storage cannot
+prove which task owns a decision. The markdown export can carry them.
 
-Every string is redacted again at the export boundary. Export refuses absolute
-or parent-traversal paths, paths inside `.agentpack/` or `.git/`, symlink escapes,
-and existing output files. Import treats the bundle as untrusted input: validate
-kind/schema, digest, path safety, field types, count limits, and byte limits
-before planning any write.
+Export redacts every string again. It refuses absolute and parent-traversal
+paths, paths inside `.agentpack/` or `.git/`, symlink escapes and existing output
+files. Import treats the bundle as untrusted. It checks kind, schema, digest,
+paths and field types before it plans a write. The limits are 2 MiB for the
+bundle, 100 sources, 50 evidence entries and 256 KiB for each evidence content.
+Agentpack does not merge ambiguous retained imports.
 
-`bundle import-plan` is read-only and reports an explicit empty write set. It
-validates the bundle before comparing the task id and retained bundle digest
-with destination state; an uninitialized destination is treated as a create
-candidate without creating `.agentpack/`.
+`bundle import-plan` is read-only and has an empty write set. It compares the
+task id and the bundle digest with the destination. An uninitialized destination
+is a create candidate. The command does not create `.agentpack/`.
 
-Write-enabled import applies as a rollback-protected transaction under the pack
-write lock only with an explicit write flag. A successful import never replaces
-the current task. It creates a non-current `parked` passport with
-local branch/head/worktree metadata; origin metadata stays attached to the
-import record. Origin verification is historical provenance, while local
-verification starts as `unknown` until the destination workspace verifies the
-handoff.
+`bundle import --write` applies the plan in one transaction under the pack write
+lock. It never replaces the current task. It creates a parked Passport with
+local branch, HEAD and worktree values. Origin metadata stays in the import
+record. Local verification starts as `unknown`.
 
 Collision rules:
 
-- no local task id collision: preserve the origin task id and import it parked
-- the same bundle digest was already imported: report an idempotent no-op
-- the task id exists with different content: refuse by default; an explicit
-  `--as-new` remaps the task id and all imported references
-- evidence id and digest both match: reuse it; an id collision with different
-  content is remapped and origin-verification references are rewritten
-- an imported source path whose local file matches the imported hash may fill
-  an absent source record; an existing local conclusion wins
-- a missing or hash-mismatched local source is not written to Source Cache;
-  keep it in the stored bundle provenance and report a stale-source warning
+| Case | Result |
+|---|---|
+| The task id is new. | Keep the id. Import the task as parked. |
+| The same bundle digest was imported before. | Report a no-op. |
+| The task id exists with different content. | Refuse. With `--as-new`, remap the task id and all imported references. |
+| The evidence id and digest both match. | Reuse the evidence. |
+| The evidence id matches but the content differs. | Remap the id and rewrite the origin verification references. |
+| A local source file matches the imported hash. | Fill an empty source conclusion. A local conclusion wins. |
+| A local source file is missing or has another hash. | Do not write the conclusion. Keep it in the bundle and report a stale-source warning. |
 
-The applied bundle is retained under
-`.agentpack/tasks/<task-id>/imports/<portable-bundle-id>.bundle.json`; a sibling
-`<portable-bundle-id>.import.json` records created, reused, skipped, and
-remapped records. Apply rolls back synchronous write failures, but does not
-promise a general rollback command. The import manifest identifies which
-records were created or reused.
-
-## Consistency Checks
-
-`task audit` reports branch, HEAD, or worktree drift; changed or missing source
-records; missing next actions or write scope; open verification; and a closed
-current task. Review these warnings against the live repository before
-continuing. Agentpack does not resolve code conflicts. Reuse the current
-Passport, park it before switching tasks, or use a separate worktree for
-parallel work.
+Agentpack keeps the applied bundle at
+`.agentpack/tasks/<task-id>/imports/<portable-bundle-id>.bundle.json`. The file
+`<portable-bundle-id>.import.json` next to it lists the records that Agentpack
+created, reused, skipped and remapped. Apply rolls back synchronous write
+failures. There is no general rollback command.
 
 ## Migration
 
-Legacy pack-level state and events remain readable without a current Passport.
-Task Passports are created explicitly with `agentpack task start`; there is no
-automatic conversion of pack-level goals or checkpoints into task state.
-`sources.json`, recorded decisions, dead ends, and existing checkpoints remain
-shared at the pack level.
+Legacy state and events stay readable without a current Passport. Agentpack does
+not convert legacy goals or checkpoints into tasks.
 
 ## Advisory verification evidence
 
-Successful `passed` or `accepted` completion should reference evidence that fits the task risk.
+`task audit` and `task finalize` check that evidence of a `passed` or
+`accepted` verdict fits the task risk. The check is advisory. It never judges
+the technical conclusion and never blocks a task. It reads only recent
+referenced evidence.
 
-For low-risk work, use a short readable note or useful test output that says what was checked, what happened, and any relevant limit. It does not need prescribed labels or a minimum length. Code scopes still include a `Reviewed HEAD:` matching the Passport-bound SHA or its full 40-character form. The advisory can flag evidence that is missing, unreadable, empty, only names a HEAD, or is wholly generic; it does not decide whether the technical conclusion is correct.
+The risk `unknown` is the default. With `unknown`, the advisory always asks you
+to set the risk to `low`, `medium` or `high`.
 
-Classify contract-changing work as medium/high risk. Medium/high evidence retains the following fields:
+A code scope is any write scope that is not under `docs/` and is not a `.md`,
+`.mdx`, `.rst` or `.txt` file. This includes the scopes of additional
+repositories.
+
+Low risk: write a short note, or keep useful test output. It must say what you
+checked, what happened and any limit. It needs no labels and no minimum length.
+For a code scope, add a `Reviewed HEAD:` line. The value is the bound HEAD or its
+full 40-character form. The advisory flags evidence that is missing, unreadable,
+empty, only a HEAD, or generic.
+
+Classify contract-changing work as medium or high risk. Its evidence must use
+these fields:
 
 ```text
 Claim or assumption attacked: <specific claim>
@@ -515,12 +570,15 @@ Unresolved findings: none identified after <specific check>
 Residual risk: <remaining risk>
 ```
 
-For medium/high risk, use `review`, `adversarial-review`, or compatible
-historical `challenge` evidence. Include `Review mode: independent read-only`
-and an `Adversarial check type:` naming a negative, differential, operational,
-or rollback check. Code-scope evidence must include the bound `Reviewed HEAD`.
+Each value must have at least 32 characters and 6 words. Values such as
+`checked` or `tests passed` fail. One exception: `Unresolved findings: none
+identified after <check>` is valid when the check text has at least 12
+characters. The evidence must also:
 
-`task audit` and `task finalize` report missing or malformed evidence fields
-and provide a template. They flag empty or generic entries such as `checked`
-or `tests passed`, but do not judge the technical conclusion or block task
-transitions. The check is bounded to recent referenced evidence.
+- have the kind `review`, `adversarial-review` or (older) `challenge`
+- contain `Review mode: independent read-only`
+- contain `Adversarial check type:` with a negative, differential, operational
+  or rollback check
+- for a code scope, contain the bound `Reviewed HEAD`
+
+The advisory names each missing or malformed field and prints a template.

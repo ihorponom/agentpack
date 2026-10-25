@@ -10,41 +10,39 @@ Repo-native task continuity for AI coding agents.
 
 > Agent memory remembers how you work. Agentpack remembers where the task stands.
 
-When a chat closes or its context is compacted, the next session may need to
-reconstruct the task from files and conversation history. Decisions and failed
-approaches can be easy to miss.
+Your agent spent an hour on a task. It found the cause, rejected two approaches, and wrote down the next step. Then the context was compacted, or the chat closed. The next session starts from zero and does the same investigation again.
 
-Agentpack keeps a small, reviewable task ledger in `.agentpack/` inside your repo. Connected agents record durable state as they work: the goal, decisions, dead ends, verification evidence, and checkpoints. The next session loads it back and continues. That next session can be the same agent after compaction, a different client, or you returning next week.
+Agentpack keeps the task state in your repo. Connected agents record the goal, decisions, dead ends, verification evidence, and checkpoints in `.agentpack/` while they work. Then the next session loads that state and continues: the same agent after compaction, a different client, or you next week.
 
 ![How Agentpack works: an agent records task state into .agentpack/ in the repo, and any next session, whether the same agent, another client, or later, continues from it](assets/continuity.svg)
 
-Here it is live. In session 1, Claude Code investigates a flaky test and records what it learns through the Agentpack MCP tools. In session 2, the next day with an empty context, the agent loads the task state and picks up where the first session stopped, without re-investigating:
+Here it is live. In session 1, Claude Code investigates a flaky test and records what it finds through the Agentpack MCP tools. In session 2, the next day with an empty context, the agent loads the task state and continues from where session 1 stopped:
 
 ![Live demo: a Claude Code session records its findings through Agentpack MCP tools, and a fresh session the next day continues from the recorded task state](assets/demo.gif)
 
-Prefer to try it by hand? The same flow driven from the CLI is in [docs/DEMOS.md](docs/DEMOS.md).
+To try the same flow by hand from the CLI, see [docs/DEMOS.md](docs/DEMOS.md).
 
 - **Local-first.** Plain files in your repo. No cloud, no telemetry, no network calls.
-- **Agent-oriented.** A local MCP server plus generated project instructions (`AGENTS.md`, `CLAUDE.md`, Cursor rules) tell agents when to load and record state.
-- **Human-friendly.** The same state is available through the CLI for inspection, debugging, and manual handoff.
+- **Made for agents.** A local MCP server and generated project instructions (`AGENTS.md`, `CLAUDE.md`, Cursor rules) tell agents when to load and record state.
+- **Open to people.** The CLI shows the same state, so you can inspect it, fix it, or hand it off yourself.
 
 ## How is this different from agent memory?
 
-Claude Code memory, Codex memories, and `CLAUDE.md` or `AGENTS.md` remember how to work: your preferences, project conventions, and facts that stay true. Agentpack records where the work is: the current task's goal, constraints, decisions, dead ends, next actions, and whether the result was verified.
+Claude Code memory, Codex memories, and `CLAUDE.md` or `AGENTS.md` keep how to work: your preferences, project conventions, and facts that stay true. Agentpack keeps where the work is: the goal of the current task, its constraints, decisions, dead ends, next actions, and verification result.
 
 | | Agent memory | Agentpack |
 |---|---|---|
-| Holds | Preferences, conventions, long-lived facts | The state of a specific task |
-| Lives in | One client's profile or account | `.agentpack/` in the repo, local by default, portable with task bundles |
+| Holds | Preferences, conventions, long-lived facts | The state of one task |
+| Lives in | The profile or account of one client | `.agentpack/` in the repo, local by default, portable with task bundles |
 | Read by | That client only | Any MCP client: Claude Code, Codex, Cursor, Claude Desktop |
-| Shape | Free-form notes recalled by relevance | A Task Passport with lifecycle, write scope, and verification bound to a commit |
-| Staleness | Not tied to file changes | Source conclusions carry file hashes, so changed files are flagged |
+| Shape | Free-form notes, recalled by relevance | A Task Passport per task: goal, lifecycle, the paths it may change, and verification bound to a commit |
+| Staleness | Not tied to file changes | Notes about files store the file hash, so Agentpack flags a note when its file changes |
 
-Use both: memory for how you like to work, Agentpack for what the task needs next.
+Use both. Memory keeps how you like to work. Agentpack keeps what the task needs next.
 
 ## Quick start
 
-Requires Node.js >= 20.
+Agentpack needs Node.js 20 or later.
 
 ```bash
 npm install -g agentpack-cli
@@ -52,67 +50,71 @@ npm install -g agentpack-cli
 cd path/to/your/repo
 agentpack init                     # once per repo
 agentpack install claude --write   # per client: codex | claude | cursor | claude-desktop
+agentpack install git-hooks --write  # optional: task gate check before each commit
 ```
 
-In a Git repository, `init` adds patterns for untracked local files to Git's
-`info/exclude`. It leaves the project's `.gitignore` untouched. Files already
-tracked by Git remain tracked.
+Restart or reconnect your coding agent, and approve the Agentpack server or hooks when the client asks. From then on, the agent loads the task state when a session starts, records decisions and evidence while it works, and creates checkpoints at meaningful points.
 
-Restart or reconnect the coding-agent client. From then on the agent loads Agentpack context at session start, records decisions and evidence while working, and checkpoints meaningful progress.
+To check the setup, run `agentpack doctor`. To see the task state yourself, run `agentpack resume --preset agent --query "<topic>"`.
 
-Run `agentpack doctor` to verify the setup, and `agentpack resume --preset agent --query "<topic>"` to see the task state yourself.
+In a Git repository, `init` adds the local Agentpack files to `.git/info/exclude`. The list includes `.agentpack/`, `.mcp.json`, `.claude`, `.codex`, `.cursor`, `AGENTS.md`, and `CLAUDE.md`. Agentpack does not change your `.gitignore`. Files that Git already tracks stay tracked.
 
-See [docs/INTEGRATIONS.md](docs/INTEGRATIONS.md) for client-by-client setup, including what each installer writes and why.
+For each client, [docs/INTEGRATIONS.md](docs/INTEGRATIONS.md) shows what the installer writes and why.
 
 ## How it works
 
-1. At session start, the agent loads compact Agentpack context: the current Task Passport, recent checkpoints, decisions, and reviewed conclusions about source files.
-2. While working, it records what is worth keeping: decisions, approaches that failed, and verification evidence. Conclusions about files are stored with file hashes, so a later session can tell when a file has changed since. A matching hash means the file is unchanged, not that the conclusion is right.
-3. At a natural stopping point, it creates a checkpoint with status, next actions, and git state.
-4. The next session, in any MCP-connected agent, continues from that state instead of rebuilding it from chat history.
+1. When a session starts, the agent loads a compact summary: the current Task Passport, recent checkpoints, decisions, and source conclusions.
+2. While it works, the agent records what is worth keeping: decisions, failed approaches, and verification evidence. It can also record a source conclusion: a short note about what a file does, stored with the file hash. If the file changes later, Agentpack flags the conclusion. A matching hash shows that the file is unchanged, not that the conclusion is correct.
+3. At a natural stop, the agent creates a checkpoint with the status, the next actions, and the Git state.
+4. The next session, in any MCP client, continues from that state. It does not rebuild the task from chat history.
 
-Each task gets a **Task Passport**: its goal, status, constraints, write scope, next actions, and verification. Tasks can be started, parked, switched, and finalized, which makes handoffs explicit.
+Each task has a **Task Passport**: the goal, status, constraints, write scope (the paths the task may change), next actions, and verification. You can start, park, switch, and finalize tasks, so each handoff is explicit.
 
-An optional **task gate** warns when edits fall outside the active task. It uses native Claude Code, Codex, and Cursor hooks plus a pre-commit hook. It only warns by default; set `"gateMode": "block"` in `.agentpack/config.json` to stop such edits (see [docs/CLI.md](docs/CLI.md)).
+The **task gate** checks edits against the current Passport. The client installers add native hooks for Claude Code, Codex, and Cursor. `install git-hooks` adds a pre-commit check. By default, the gate only warns. Set `"gateMode"` in `.agentpack/config.json` to `"block"` to stop edits outside the write scope or outside an active task, or to `"off"` to turn the gate off. Hooks are a guardrail, not a sandbox. See [docs/CLI.md](docs/CLI.md).
 
-Resume output stays within a rough token budget, so agents get the useful state back, not the whole history.
+The summary stays inside a token budget. The agent gets the useful state back, not the full history.
 
-Codex, Claude Code, and Cursor installs also include an optional builder subagent for larger implementation work. The main agent says what it will hand off before using it; small tasks stay with the main agent.
+## More features
+
+- **Task bundles.** Export a task to one JSON file, and import it in a fresh clone or on another machine. See [docs/TASK-PASSPORT.md](docs/TASK-PASSPORT.md#portable-bundle-contract).
+- **Tasks across repositories.** One Passport can cover [changes in several repositories](docs/TASK-PASSPORT.md#changes-across-repositories), each with its own write scope.
+- **Monorepo focus.** Give each part of a monorepo (`api/`, `frontend/`, `cron/`) short tasks with their own write scope. The task gate warns when the agent leaves that part.
+- **Usage reports.** `agentpack usage report` reads local Claude Code and Codex transcripts and shows the token use of a task, including the Agentpack share. Nothing leaves your machine.
+- **Read-only inspector.** `agentpack tui` shows tasks, evidence, and checkpoints in the terminal. See [docs/TUI.md](docs/TUI.md).
+- **Builder subagent.** Codex, Claude Code, and Cursor installs include an optional builder for larger implementation work. The main agent says what it will hand off before it uses the builder. Small tasks stay with the main agent.
 
 ## When it helps
 
-- The context window is compacted mid-task and the next turn needs the state back.
-- You start a fresh chat on an ongoing task.
-- You switch between Claude Code, Cursor, Codex, or another MCP client.
-- You return to a refactor or bugfix days later.
+- The context is compacted in the middle of a task, and the next turn needs the state back.
+- You start a new chat on a task that is still open.
+- You change between Claude Code, Cursor, Codex, or another MCP client.
+- You come back to a refactor or a bug fix days later.
 - Another agent continues from your checkpoint.
-- You coordinate [one task across multiple repositories](docs/TASK-PASSPORT.md#changes-across-repositories).
-- You work across parts of a monorepo (`api/`, `frontend/`, `cron/`) with short scoped tasks, and the task gate keeps the agent inside the folder the current task owns.
 
-Agentpack context uses tokens too. Its compact output keeps the task state
-available without including the full ledger history.
+Agentpack context also uses tokens. The compact output keeps the task state available without the full ledger history.
 
 ## Security posture
 
-- Zero runtime dependencies, exact dev dependencies, committed lockfile, `ignore-scripts=true`.
-- No telemetry and no network calls during normal CLI or MCP operation.
-- Best-effort redaction of secret-looking values in stored context and handoff output.
-- Releases are published from GitHub Actions with [npm provenance](https://docs.npmjs.com/generating-provenance-statements) (Trusted Publisher, no long-lived tokens); verify with `npm audit signatures`.
+- Zero runtime dependencies, exact dev dependencies, a committed lockfile, and `ignore-scripts=true`.
+- No telemetry and no network calls in normal CLI or MCP operation.
+- Best-effort redaction of values that look like secrets in stored context and handoff output.
+- GitHub Actions publishes each release with [npm provenance](https://docs.npmjs.com/generating-provenance-statements) (Trusted Publisher, no long-lived tokens). To verify, run `npm audit signatures`.
 
-See [SECURITY.md](SECURITY.md) for the full policy.
+See [SECURITY.md](SECURITY.md) for the full policy, including what Agentpack reads outside the repo.
 
 ## Documentation
 
-- [docs/INTEGRATIONS.md](docs/INTEGRATIONS.md): safe setup for Codex, Claude Code, Cursor, Claude Desktop, and git hooks
-- [docs/CLI.md](docs/CLI.md): full CLI reference, budgets, and manual fallback workflows
-- [docs/MCP.md](docs/MCP.md): the MCP server contract and tool list
-- [docs/TASK-PASSPORT.md](docs/TASK-PASSPORT.md): task lifecycle, handoffs, and portable bundles
-- [docs/DEMOS.md](docs/DEMOS.md): compact continuity demos you can run yourself
-- [docs/DIRECTIONAL-INTEGRITY.md](docs/DIRECTIONAL-INTEGRITY.md): what a useful task handoff should preserve
+- [docs/INTEGRATIONS.md](docs/INTEGRATIONS.md): setup for Codex, Claude Code, Cursor, Claude Desktop, and Git hooks
+- [docs/TASK-PASSPORT.md](docs/TASK-PASSPORT.md): task lifecycle, handoffs, additional repositories, and task bundles
+- [docs/CLI.md](docs/CLI.md): full CLI reference, budgets, and manual workflows
+- [docs/MCP.md](docs/MCP.md): MCP server contract and tools
+- [docs/DEMOS.md](docs/DEMOS.md): short continuity demos to run yourself
+- [docs/TUI.md](docs/TUI.md): the read-only terminal inspector
+- [docs/LEDGER-HYGIENE.md](docs/LEDGER-HYGIENE.md): keep the ledger small and useful
 
-## Contributing / local development
+## Contributing
 
-Clone the repo and use Node 20+:
+Clone the repo and use Node.js 20 or later:
 
 ```bash
 npm ci --ignore-scripts
@@ -121,7 +123,7 @@ npm run mcp:smoke
 node dist/src/agentpack.js --help
 ```
 
-See [docs/SETUP.md](docs/SETUP.md) for development setup and [docs/RELEASING.md](docs/RELEASING.md) for release steps.
+See [docs/SETUP.md](docs/SETUP.md) for the development setup and [docs/RELEASING.md](docs/RELEASING.md) for the release steps.
 
 ---
 

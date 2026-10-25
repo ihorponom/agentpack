@@ -1,134 +1,132 @@
 # Releasing Agentpack
 
-Agentpack publishes to npm as `agentpack-cli` from GitHub Actions, signed with
-npm provenance via a Trusted Publisher. No `NPM_TOKEN` is stored in the repo.
+This page is the maintainer runbook. Agentpack publishes to npm as `agentpack-cli` from GitHub Actions. npm provenance signs each version through a Trusted Publisher. The repository stores no `NPM_TOKEN`.
 
-## Trusted Publisher setup
+## Workflows
 
-- npmjs.com → package `agentpack-cli` → Settings → Trusted Publisher:
-  - Repository: `ihorponom/agentpack`
-  - Workflow: `publish.yml`
-  - Environment: *(empty)*
-- `.github/workflows/publish.yml` requests `id-token: write` so it can present
-  a short-lived OIDC token that npm verifies against the Trusted Publisher
-  binding.
-- The publish workflow uses Node 24 so the bundled npm is new enough for
-  Trusted Publishing without upgrading npm while npm is running.
-- `publishConfig.provenance: true` in `package.json` makes workflow publishes
-  include the provenance attestation.
+| Workflow | Runs on | What it does |
+| --- | --- | --- |
+| `ci.yml` | Push and pull request to `main` | On Node 20 and Node 22: `npm ci`, build, `npm test`, `npm run mcp:smoke`, `npm pack --dry-run --ignore-scripts`. |
+| `publish.yml` | A published GitHub Release, or a manual run | Builds, tests, publishes to npm, then publishes MCP Registry metadata. |
+| `mirror-codeberg.yml` | Push to `main`, push of a `v*` tag, or a manual run | Pushes `main` and tags to the Codeberg mirror. |
 
-## Cutting a release
+## Trusted Publisher Setup
 
-Release discipline:
+In npmjs.com, open the package `agentpack-cli`. Go to Settings, then Trusted Publisher. Set these values:
+
+- Repository: `ihorponom/agentpack`
+- Workflow: `publish.yml`
+- Environment: empty
+
+Other settings:
+
+- `publish.yml` requests `id-token: write`. This lets it present a short-lived OIDC token that npm checks against the Trusted Publisher.
+- `publish.yml` uses Node 24. Its bundled npm is new enough for Trusted Publishing.
+- `publishConfig.provenance: true` in `package.json` adds the provenance attestation to workflow publishes.
+
+## Release Rules
 
 - A normal push to `main` never publishes to npm.
-- Keep feature/docs commits separate from the version bump.
-- Make the version bump as its own release-prep commit after the feature branch
-  has been reviewed and pushed.
-- Re-run pre-flight after the version bump, because the package metadata and
-  tarball have changed.
-- For small patch releases, write concise notes in the GitHub Release.
-- After a release is published, new commits on `main` are next-release
-  candidates. Do not describe unreleased commands or behavior as available in
-  the already-published npm version.
+- Keep feature and docs commits separate from the version bump.
+- Make the version bump its own release commit, after the feature branch is reviewed and pushed.
+- Name the release commit `Prepare release X.Y.Z`.
+- Run the pre-flight checklist again after the version bump. The package metadata and the tarball change. `agentpack release preflight` passes only after you commit and push the bump.
+- Docs-only commits after a verified release do not need the full pre-flight. Review the diff and run light checks such as `git diff --check`.
+- After a release, new commits on `main` belong to the next release. Do not describe them as available in the published npm version.
 
-```bash
-# 1. After feature/code commits are reviewed and pushed, create a separate release-prep commit for the version bump.
-#    Re-run full preflight after the version bump because package metadata and the tarball changed.
-#    Docs-only commits after a verified release do not require full preflight; review the diff and run lightweight checks such as `git diff --check`.
+## Cutting a Release
 
-npm version patch --no-git-tag-version
-VERSION="$(node -p "require('./package.json').version")"
+1. Make the release commit.
 
-git add package.json package-lock.json
-git commit -m "chore(release): prepare ${VERSION}"
+   ```bash
+   npm version patch --no-git-tag-version
+   VERSION="$(node -p "require('./package.json').version")"
+   git add package.json package-lock.json
+   git commit -m "Prepare release ${VERSION}"
+   ```
 
-# 2. Push the release-prep commit.
-git push origin main
+2. Push the release commit.
 
-# 3. Create and push the tag.
-git tag "v${VERSION}"
-git push origin "v${VERSION}"
+   ```bash
+   git push origin main
+   ```
 
-# 4. Create a GitHub Release for that tag. The publish workflow fires on
-#    release: published.
-gh release create "v${VERSION}" \
-  --title "v${VERSION}" \
-  --generate-notes
-```
+3. Run `agentpack release preflight` again. It needs a clean, pushed `main`. Fix any failed check before you continue.
 
-That's it. The workflow will:
+4. Create and push the tag.
+
+   ```bash
+   git tag "v${VERSION}"
+   git push origin "v${VERSION}"
+   ```
+
+5. Create the GitHub Release. The publish workflow starts when the Release is published.
+
+   ```bash
+   gh release create "v${VERSION}" \
+     --title "v${VERSION}" \
+     --generate-notes
+   ```
+
+6. Edit the release notes on GitHub. `--generate-notes` gives a draft. Keep the final notes short. Recent releases list the changes as a few bullet points.
+
+The `publish` job then does these steps:
 
 1. Check out the tag.
 2. Install dependencies with `npm ci`.
-3. Build (`npm run build`).
-4. Run tests (`npm test`).
-5. Verify `package.json` version matches the release tag.
+3. Build with `npm run build`.
+4. Run the tests with `npm test`.
+5. Check that the `package.json` version matches the release tag. This step runs only for a Release event.
 6. Publish with `npm publish --access public`.
-7. In a separate, retryable job, synchronize `server.json` to that package
-   version and publish MCP Registry metadata through GitHub OIDC.
 
-Watch the run at <https://github.com/ihorponom/agentpack/actions>. When it
-finishes, npm shows the green `Provenance` badge on the package page.
+The `Publish MCP Registry metadata` job runs after `publish` succeeds. It is a separate job, so you can retry it alone.
 
-## Manual fallback
+1. It installs `mcp-publisher` from the latest GitHub release. The version is not pinned.
+2. It sets the `version` fields in `server.json` to the `package.json` version.
+3. It logs in with GitHub OIDC and publishes the metadata.
 
-If the npm publish job fails before npm has accepted the version, re-run from
-the Actions tab:
+The committed `server.json` keeps an old version (1.6.0) on purpose. Only the workflow changes it.
 
-1. GitHub → Actions → "Publish to npm" → Run workflow.
-2. Pick the tag (or `main`) and choose `dry-run: true` first to verify.
-3. Re-run with `dry-run: false`.
+The `Publish MCP Registry metadata` job retries only one failure. The Registry returns a 400 response that wraps a 404 message, because npm has not yet shown the new version. The job retries up to five times, after 15, 30, 60, 120, and 240 seconds. It stops at once on authentication, schema, or other errors.
 
-Registry publication retries known npm version-propagation 404 errors up to
-five times, with delays of 15, 30, 60, 120, and 240 seconds. Authentication,
-schema, and other errors fail immediately.
+Watch the run at <https://github.com/ihorponom/agentpack/actions>. When the run ends, the npm package page shows the `Provenance` badge.
 
-If the separate `Publish MCP Registry metadata` job fails after npm succeeds,
-do **not** start the workflow again: npm versions are immutable. In Actions,
-use **Re-run failed jobs** to retry only that Registry job. The Registry is
-metadata for the already-published package, so its recovery is independent of
-the npm release.
+## Manual Run
+
+Use a manual run only if the npm publish job failed before npm accepted the version.
+
+Do not use a manual run to publish a new version. A manual run skips the tag and version check. It publishes the version in `package.json` at the selected ref.
+
+1. Open GitHub, then Actions, then "Publish to npm", then Run workflow.
+2. Select the tag of the version that failed. Select `main` only if `package.json` on `main` has that same version. Set `dry-run` to `true`. Start the run.
+3. Check that the run succeeds. A dry run runs `npm publish --dry-run`. It skips the Registry job.
+4. Run the workflow again with `dry-run` set to `false`.
+
+If the `Publish MCP Registry metadata` job fails after npm succeeds, do not start the workflow again. npm versions are immutable. In Actions, select **Re-run failed jobs**. This retries only the Registry job. The Registry holds metadata for a package that is already published, so this recovery does not touch the npm release.
 
 ## Pre-flight checklist
 
-Before `npm version`:
+Complete these checks before `npm version`:
 
-- `agentpack release preflight` reports no failed checks.
-- `npm test` is green locally.
-- `agentpack doctor` reports no errors. For release-like handoff, source-cache
-  health should show zero changed or missing records; review any source-cache
-  warnings with `agentpack source status --changed --missing`.
-- `npm pack --dry-run` shows the expected set of files and a reasonable
-  tarball size.
-- README and docs reflect the version about to ship.
-- `package.json` `mcpName` and `server.json` name match, and the release
-  workflow can publish the Registry metadata separately from npm.
-- Changes to install flows, MCP launchers, or generated client config are
-  tested in at least one other repository before release. Verify generated
-  snippets point at stable package entrypoints, not transient shell shims.
-- Command-specific help is checked from the built or packed CLI, especially
-  `agentpack resume --help`, so help flags do not accidentally execute the
-  command or require an initialized pack.
-- Handoff clarity is checked with a clean installed package flow: `init`,
-  `doctor`, Task Passport lifecycle, `resume`, and `install codex --dry-run`.
-  Closed-task resume output should label remaining task next actions as
-  historical, not active work.
-- Do not cut a release while basic install, doctor, MCP startup, or resume flows
-  are suspect. Prefer fixing and shipping one follow-up patch over rushing
-  multiple releases that churn the same core workflow.
-- Never bump `SCHEMA_VERSION` in `src/core/store.ts` without shipping a
-  passport/state migration in the same release: `validateTaskPassport` hard-fails
-  on any schemaVersion mismatch, and the gate then fails closed for every
-  existing pack on the old schema.
+- `agentpack release preflight` reports no failed checks. It does not check `mcpName` or `server.json`.
+- `npm test` passes locally.
+- `agentpack doctor` reports no errors. Source cache health shows no changed or missing source conclusions. To review warnings, run `agentpack source status --changed --missing`.
+- `npm pack --dry-run` shows the expected files and a reasonable tarball size.
+- README and docs match the version that you will ship.
+- `package.json` `mcpName` and the name in `server.json` match.
+- You tested changes to install flows, MCP launchers, or generated client config in at least one other repository. Generated snippets point to stable package entry files, not to temporary shell shims.
+- Command help works from the built or packed CLI. Run `agentpack resume --help`. Help must not run the command or need an initialized ledger.
+- A clean installed package passes the handoff flow: `init`, `doctor`, the Task Passport lifecycle, `resume`, and `install codex --dry-run`. Resume output for a closed task labels its next actions as historical.
+
+Do not release while the basic install, doctor, MCP startup, or resume flows are suspect. Prefer one follow-up patch over several rushed releases that change the same core workflow.
+
+Do not change `SCHEMA_VERSION` in `src/core/store.ts` without a Passport and state migration in the same release. `validateTaskPassport` accepts only `schemaVersion` 1 (the current `SCHEMA_VERSION`) and 2. Version 2 is for Passports with additional repositories. Any other value fails validation. Task commands fail for that Passport. The task gate reports `passport-unreadable`, and it blocks only in block mode.
 
 ## Rollback
 
-`npm unpublish agentpack-cli@<version>` is allowed only within 72 hours of
-publish, and only if no other package depends on it. Prefer publishing a
-new patch version with the fix.
+`npm unpublish agentpack-cli@<version>` works only within 72 hours of publish. It also needs that no other package depends on the version. Prefer a new patch version with the fix.
 
-Deprecation (recommended when a version has a bug but unpublish is closed):
+If a version has a bug and unpublish is closed, deprecate it:
 
 ```bash
 npm deprecate agentpack-cli@<version> "Use <newer-version>: <reason>"

@@ -1,34 +1,40 @@
 # Development Setup
 
-Agentpack is a TypeScript/Node project with a conservative npm setup. The npm package name is `agentpack-cli`; the installed command is `agentpack`.
+Agentpack is a TypeScript and Node.js project with a conservative npm setup. The npm package is `agentpack-cli`. The installed command is `agentpack`.
 
 ## Requirements
 
-- Node.js 22 LTS recommended
-- npm 10+
+- Node.js 20 or later (`engines` in `package.json`)
+- Node.js 22 LTS for development (recommended)
+- npm 10 or later
 
-The runtime package has zero third-party dependencies. Development uses TypeScript and Node type definitions only.
+CI tests Node 20 and Node 22. The release workflow uses Node 24.
+
+The runtime package has zero third-party dependencies. Development uses only TypeScript and the Node type definitions.
 
 ## macOS Setup With fnm
 
-```bash
-brew install fnm
-fnm install 22
-fnm default 22
-```
+1. Install fnm and Node 22:
 
-Add this to `~/.zshrc`:
+   ```bash
+   brew install fnm
+   fnm install 22
+   fnm default 22
+   ```
 
-```bash
-eval "$(fnm env --use-on-cd --shell zsh)"
-```
+2. Add this line to `~/.zshrc`:
 
-Restart the terminal, then verify:
+   ```bash
+   eval "$(fnm env --use-on-cd --shell zsh)"
+   ```
 
-```bash
-node --version
-npm --version
-```
+3. Restart the terminal.
+4. Check the versions:
+
+   ```bash
+   node --version
+   npm --version
+   ```
 
 ## Install Dependencies
 
@@ -36,12 +42,14 @@ npm --version
 npm ci --ignore-scripts
 ```
 
-The repo also includes `.npmrc` with:
+The repository has an `.npmrc` file:
 
 ```text
+audit=true
+fund=false
 ignore-scripts=true
-save-exact=true
 package-lock=true
+save-exact=true
 ```
 
 ## Run Checks
@@ -49,9 +57,13 @@ package-lock=true
 ```bash
 npm test
 npm run smoke
+npm run mcp:smoke
 ```
 
-## Publishing Security Notes
+- `npm test` builds the project and runs the test suite.
+- `npm run smoke` builds the project and runs `agentpack --help`.
+- `npm run mcp:smoke` builds the project and starts the MCP server in a smoke test.
 
-The release workflow uses npm Trusted Publishing through GitHub Actions OIDC
-and includes provenance. See [RELEASING.md](RELEASING.md) for the release flow.
+## Publishing
+
+The release workflow uses npm Trusted Publishing through GitHub Actions OIDC. Releases include provenance. [RELEASING.md](RELEASING.md) describes the release flow.

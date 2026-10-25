@@ -1,87 +1,119 @@
 # Ledger Hygiene
 
-Agentpack should keep useful task memory without turning the repo ledger into an
-activity log. Hygiene starts with visibility, not deletion.
+Agentpack keeps useful task memory. It must not turn the ledger into an activity log. Hygiene starts with visibility, not deletion.
 
 ## Principle
 
-Ledger hygiene is about knowing what has accumulated and which records may need
-human review. It is not automatic cleanup.
+Ledger hygiene means you know what has accumulated and which records need human review. Cleanup is never automatic.
 
-Reviewed durable state should be preserved until a user or agent makes an
-explicit decision to archive, refresh, or remove it.
+Keep reviewed durable state until a user or an agent decides to archive, refresh or remove it.
 
-## Read-Only Status
+## Read-only status
 
-Use:
+Run:
 
 ```bash
 agentpack ledger status
 ```
 
-Append `--json` for the same additive inventory as structured data.
+Add `--json` for the same inventory as structured data. The JSON output does not include the closing line.
 
 The command prints a read-only inventory:
 
-- task counts by lifecycle status
+- task counts by lifecycle status (the abandoned count covers Passports from older versions or imported bundles)
 - event count and event log size
-- evidence file count, size, and referenced/unreferenced event counts
+- evidence file count and size, and the referenced and unreferenced evidence events
 - checkpoint count and size
 - export count and size
-- source-cache unchanged/changed/missing counts
+- source cache counts: recorded, unchanged, changed and missing
+- oldest evidence and oldest checkpoint
+- warnings, for example skipped malformed event lines
+- ceremony review candidates, when any exist
 
-It always ends with:
+The text output always ends with this line:
 
 ```text
 No cleanup was performed.
 ```
 
-That line is part of the contract: `ledger status` is safe to run during
-handoff, release pre-flight, or exploratory diagnosis.
+`ledger status` is safe to run during a handoff, a release preflight or a diagnosis.
 
-## What Is Safe To Automate
+## What is safe to automate
 
-Safe first steps are diagnostic:
+Diagnostic steps are safe:
 
-- count tasks, evidence, checkpoints, exports, events, and source records
-- identify missing source records
-- identify evidence events that are not referenced by task verification or other event payloads
-- show old checkpoints or evidence as possible review targets
+- count tasks, evidence, checkpoints, exports, events and source conclusions
+- find missing source conclusions
+- find evidence events that no task verification or other event payload references
+- show old checkpoints and old evidence as possible review targets
 
-These reports do not imply the data is bad. They give future agents and humans a
-map of where ledger weight is accumulating.
+These reports do not mean the data is bad. They show future agents and humans where the ledger gains weight.
 
-## Ceremony Review Candidates
+## Ceremony review candidates
 
-`task audit` and `ledger status` may show a small, bounded set of `review candidate`
-diagnostics: repeated final-verdict resets, exact duplicate evidence or checkpoints,
-repeated stale-source warnings retained in checkpoint resumes, or several short tasks
-with the exact same objective and overlapping scope. They never block, mutate, clean,
-or claim that time or defects were saved. A preserved external wait and one ordinary
-verification reset stay quiet by design. To bound status cost, diagnostics inspect only
-the newest 30 tasks, task events, evidence events, and checkpoints, skipping individual
-files over 256 KiB. Malformed global event lines are skipped individually and reported
-as additive status warnings; valid retained events remain visible.
+`task audit` and `ledger status` can show a small, bounded set of `review candidate` diagnostics. They cover:
 
-## What Requires Explicit Review
+- repeated final-verdict resets
+- exact duplicate evidence or checkpoints
+- repeated stale-source warnings kept in checkpoint resumes
+- several short tasks with the same objective and overlapping scope
 
-Do not automatically delete or refresh:
+The diagnostics never block, change or clean anything. They never claim that they saved time or prevented defects. A single ordinary verification reset stays quiet by design.
 
-- current task passports
-- parked, blocked, or verifying task passports
-- evidence referenced by task verification or other event payloads
-- task events needed for replay/audit history
-- source records whose files changed
-- checkpoints for active or paused work
+To bound the cost, the diagnostics inspect only the newest 30 tasks, task events, evidence events and checkpoints. They skip individual files over 256 KiB. Agentpack skips malformed global event lines one by one and reports them as status warnings. Valid retained events stay visible.
 
-Changed source records require semantic review. Use:
+## What needs explicit review
+
+Do not delete or refresh these items automatically:
+
+- the current Passport
+- parked, blocked and verifying Passports
+- evidence that a task verification or another event payload references
+- task events that replay and audit history need
+- source conclusions whose files changed
+- checkpoints of active or parked work (but see [Compact the ledger](#compact-the-ledger): compaction slims old checkpoints by count)
+
+A changed source conclusion needs a semantic review. Run:
 
 ```bash
 agentpack source review <file> --summary "Updated durable conclusion."
 ```
 
-Missing source records can be pruned explicitly:
+## Remove source conclusions
+
+Remove the conclusions for deleted files:
 
 ```bash
 agentpack source prune --missing
 ```
+
+Remove one conclusion that is no longer useful:
+
+```bash
+agentpack source remove <file>
+```
+
+## Compact the ledger
+
+Run `ledger compact` when `doctor` reports a large ledger. The command is a dry run by default. It prints a plan and changes nothing.
+
+```bash
+agentpack ledger compact [--write] [--purge] [--keep-checkpoints <n>] [--evidence-age-days <n>]
+```
+
+| Option | Meaning |
+|---|---|
+| `--write` | Apply the plan. Agentpack moves the selected data to `.agentpack/archive/`. |
+| `--purge` | Delete the selected data instead of archiving it. Use it with `--write`. |
+| `--keep-checkpoints <n>` | Keep the newest `n` checkpoints in full. The default is 30. |
+| `--evidence-age-days <n>` | Select unreferenced evidence older than `n` days. The default is 30. |
+
+The plan selects three kinds of data:
+
+- `diff.patch`, `git-status.txt` and `resume.md` of checkpoints older than the newest `n`. The count of checkpoints decides, not the lifecycle of their tasks. Every `checkpoint.json` stays.
+- superseded source cache events in `events.jsonl`
+- unreferenced evidence files older than the evidence age
+
+Decisions, dead ends, referenced evidence and checkpoint metadata always stay. A checkpoint of an active or parked task can lose its snapshot files when newer checkpoints push it past the limit. Its `checkpoint.json` stays. Raise `--keep-checkpoints` to keep more snapshots in full.
+
+Do not run `--purge` before you review the dry-run plan. Purged data cannot be restored. Archived data stays in `.agentpack/archive/`.
