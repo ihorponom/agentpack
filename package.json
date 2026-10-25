@@ -19,6 +19,7 @@
     "build": "tsc -p tsconfig.json",
     "mcp:smoke": "npm run build && node scripts/mcp-smoke.mjs",
     "smoke": "npm run build && node dist/src/agentpack.js --help",
+    "video": "node scripts/video/build.mjs",
     "test": "npm run build && node --test dist/tests/*.test.js",
     "prepack": "npm test"
   },

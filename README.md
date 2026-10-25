@@ -16,9 +16,9 @@ Agentpack keeps the task state in your repo. Connected agents record the goal, d
 
 ![How Agentpack works: an agent records task state into .agentpack/ in the repo, and any next session, whether the same agent, another client, or later, continues from it](assets/continuity.svg)
 
-Here it is live. In session 1, Claude Code investigates a flaky test and records what it finds through the Agentpack MCP tools. In session 2, the next day with an empty context, the agent loads the task state and continues from where session 1 stopped:
+Here it is in action. In session 1, an agent works on a flaky test and records a decision, a dead end, and a checkpoint through the Agentpack MCP tools. In session 2, the next day with an empty context, one `load_context` call brings the task back:
 
-![Live demo: a Claude Code session records its findings through Agentpack MCP tools, and a fresh session the next day continues from the recorded task state](assets/demo.gif)
+![Demo: an agent records a decision, a dead end, and a checkpoint through Agentpack MCP tools, then a new session the next day loads the task state with one call](assets/demo.gif)
 
 To try the same flow by hand from the CLI, see [docs/DEMOS.md](docs/DEMOS.md).
 

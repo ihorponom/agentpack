@@ -1,0 +1,57 @@
+WEBVTT
+
+1
+00:00:01.600 --> 00:00:04.440
+Your coding agent spent an hour on a bug.
+
+2
+00:00:04.540 --> 00:00:06.892
+Then the context was compacted.
+
+3
+00:00:06.992 --> 00:00:08.995
+Now it starts from zero.
+
+4
+00:00:11.345 --> 00:00:13.742
+It reads the same files again.
+
+5
+00:00:13.842 --> 00:00:16.264
+It tries the fix that already failed.
+
+6
+00:00:18.445 --> 00:00:21.563
+Agentpack keeps the task state in your repo.
+
+7
+00:00:21.663 --> 00:00:27.416
+Not the chat: the goal, the decisions, the dead ends, the evidence, and the next step.
+
+8
+00:00:30.345 --> 00:00:34.169
+While the agent works, it records only what is worth keeping.
+
+9
+00:00:45.345 --> 00:00:48.956
+Next day. New session. Empty context.
+
+10
+00:00:49.056 --> 00:00:52.591
+One call, and the agent knows where the task stands.
+
+11
+00:00:58.345 --> 00:01:03.901
+Any MCP client can continue: Claude Code, Codex, or Cursor.
+
+12
+00:01:05.345 --> 00:01:07.636
+Plain files. No cloud.
+
+13
+00:01:07.736 --> 00:01:10.828
+A gate that warns when the agent leaves its task.
+
+14
+00:01:13.145 --> 00:01:17.476
+Three commands, and your next session starts where the last one stopped.

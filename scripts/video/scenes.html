@@ -1,0 +1,536 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Agentpack explainer scenes</title>
+<style>
+  :root {
+    --bg: #0B1020;
+    --text: #F1F5F9;
+    --muted: #94A3B8;
+    --amber: #F59E0B;
+    --blue: #3B82F6;
+    --green: #22C55E;
+    --red: #F43F5E;
+    --panel: #111830;
+    --line: rgba(148, 163, 184, 0.22);
+    --sans: -apple-system, "SF Pro Display", "Helvetica Neue", sans-serif;
+    --mono: ui-monospace, "SF Mono", Menlo, monospace;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { width: 1920px; height: 1080px; overflow: hidden; background: var(--bg); }
+  body { font-family: var(--sans); color: var(--text); }
+  #stage {
+    position: relative; width: 1920px; height: 1080px; overflow: hidden;
+    background-color: var(--bg);
+    background-image: radial-gradient(rgba(148, 163, 184, 0.16) 1.5px, transparent 1.6px);
+    background-size: 48px 48px;
+  }
+  #stage::after {
+    content: ""; position: absolute; inset: 0; pointer-events: none;
+    background: radial-gradient(ellipse at 50% 45%, transparent 45%, rgba(5, 8, 18, 0.65) 100%);
+  }
+  .scene { position: absolute; inset: 0; opacity: 0; will-change: transform; }
+  .abs { position: absolute; }
+
+  #wordmark {
+    position: absolute; left: 56px; bottom: 44px; z-index: 6;
+    font: 500 26px var(--mono); color: var(--muted); letter-spacing: 0.04em; opacity: 0.8;
+  }
+  #caption {
+    position: absolute; left: 50%; bottom: 62px; z-index: 5; transform: translateX(-50%);
+    max-width: 1500px; padding: 16px 36px; border-radius: 22px;
+    background: rgba(5, 8, 18, 0.78); border: 1px solid rgba(148, 163, 184, 0.16);
+    font: 500 40px/1.3 var(--sans); color: #fff; text-align: center; opacity: 0;
+  }
+
+  .term {
+    position: absolute; border-radius: 18px; overflow: hidden;
+    background: #0E1428; border: 1px solid var(--line);
+    box-shadow: 0 40px 100px rgba(0, 0, 0, 0.55);
+  }
+  .term .bar {
+    height: 64px; display: flex; align-items: center; gap: 12px; padding: 0 26px;
+    background: #141C36; border-bottom: 1px solid var(--line);
+  }
+  .term .dot { width: 16px; height: 16px; border-radius: 50%; background: #3A4466; }
+  .term .title { margin-left: 14px; font: 500 24px var(--mono); color: var(--muted); }
+  .term .body {
+    position: absolute; left: 0; right: 0; top: 64px; bottom: 0; overflow: hidden;
+    -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 18px, #000 100%);
+  }
+  .term .inner { position: absolute; left: 0; right: 0; top: 0; padding: 30px 40px; }
+  .line {
+    font: 400 28px/42px var(--mono); color: var(--text); white-space: pre-wrap;
+    padding-left: 1.4em; text-indent: -1.4em; display: none;
+  }
+  .line .p { display: inline-block; width: 1.4em; text-indent: 0; }
+  .line .t { text-indent: 0; }
+  .line.muted { color: var(--muted); }
+  .line.green { color: var(--green); }
+  .line.red { color: var(--red); }
+  .line.amber { color: var(--amber); }
+  .line.blue { color: var(--blue); }
+  .line .p.amber { color: var(--amber); }
+  .line .p.blue { color: var(--blue); }
+  .line .p.green { color: var(--green); }
+  .line .p.red { color: var(--red); }
+  .line.bold .t { font-weight: 700; }
+  .line.pad { margin-top: 18px; }
+  .line.sub { padding-left: 2.8em; }
+  .chip {
+    display: inline-block; margin-left: 16px; padding: 0 14px; border-radius: 999px;
+    font: 600 22px/34px var(--sans); vertical-align: 2px; text-indent: 0;
+  }
+  .chip.amber { background: rgba(245, 158, 11, 0.18); color: var(--amber); }
+  .chip.red { background: rgba(244, 63, 94, 0.18); color: var(--red); }
+  .cursor {
+    display: inline-block; width: 0.55em; height: 1.05em; margin-left: 2px;
+    background: var(--amber); vertical-align: -4px; text-indent: 0;
+  }
+
+  .banner {
+    position: absolute; left: 40px; right: 40px; bottom: 40px; padding: 22px 32px;
+    border-radius: 14px; background: rgba(245, 158, 11, 0.14); border: 1px solid rgba(245, 158, 11, 0.55);
+    font: 600 34px var(--mono); color: var(--amber); text-align: center; opacity: 0;
+  }
+
+  .card {
+    position: absolute; border-radius: 22px; background: var(--panel); border: 1px solid var(--line);
+    box-shadow: 0 30px 80px rgba(0, 0, 0, 0.45);
+  }
+  .card h3 { font: 600 30px var(--sans); color: var(--muted); }
+  .bars { position: absolute; left: 36px; right: 36px; top: 110px; }
+  .bars i { display: block; height: 16px; border-radius: 8px; background: rgba(148, 163, 184, 0.28); margin-bottom: 22px; }
+  .folder-name { font: 700 40px var(--mono); color: var(--amber); }
+  .item { position: absolute; left: 44px; font: 500 38px var(--sans); display: flex; align-items: center; gap: 22px; }
+  .item b { width: 16px; height: 16px; border-radius: 50%; display: block; }
+  .label {
+    position: absolute; font: 500 26px var(--mono); color: var(--muted); text-align: center;
+  }
+  svg.layer { position: absolute; left: 0; top: 0; width: 1920px; height: 1080px; }
+  .chipbox {
+    position: absolute; width: 460px; height: 118px; border-radius: 20px; background: var(--panel);
+    border: 1px solid var(--line); display: flex; align-items: center; padding: 0 40px;
+    font: 600 44px var(--sans); box-shadow: 0 24px 60px rgba(0, 0, 0, 0.4);
+  }
+  .fact {
+    position: absolute; width: 830px; height: 190px; border-radius: 22px; background: var(--panel);
+    border: 1px solid var(--line); padding: 0 44px; display: flex; align-items: center; gap: 32px;
+    font: 600 40px/1.2 var(--sans); box-shadow: 0 24px 60px rgba(0, 0, 0, 0.4);
+  }
+  .fact svg { flex: none; width: 76px; height: 76px; }
+  .big { position: absolute; left: 0; right: 0; text-align: center; font-weight: 700; letter-spacing: -0.02em; }
+</style>
+</head>
+<body>
+<div id="stage">
+  <div id="scenes"></div>
+  <div id="wordmark">agentpack</div>
+  <div id="caption"></div>
+</div>
+
+<script>
+const clamp01 = (x) => Math.max(0, Math.min(1, x));
+const ease = (x) => x * x * (3 - 2 * x);
+const prog = (t, start, dur) => ease(clamp01((t - start) / dur));
+const el = (tag, cls, parent, html) => {
+  const node = document.createElement(tag);
+  if (cls) node.className = cls;
+  if (html !== undefined) node.innerHTML = html;
+  if (parent) parent.appendChild(node);
+  return node;
+};
+const esc = (s) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;");
+const SVGNS = "http://www.w3.org/2000/svg";
+const svgEl = (tag, attrs, parent) => {
+  const node = document.createElementNS(SVGNS, tag);
+  for (const [k, v] of Object.entries(attrs)) node.setAttribute(k, v);
+  parent.appendChild(node);
+  return node;
+};
+
+function shorten(text) {
+  return text
+    .replace(/(task_\d{4}-\d\d-\d\d)T[\w-]*?_[0-9a-f]{6}_([\w-]+)/g, "$1…_$2")
+    .replace(/(evt_\d{4}-\d\d-\d\d)T[\w-]*?([0-9a-f]{4})(?=[.\s]|$)/g, "$1…$2");
+}
+
+function makeTerminal(parent, geometry, title) {
+  const root = el("div", "term", parent);
+  Object.assign(root.style, { left: geometry.left + "px", top: geometry.top + "px", width: geometry.width + "px", height: geometry.height + "px" });
+  const bar = el("div", "bar", root);
+  for (let i = 0; i < 3; i++) el("span", "dot", bar);
+  el("span", "title", bar, esc(title));
+  const body = el("div", "body", root);
+  const inner = el("div", "inner", body);
+  const lines = [];
+  const cursor = el("span", "cursor");
+  let steps = null;
+
+  const measureSteps = () => {
+    const viewport = body.clientHeight - 30;
+    const result = [];
+    lines.forEach((line, k) => {
+      lines.forEach((other, n) => {
+        other.node.style.display = n <= k ? "block" : "none";
+        other.node.style.opacity = "1";
+        other.node.style.transform = "none";
+        other.text.textContent = other.spec.text || "";
+        other.shown = -1;
+        if (other.chip) other.chip.style.display = "inline-block";
+      });
+      const bottom = lines[k].node.offsetTop + lines[k].node.offsetHeight;
+      const need = bottom + 30 - viewport;
+      let shift = 0;
+      if (need > 0) {
+        const tops = lines.slice(0, k + 1).map((l) => l.node.offsetTop - parseFloat(getComputedStyle(l.node).marginTop) - 6);
+        shift = tops.find((top) => top >= need) ?? need;
+      }
+      result.push({ at: line.spec.at, shift });
+    });
+    return result;
+  };
+
+  const scrollAt = (t) => {
+    if (!steps) steps = measureSteps();
+    let from = 0;
+    let to = 0;
+    let at = -Infinity;
+    for (const step of steps) {
+      if (t < step.at) break;
+      from = to;
+      to = step.shift;
+      at = step.at;
+    }
+    return from + (to - from) * prog(t, at, 0.3);
+  };
+
+  return {
+    root, body,
+    add(spec) {
+      const node = el("div", "line " + (spec.cls || ""), inner);
+      const prefix = el("span", "p", node, spec.prefix ? esc(spec.prefix) : "");
+      if (spec.prefixCls) prefix.className += " " + spec.prefixCls;
+      const text = el("span", "t", node);
+      const chip = spec.chip ? el("span", "chip " + spec.chip.cls, node, esc(spec.chip.text)) : null;
+      if (chip) chip.style.display = "none";
+      lines.push({ spec, node, text, chip, shown: -1 });
+    },
+    update(t) {
+      const scroll = scrollAt(t);
+      let last = null;
+      for (const line of lines) {
+        const { spec } = line;
+        const full = spec.text || "";
+        const started = t >= spec.at;
+        let opacity = 1;
+        if (started && spec.hideAt !== undefined) opacity = 1 - prog(t, spec.hideAt, spec.hideDur || 0.4);
+        const visible = started && opacity > 0;
+        line.node.style.display = visible ? "block" : "none";
+        if (!visible) continue;
+        const count = spec.cps ? Math.min(full.length, Math.floor((t - spec.at) * spec.cps)) : full.length;
+        if (count !== line.shown) { line.text.textContent = full.slice(0, count); line.shown = count; }
+        const appear = spec.cps ? 1 : prog(t, spec.at, 0.18);
+        line.node.style.opacity = String(opacity * appear);
+        line.node.style.transform = spec.cps ? "none" : `translateY(${(1 - appear) * 8}px)`;
+        if (line.chip) line.chip.style.display = t >= spec.at + (spec.chipDelay || 0.3) ? "inline-block" : "none";
+        last = line;
+      }
+      for (const line of lines) if (cursor.parentNode === line.node) line.node.removeChild(cursor);
+      if (last && last.spec.cursor) last.node.insertBefore(cursor, last.chip);
+      inner.style.transform = `translateY(${-scroll}px)`;
+    }
+  };
+}
+
+const TERM = { left: 160, top: 70, width: 1600, height: 780 };
+const TERM_SHORT = { left: 260, top: 150, width: 1400, height: 560 };
+
+function sceneHook(root, sc) {
+  const term = makeTerminal(root, TERM_SHORT, "~/shop-api");
+  const L = (j) => sc.L(j);
+  term.add({ at: 0.5, text: "Investigate the flaky checkout test", prefix: "›", prefixCls: "amber", cps: 28, cursor: true, hideAt: L(2), hideDur: 0.5 });
+  const work = [
+    ["Read src/checkout.ts", ""],
+    ["Read tests/checkout.test.ts", ""],
+    ["Run npm test", "muted"],
+    ["Cause: a real timer races with the clock", ""],
+    ["Plan: use a fixed clock in the test", ""]
+  ];
+  work.forEach(([text, cls], k) => {
+    term.add({ at: L(0) + 0.1 + k * 0.5, text, prefix: "●", prefixCls: "blue", cls, hideAt: L(2), hideDur: 0.5 });
+  });
+  term.add({ at: L(2) + 0.7, text: "", prefix: "›", prefixCls: "amber", cursor: true, cls: "pad" });
+  const banner = el("div", "banner", term.root, "Context compacted");
+  return (t) => {
+    term.update(t);
+    const slide = prog(t, L(1), 0.35);
+    const fade = 1 - prog(t, L(2) + 0.2, 0.5);
+    banner.style.opacity = String(slide * fade);
+    banner.style.transform = `translateY(${(1 - slide) * 30}px)`;
+  };
+}
+
+function sceneRework(root, sc) {
+  const term = makeTerminal(root, TERM_SHORT, "~/shop-api");
+  const L = (j) => sc.L(j);
+  term.add({ at: 0.3, text: "Investigate the flaky checkout test", prefix: "›", prefixCls: "amber", cps: 28 });
+  term.add({ at: L(0) + 0.2, text: "Read src/checkout.ts", prefix: "●", prefixCls: "blue", chip: { text: "again", cls: "amber" } });
+  term.add({ at: L(0) + 1.1, text: "Read tests/checkout.test.ts", prefix: "●", prefixCls: "blue", chip: { text: "again", cls: "amber" } });
+  term.add({ at: L(1) + 0.2, text: "Edit tests/checkout.test.ts  timeout 5s → 30s", prefix: "●", prefixCls: "blue", cls: "pad" });
+  term.add({ at: L(1) + 1.2, text: "Same failure.", prefix: "✗", prefixCls: "red", cls: "red", chip: { text: "already failed", cls: "red" }, cursor: false });
+  return (t) => term.update(t);
+}
+
+function drawArrow(arrow, p) {
+  arrow.shaft.style.strokeDashoffset = String(1 - p);
+  arrow.shaft.style.opacity = p > 0 ? "1" : "0";
+  arrow.head.style.opacity = String(clamp01((p - 0.85) / 0.15));
+}
+
+function sceneIdea(root, sc) {
+  const L = (j) => sc.L(j);
+  const svg = svgEl("svg", { class: "layer", viewBox: "0 0 1920 1080" }, root);
+  const mkArrow = (x1, x2, y) => ({
+    shaft: svgEl("path", { d: `M${x1} ${y} L${x2 - 12} ${y}`, stroke: "#F59E0B", "stroke-width": 5, fill: "none", "stroke-linecap": "butt", pathLength: 1, "stroke-dasharray": 1 }, svg),
+    head: svgEl("path", { d: `M${x2 - 20} ${y - 12} L${x2} ${y} L${x2 - 20} ${y + 12} z`, fill: "#F59E0B" }, svg)
+  });
+  const arrow1 = mkArrow(590, 700, 420);
+  const arrow2 = mkArrow(1230, 1340, 420);
+
+  const s1 = el("div", "card", root, "<h3 style='position:absolute;left:36px;top:34px'>Session 1</h3>");
+  Object.assign(s1.style, { left: "130px", top: "250px", width: "430px", height: "340px" });
+  const bars1 = el("div", "bars", s1, "<i style='width:90%'></i><i style='width:70%'></i><i style='width:82%'></i><i style='width:50%'></i>");
+  const s1tag = el("div", "label", root, "chat");
+  Object.assign(s1tag.style, { left: "130px", top: "610px", width: "430px" });
+
+  const folder = el("div", "card", root);
+  Object.assign(folder.style, { left: "730px", top: "130px", width: "500px", height: "580px", borderColor: "rgba(245,158,11,0.6)", borderStyle: "dashed" });
+  el("div", "folder-name", folder).style.cssText = "position:absolute;left:44px;top:40px";
+  folder.firstChild.textContent = ".agentpack/";
+  const items = [["goal", "#3B82F6"], ["decisions", "#F59E0B"], ["dead ends", "#F43F5E"], ["evidence", "#22C55E"], ["next step", "#94A3B8"]];
+  const itemEls = items.map(([name, color], k) => {
+    const row = el("div", "item", folder, `<b style="background:${color}"></b>${name}`);
+    row.style.top = 140 + k * 82 + "px";
+    return row;
+  });
+  const repoTag = el("div", "label", root, "in your repo");
+  Object.assign(repoTag.style, { left: "730px", top: "735px", width: "500px" });
+
+  const s2 = el("div", "card", root, "<h3 style='position:absolute;left:36px;top:34px'>Session 2</h3>");
+  Object.assign(s2.style, { left: "1360px", top: "250px", width: "430px", height: "340px" });
+  const bars2 = el("div", "bars", s2, "<i style='width:90%;background:rgba(245,158,11,.55)'></i><i style='width:75%;background:rgba(245,158,11,.55)'></i><i style='width:60%;background:rgba(245,158,11,.55)'></i><i style='width:80%;background:rgba(245,158,11,.55)'></i>");
+
+  const itemStep = (sc.lines[1].end - sc.lines[1].start - 0.4) / 5;
+  return (t) => {
+    const f = prog(t, 0.2, 0.6);
+    folder.style.opacity = String(f);
+    folder.style.transform = `translateY(${(1 - f) * 24}px)`;
+    repoTag.style.opacity = String(f);
+    s1.style.opacity = String(prog(t, 0, 0.5));
+    s1tag.style.opacity = String(prog(t, 0, 0.5));
+    const a1 = prog(t, L(0) + 0.5, 0.7);
+    drawArrow(arrow1, a1);
+    bars1.style.opacity = String(1 - 0.6 * prog(t, L(1), 0.8));
+    itemEls.forEach((row, k) => {
+      const p = prog(t, L(1) + 0.2 + k * itemStep, 0.4);
+      row.style.opacity = String(p);
+      row.style.transform = `translateX(${(1 - p) * 30}px)`;
+    });
+    const endItems = L(1) + 0.2 + 5 * itemStep;
+    const a2 = prog(t, endItems, 0.6);
+    drawArrow(arrow2, a2);
+    s2.style.opacity = String(prog(t, endItems + 0.2, 0.5));
+    bars2.style.opacity = String(prog(t, endItems + 0.5, 0.8));
+  };
+}
+
+const SHOWN_ARGS = ["title", "writeScope", "text", "reason", "summary"];
+
+function sceneRecord(root, sc, data) {
+  const term = makeTerminal(root, TERM, "~/shop-api");
+  const L = (j) => sc.L(j);
+  term.add({ at: 0.3, text: "Fix the flaky checkout test", prefix: "›", prefixCls: "amber", cps: 28 });
+  const fmt = (v) => (Array.isArray(v) ? v.join(", ") : String(v));
+  const step = 3.1;
+  data.captured.recorded.forEach((call, k) => {
+    const start = L(0) + 0.3 + k * step;
+    term.add({ at: start, text: `agentpack · ${call.name}`, prefix: "●", prefixCls: "blue", cls: "bold pad" });
+    const shownArgs = Object.entries(call.args).filter(([key]) => SHOWN_ARGS.includes(key));
+    shownArgs.forEach(([key, value], n) => {
+      term.add({ at: start + 0.25 + n * 0.12, text: `${key}: ${fmt(value)}`, cls: "muted sub" });
+    });
+    const resultAt = start + 0.5 + shownArgs.length * 0.12 + 0.3;
+    term.add({ at: resultAt, text: shorten(call.result), prefix: "✓", prefixCls: "green", cls: "green sub" });
+  });
+  return (t) => term.update(t);
+}
+
+function pickLoadLines(text) {
+  const all = text.split("\n");
+  const section = (name) => {
+    const from = all.indexOf(`## ${name}`);
+    const rest = all.slice(from + 1);
+    const to = rest.findIndex((l) => l.startsWith("## "));
+    return rest.slice(0, to < 0 ? undefined : to).filter((l) => l.trim());
+  };
+  const passportLines = section("Current Task Passport");
+  const nextAt = passportLines.indexOf("- Task next actions:");
+  const passport = passportLines.filter((l, i) => /^- (Title|Status|Objective):/.test(l) || (i >= nextAt && /^- Task next actions:|^  - /.test(l)));
+  return [
+    { text: "## Current Task Passport", cls: "amber bold" }, ...passport.map((text) => ({ text })),
+    { text: "## Decisions", cls: "amber bold pad" }, ...section("Decisions").map((text) => ({ text })),
+    { text: "## Dead Ends", cls: "amber bold pad" }, ...section("Dead Ends").map((text) => ({ text }))
+  ];
+}
+
+function sceneContinue(root, sc, data) {
+  const L = (j) => sc.L(j);
+  const card = el("div", "", root);
+  card.style.cssText = "position:absolute;left:0;right:0;top:300px;text-align:center";
+  el("div", "big", card, "Next day.<br><span style='color:var(--amber)'>New session.</span>").style.cssText = "position:relative;font:700 120px/1.15 var(--sans);letter-spacing:-0.02em";
+  const term = makeTerminal(root, TERM, "~/shop-api");
+  const start = L(1) - 0.1;
+  term.add({ at: start, text: "Continue the checkout task", prefix: "›", prefixCls: "amber", cps: 28 });
+  term.add({ at: start + 1.5, text: `agentpack · load_context  preset: ${data.captured.load.args.preset}`, prefix: "●", prefixCls: "blue", cls: "bold pad" });
+  pickLoadLines(data.captured.load.result).forEach((line, k) => {
+    term.add({ at: start + 2.2 + k * 0.22, text: shorten(line.text), cls: "sub " + (line.cls || "") });
+  });
+  return (t) => {
+    const cardOpacity = prog(t, 0.2, 0.5) * (1 - prog(t, L(1) - 0.5, 0.4));
+    card.style.opacity = String(cardOpacity);
+    card.style.transform = `translateY(${(1 - prog(t, 0.2, 0.5)) * 20}px)`;
+    const termOpacity = prog(t, L(1) - 0.3, 0.4);
+    term.root.style.opacity = String(termOpacity);
+    term.update(t);
+  };
+}
+
+function sceneClients(root, sc) {
+  const L = (j) => sc.L(j);
+  const dur = sc.lines[0].end - sc.lines[0].start;
+  const svg = svgEl("svg", { class: "layer", viewBox: "0 0 1920 1080" }, root);
+  const names = ["Claude Code", "Codex", "Cursor"];
+  const ys = [250, 430, 610];
+  const boxes = names.map((name, k) => {
+    const box = el("div", "chipbox", root, esc(name));
+    Object.assign(box.style, { left: "200px", top: ys[k] + "px" });
+    return box;
+  });
+  const paths = ys.map((y) => svgEl("path", {
+    d: `M660 ${y + 59} C 860 ${y + 59}, 880 489, 1060 489`, stroke: "#3B82F6", "stroke-width": 5, fill: "none",
+    "stroke-linecap": "round", pathLength: 1, "stroke-dasharray": 1
+  }, svg));
+  const mcp = el("div", "label", root, "MCP");
+  Object.assign(mcp.style, { left: "800px", top: "440px", width: "120px", fontSize: "30px", color: "#3B82F6", fontWeight: "600" });
+  const folder = el("div", "card", root);
+  Object.assign(folder.style, { left: "1060px", top: "330px", width: "640px", height: "320px", borderColor: "rgba(245,158,11,0.6)", borderStyle: "dashed" });
+  el("div", "folder-name", folder, ".agentpack/").style.cssText = "position:absolute;left:48px;top:70px;font-size:52px";
+  el("div", "", folder, "one task state,<br>any client").style.cssText = "position:absolute;left:48px;top:170px;font:500 38px/1.3 var(--sans);color:var(--muted)";
+  return (t) => {
+    const f = prog(t, 0.2, 0.6);
+    folder.style.opacity = String(f);
+    folder.style.transform = `translateY(${(1 - f) * 24}px)`;
+    boxes.forEach((box, k) => {
+      const at = L(0) + dur * (0.2 + 0.2 * k);
+      const p = prog(t, at, 0.4);
+      box.style.opacity = String(p);
+      box.style.transform = `translateX(${(1 - p) * -40}px)`;
+      const draw = prog(t, at + 0.2, 0.7);
+      paths[k].style.strokeDashoffset = String(1 - draw);
+      paths[k].style.opacity = draw > 0 ? "1" : "0";
+    });
+    mcp.style.opacity = String(prog(t, L(0) + dur * 0.5, 0.5));
+  };
+}
+
+const ICONS = {
+  file: '<svg viewBox="0 0 76 76" fill="none" stroke="#3B82F6" stroke-width="4.5" stroke-linejoin="round" stroke-linecap="round"><path d="M18 8h30l14 14v46H18z"/><path d="M48 8v14h14"/><path d="M28 40h24M28 52h24"/></svg>',
+  cloud: '<svg viewBox="0 0 76 76" fill="none" stroke="#22C55E" stroke-width="4.5" stroke-linejoin="round" stroke-linecap="round"><path d="M22 56a14 14 0 0 1-2-27 18 18 0 0 1 35 3 12 12 0 0 1-1 24z"/><path d="M12 66L64 10"/></svg>',
+  gate: '<svg viewBox="0 0 76 76" fill="none" stroke="#F59E0B" stroke-width="4.5" stroke-linejoin="round" stroke-linecap="round"><path d="M38 8l24 9v18c0 16-10 26-24 32C24 61 14 51 14 35V17z"/><path d="M27 37l8 8 15-16"/></svg>',
+  commit: '<svg viewBox="0 0 76 76" fill="none" stroke="#F1F5F9" stroke-width="4.5" stroke-linecap="round"><circle cx="38" cy="38" r="13"/><path d="M6 38h19M51 38h19"/></svg>'
+};
+
+function sceneTrust(root, sc) {
+  const L = (j) => sc.L(j);
+  const facts = [
+    ["file", "Plain files in your repo", 90, 260, L(0) + 0.2],
+    ["cloud", "No cloud. No telemetry.", 1000, 260, L(0) + 1.1],
+    ["gate", "Gate flags out-of-scope edits", 90, 520, L(1) + 0.2],
+    ["commit", "Verification bound to a commit", 1000, 520, L(1) + 2.0]
+  ];
+  const nodes = facts.map(([icon, text, x, y]) => {
+    const box = el("div", "fact", root, ICONS[icon] + `<span>${esc(text)}</span>`);
+    Object.assign(box.style, { left: x + "px", top: y + "px" });
+    return box;
+  });
+  return (t) => nodes.forEach((box, k) => {
+    const p = prog(t, facts[k][4], 0.5);
+    box.style.opacity = String(p);
+    box.style.transform = `translateY(${(1 - p) * 30}px) scale(${0.97 + 0.03 * p})`;
+  });
+}
+
+function sceneCta(root, sc, data) {
+  const L = (j) => sc.L(j);
+  const term = makeTerminal(root, { left: 360, top: 80, width: 1200, height: 390 }, "~/shop-api");
+  term.add({ at: 0.4, text: "npm install -g agentpack-cli", prefix: "$", prefixCls: "green", cps: 32 });
+  term.add({ at: 1.6, text: "agentpack init", prefix: "$", prefixCls: "green", cps: 32 });
+  term.add({ at: 2.2, text: data.captured.init, cls: "muted sub", cursor: false });
+  term.add({ at: 2.6, text: "agentpack install claude --write", prefix: "$", prefixCls: "green", cps: 32 });
+  term.add({ at: 3.8, text: data.captured.install, cls: "muted sub", cursor: false });
+  const headline = el("div", "big", root, "Your next session starts<br>where the last one stopped.");
+  headline.style.cssText = "position:absolute;left:0;right:0;top:530px;text-align:center;font:700 88px/1.15 var(--sans);letter-spacing:-0.02em";
+  const url = el("div", "", root, "github.com/ihorponom/agentpack");
+  url.style.cssText = "position:absolute;left:0;right:0;top:780px;text-align:center;font:600 46px var(--mono);color:var(--amber)";
+  return (t) => {
+    term.update(t);
+    const h = prog(t, 4.2, 0.7);
+    headline.style.opacity = String(h);
+    headline.style.transform = `translateY(${(1 - h) * 26}px)`;
+    const u = prog(t, 5.2, 0.6);
+    url.style.opacity = String(u);
+    url.style.transform = `translateY(${(1 - u) * 16}px)`;
+  };
+}
+
+const BUILDERS = { hook: sceneHook, rework: sceneRework, idea: sceneIdea, record: sceneRecord, continue: sceneContinue, clients: sceneClients, trust: sceneTrust, cta: sceneCta };
+const FADE = 0.4;
+let state = null;
+
+window.setup = (data) => {
+  const host = document.getElementById("scenes");
+  host.innerHTML = "";
+  const scenes = data.scenes.map((info) => {
+    const root = el("div", "scene", host);
+    const sc = { ...info, L: (j) => info.lines[j].start - info.start };
+    return { info, root, update: BUILDERS[info.id](root, sc, data) };
+  });
+  state = { data, scenes, caption: document.getElementById("caption") };
+};
+
+window.render = (t, options = {}) => {
+  const { scenes, data, caption } = state;
+  const last = scenes.length - 1;
+  scenes.forEach((scene, i) => {
+    const { info } = scene;
+    const fadeIn = i === 0 ? prog(t, 0, 0.5) : prog(t, info.start - FADE / 2, FADE);
+    const fadeOut = i === last ? 1 - prog(t, info.end - 0.8, 0.8) : 1 - prog(t, info.end - FADE / 2, FADE);
+    const opacity = fadeIn * fadeOut;
+    scene.root.style.opacity = String(opacity);
+    scene.root.style.display = opacity > 0 ? "block" : "none";
+    if (opacity <= 0) return;
+    const lt = t - info.start;
+    const span = info.end - info.start;
+    scene.root.style.transform = `scale(${options.zoom === false ? 1 : 1 + 0.025 * clamp01(lt / span)})`;
+    scene.update(lt);
+  });
+
+  const cue = data.cues.find((c) => t >= c.start && t < c.end);
+  if (cue) caption.textContent = cue.text;
+  caption.style.opacity = cue ? String(prog(t, cue.start, 0.15) * (1 - prog(t, cue.end - 0.15, 0.15))) : "0";
+};
+</script>
+</body>
+</html>
