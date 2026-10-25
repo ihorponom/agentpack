@@ -108,7 +108,9 @@ export async function runCli(argv: string[], cwd: string): Promise<void> {
     return;
   }
 
-  if (isExplicitHelpRequest(rest[0]) && printCommandHelp(command)) {
+  // `run` passes its arguments to the shell, so a --help after the child command belongs to it.
+  const helpFlagAnywhere = command !== "run" && rest.some((arg) => arg === "--help" || arg === "-h");
+  if ((isExplicitHelpRequest(rest[0]) || helpFlagAnywhere) && printCommandHelp(command)) {
     return;
   }
 

@@ -100,6 +100,49 @@ test("--version and --help run without an initialized pack", () => {
   assert.equal(existsSync(path.join(dir, ".agentpack")), false);
 });
 
+test("subcommand help prints usage without changing ledger state", () => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), "agentpack-subcommand-help-"));
+  run(dir, ["init"]);
+  run(dir, ["task", "start", "Help target", "--objective", "Stay unchanged", "--next", "Keep going"]);
+  run(dir, ["set", "goal", "Original goal"]);
+  const before = snapshotPackBytes(dir);
+
+  const invocations = [
+    ["task", "park", "--help"],
+    ["task", "close", "--help"],
+    ["task", "block", "--help"],
+    ["task", "verify", "--help"],
+    ["task", "finalize", "--status", "passed", "--help"],
+    ["task", "update", "--next", "Other", "-h"],
+    ["task", "start", "Another", "--help"],
+    ["task", "switch", "task_missing", "--help"],
+    ["mcp", "--help"],
+    ["usage", "link", "--help"],
+    ["ledger", "compact", "--write", "--purge", "-h"],
+    ["set", "goal", "--help"],
+    ["record", "decision", "Replace me", "--help"],
+    ["note", "Replace me", "-h"],
+    ["checkpoint", "-m", "Replace me", "--help"],
+    ["evidence", "add", "--content", "Replace me", "--help"],
+    ["source", "add", "README.md", "--summary", "Replace me", "--help"],
+    ["ledger", "compact", "--write", "--help"],
+    ["export", "--to", "markdown", "--help"],
+    ["bundle", "export", "--task", "current", "--output", "out.json", "--help"],
+    ["install", "claude", "--write", "--help"]
+  ];
+  for (const args of invocations) {
+    const output = run(dir, args);
+    assert.match(output, new RegExp(`agentpack ${args[0]}|Agentpack Task Passports`), args.join(" "));
+    assert.deepEqual(snapshotPackBytes(dir), before, args.join(" "));
+  }
+  assert.equal(existsSync(path.join(dir, "out.json")), false);
+  assert.equal(existsSync(path.join(dir, ".claude")), false);
+  assert.equal(existsSync(path.join(dir, ".mcp.json")), false);
+  assert.equal(existsSync(path.join(dir, "CLAUDE.md")), false);
+
+  assert.match(run(dir, ["run", "echo", "--help"]), /^--help$/m);
+});
+
 test("TUI read model inspects historical tasks and evidence without mutating the pack", () => {
   const root = mkdtempSync(path.join(os.tmpdir(), "agentpack-tui-test-"));
   run(root, ["init"]);
