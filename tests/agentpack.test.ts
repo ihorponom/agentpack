@@ -2255,6 +2255,22 @@ test("doctor warns about local-only ignore gaps and generic project MCP names", 
   assert.match(doctor, /\[warn\] Cursor MCP: .*Cursor GUI may not inherit your shell PATH/);
 });
 
+test("doctor expects the server key that install writes for underscored pack roots", () => {
+  const dir = path.join(mkdtempSync(path.join(os.tmpdir(), "agentpack-server-key-")), "my__app");
+  mkdirSync(dir);
+  runGit(dir, ["init"]);
+  run(dir, ["init"]);
+  for (const target of ["claude", "codex", "cursor"]) {
+    run(dir, ["install", target, "--write"]);
+  }
+
+  const mcp = JSON.parse(readFileSync(path.join(dir, ".mcp.json"), "utf8")) as { mcpServers: Record<string, unknown> };
+  assert.deepEqual(Object.keys(mcp.mcpServers), ["agentpack-my__app"]);
+  const doctor = run(dir, ["doctor"]);
+  assert.doesNotMatch(doctor, /expected server key/);
+  assert.match(doctor, /\[ok\] Project MCP/);
+});
+
 test("doctor warns about stale project roots and overwritten Claude Desktop config", () => {
   const dir = mkdtempSync(path.join(os.tmpdir(), "get-cluster-doctor-test-"));
   const staleRoot = mkdtempSync(path.join(os.tmpdir(), "stale-agentpack-root-"));

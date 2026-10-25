@@ -143,6 +143,20 @@ export function getPackPath(root: string, ...parts: string[]): string {
   return path.join(root, PACK_DIR, ...parts);
 }
 
+export function mcpServerName(root: string): string {
+  const slug = path.basename(root)
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .replace(/-{2,}/g, "-");
+
+  if (!slug || slug === "agentpack") {
+    return "agentpack";
+  }
+
+  return `agentpack-${slug}`;
+}
+
 export function readJson<T>(filePath: string, fallback: T): T {
   if (!existsSync(filePath)) {
     return fallback;

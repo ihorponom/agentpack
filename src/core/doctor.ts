@@ -5,7 +5,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { getGitInfo } from "./git.js";
 import { countFullCheckpoints } from "./compact.js";
-import { AGENTPACK_IGNORE_PATTERNS, findPackRoot, getGitExcludePath, getPackPath, hasIgnorePattern } from "./store.js";
+import { AGENTPACK_IGNORE_PATTERNS, findPackRoot, getGitExcludePath, getPackPath, hasIgnorePattern, mcpServerName } from "./store.js";
 import { getSourceStatuses } from "../operations.js";
 
 type CheckStatus = "ok" | "warn" | "fail";
@@ -195,7 +195,7 @@ function checkProjectMcpConfig(root: string): DoctorCheck {
     };
   }
 
-  const expectedName = getAgentpackServerName(root);
+  const expectedName = mcpServerName(root);
   const issues: string[] = [];
 
   if (expectedName !== "agentpack" && isRecord(mcpServers.agentpack)) {
@@ -241,7 +241,7 @@ function checkCodexConfig(root: string): DoctorCheck {
   }
 
   const content = readFileSync(configPath, "utf8");
-  const expectedName = getAgentpackServerName(root);
+  const expectedName = mcpServerName(root);
   const issues: string[] = [];
 
   if (expectedName !== "agentpack" && content.includes("[mcp_servers.agentpack]")) {
@@ -295,7 +295,7 @@ function checkCursorConfig(root: string): DoctorCheck {
     };
   }
 
-  const expectedName = getAgentpackServerName(root);
+  const expectedName = mcpServerName(root);
   const server = mcpServers[expectedName];
   const issues: string[] = [];
 
@@ -701,14 +701,6 @@ function readIgnoreLines(filePath: string): string[] {
     .split(/\r?\n/)
     .map((line) => line.trim())
     .filter((line) => line && !line.startsWith("#"));
-}
-
-function getAgentpackServerName(root: string): string {
-  const slug = path.basename(root)
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "");
-  return slug === "agentpack" ? "agentpack" : `agentpack-${slug || "repo"}`;
 }
 
 function readJson(filePath: string): { ok: true; value: unknown } | { ok: false; error: string } {

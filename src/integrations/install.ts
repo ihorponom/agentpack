@@ -3,7 +3,7 @@ import { homedir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { getGitHooksPath, getGitRepoBounds } from "../core/git.js";
-import { appendIgnorePatterns, getGitExcludePath, getPackPath, readJson } from "../core/store.js";
+import { appendIgnorePatterns, getGitExcludePath, getPackPath, mcpServerName, readJson } from "../core/store.js";
 
 const INSTALL_TARGETS = ["codex", "claude", "claude-desktop", "cursor", "git-hooks"] as const;
 const GATE_HOOK_MARKER = "# agentpack:gate";
@@ -1205,21 +1205,6 @@ function cursorCliPermissionsPlan(root: string, serverName: string): InstallFile
 
 function agentpackEntrypoint(): string {
   return path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "agentpack.js");
-}
-
-function mcpServerName(root: string): string {
-  const projectName = path.basename(root);
-  const slug = projectName
-    .toLowerCase()
-    .replace(/[^a-z0-9_-]+/g, "-")
-    .replace(/^-+|-+$/g, "")
-    .replace(/-{2,}/g, "-");
-
-  if (!slug || slug === "agentpack") {
-    return "agentpack";
-  }
-
-  return `agentpack-${slug}`;
 }
 
 function parseTarget(target: string): InstallTarget {
