@@ -4,7 +4,6 @@
 [![CI](https://github.com/ihorponom/agentpack/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/ihorponom/agentpack/actions/workflows/ci.yml)
 [![node](https://img.shields.io/node/v/agentpack-cli)](https://www.npmjs.com/package/agentpack-cli)
 [![license](https://img.shields.io/npm/l/agentpack-cli)](LICENSE)
-[![agentpack MCP server](https://glama.ai/mcp/servers/ihorponom/agentpack/badges/score.svg)](https://glama.ai/mcp/servers/ihorponom/agentpack)
 
 Repo-native task continuity for AI coding agents.
 
