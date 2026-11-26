@@ -86,6 +86,7 @@ import { startTui } from "../core/tui.js";
 import { buildUsageReport, formatUsageReport } from "../core/usage.js";
 import { buildTaskUsageReport, formatTaskUsageReport, usageTaskId } from "../core/usage-manifest.js";
 import { buildTaskUsage, formatTaskUsage, formatUsageLinkResult, runUsageLink, type UsageLinkRequest } from "../core/usage-discovery.js";
+import { runTaskReview } from "./review.js";
 
 export type ArgValue = string | boolean | string[];
 
@@ -197,6 +198,21 @@ export async function runCli(argv: string[], cwd: string): Promise<void> {
   }
 
   if (command === "task") {
+    if (rest[0] === "review") {
+      const parsed = parseArgs(rest.slice(1));
+      const base = parsed.options.base;
+      const reviewer = parsed.options.reviewer;
+      const criteria = parsed.options.criteria;
+      if (parsed.positionals.length || Object.keys(parsed.options).some((key) => !["base", "reviewer", "criteria"].includes(key))
+        || typeof base !== "string" || !base || (reviewer !== "claude" && reviewer !== "codex")
+        || (criteria !== undefined && typeof criteria !== "string")) {
+        throw new Error("Usage: agentpack task review --base <git-ref> --reviewer claude|codex [--criteria <text>]");
+      }
+      const result = runTaskReview(root, { base, reviewer, criteria });
+      process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+      if (result.status === "incomplete") process.exitCode = 1;
+      return;
+    }
     taskCommand(root, rest);
     return;
   }
@@ -328,6 +344,7 @@ Task Passport:
   agentpack task start <title> [--objective <text>] [--write-scope <path>] [--repository <json>] [--next <item>] [--risk low|medium|high]
   agentpack task status [--id <id>] [--full]
   agentpack task handoff
+  agentpack task review --base <git-ref> --reviewer claude|codex [--criteria <text>]
   agentpack task verify --status passed|failed|accepted [--evidence <id>] [--summary <text>]
   agentpack task finalize
   agentpack task --help
@@ -565,6 +582,7 @@ Common workflow:
   agentpack task update [--objective <text>] [--constraint <text>] [--replace-constraints] [--write-scope <path>] [--repository <json>] [--next <item>] [--clear-next-actions] [--risk low|medium|high]
   agentpack task verify [--status pending|passed|failed|accepted] [--evidence <id>] [--summary <text>]
   agentpack task handoff
+  agentpack task review --base <git-ref> --reviewer claude|codex [--criteria <text>]
   agentpack task finalize [--status passed|failed|accepted] [--evidence <id>] [--summary <text>] [--force]
 
 Inspection and coordination:
@@ -582,6 +600,7 @@ Notes:
   task status is a compact current-task line; --full restores the detailed current view; --id inspects another task without switching.
   task audit is the diagnostic continuity check; --json exposes additive structured review candidates.
   task handoff is the compact summary for another chat, client, worktree, or agent, including the latest task checkpoint when available.
+  task review sends the committed primary-repository diff and selected task context to the named provider and returns JSON.
   task finalize refuses unknown or pending verification by default.
   task finalize --status accepted refuses tasks with remaining next actions unless --force is passed.
   task audit and finalize print advisory-only adversarial-verification guidance: low risk needs a concrete self-challenge; medium/high needs independent read-only review plus a named disconfirming check. Generic risks-considered or tests-passed prose is not enough.

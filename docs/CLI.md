@@ -44,6 +44,7 @@ Run `agentpack mcp [--root <path>]` to start the MCP stdio server by hand. MCP c
 | `mcp [--root <path>]` | Start the MCP server. |
 | `task start\|update\|list\|status\|handoff\|passport\|switch\|audit\|gate\|park\|block\|verify\|finalize\|close` | Manage Passports. |
 | `resume`, `export`, `bundle` | Hand off task state. |
+| `task review` | Request independent review of a committed Git diff. |
 | `source`, `evidence`, `record`, `note`, `checkpoint`, `run` | Record state. |
 | `ledger status\|compact` | Inspect and slim the ledger. |
 | `replay`, `diff`, `status`, `tui` | Inspect state. |
@@ -362,6 +363,38 @@ Use `--preset` or `--budget` to limit the approximate token estimate of `resume`
 Use `--query` to filter the source cache locally. Matching source conclusions keep their full summaries and snippets. Other conclusions appear as compact path, status, topic and guidance entries. Changed or missing files keep warning entries. Inspect them with `agentpack source status --changed --missing`.
 
 If no source conclusion matches the query, all conclusions appear as compact entries. Run again without `--query` to see the full source cache.
+
+## Independent review
+
+```bash
+agentpack task review --base origin/main --reviewer claude
+agentpack task review --base origin/main --reviewer codex --criteria "Preserve retry behavior"
+```
+
+Run from a clean checkout on the active Passport's branch after implementation,
+tests, and self-review. Pass the intended comparison ref, including the parent
+branch for a stacked change. The command resolves the merge base and HEAD,
+requires changed paths to fit the primary write scope, and sends the committed
+text diff, objective, constraints, risk, and optional criteria to the named
+provider. Choose an account authorized to receive that code. The local CLI uses
+saved login credentials. The command starts a fresh session in a temporary
+directory and supplies the diff as input. The calling agent runs tests and
+inspects code outside the diff. Binary and submodule changes need manual review.
+For a multi-repository Passport, the report covers the primary repository.
+
+The JSON includes the task ID, reviewer, merge base, and reviewed HEAD. A
+completed report has `status: "reviewed"` and exit code 0, including when it
+contains findings. Read the findings, challenge, and limitations before making
+a decision. An incomplete result exits 1. Reasons include a detected usage
+limit, unavailable CLI, timeout, invalid output, or stale snapshot. Unknown
+provider errors are reported generically. Run again with another explicitly
+authorized reviewer if needed.
+
+Use the completed report as review evidence in the same Passport. Resolve
+substantive findings, rerun relevant checks, and review the final commit. Before
+opening a draft requested by the user, verify that the candidate matches the
+reviewed HEAD. Include findings, tests, and CI status in the handoff. The calling
+agent handles Passport updates and PR publication. GitHub rulesets control merge.
 
 ## Local usage reports
 
