@@ -89,8 +89,10 @@ function parseRun(reviewer: Reviewer, stdout: string): { report?: unknown; failu
   const events = stdout.split("\n").filter((line) => line.trim()).map(parseObject);
   if (events.some((event) => !event)) return { failure: "invalid_output" };
   if (reviewer === "claude") {
-    const result = [...events].reverse().find((event) => event?.type === "result");
-    if (result?.subtype === "success" && result.is_error === false) {
+    const results = events.filter((event) => event?.type === "result");
+    const result = events.at(-1);
+    if (results.length === 1 && result?.type === "result"
+      && result.subtype === "success" && result.is_error === false) {
       return { report: result.structured_output };
     }
     const rejected = [...events].reverse().find((event) =>
@@ -103,8 +105,10 @@ function parseRun(reviewer: Reviewer, stdout: string): { report?: unknown; failu
     return { failure: "reviewer_failed" };
   }
 
-  const terminal = [...events].reverse().find((event) =>
-    event?.type === "turn.completed" || event?.type === "turn.failed");
+  const terminal = events.at(-1);
+  const started = events.findIndex((event) => event?.type === "turn.started");
+  const turnEvents = events.filter((event) =>
+    event?.type === "turn.started" || event?.type === "turn.completed" || event?.type === "turn.failed");
   if (terminal?.type !== "turn.completed") {
     const error = terminal?.error;
     if (object(error) && typeof error.message === "string" && /^You've hit your usage limit\b/i.test(error.message)) {
@@ -112,7 +116,8 @@ function parseRun(reviewer: Reviewer, stdout: string): { report?: unknown; failu
     }
     return { failure: "reviewer_failed" };
   }
-  const message = [...events].reverse().find((event) =>
+  if (started < 0 || turnEvents.length !== 2) return { failure: "invalid_output" };
+  const message = events.slice(started + 1, -1).reverse().find((event) =>
     event?.type === "item.completed" && object(event.item) && event.item.type === "agent_message")?.item;
   return { report: object(message) && typeof message.text === "string" ? parseObject(message.text) : undefined };
 }

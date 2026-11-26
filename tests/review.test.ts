@@ -75,7 +75,8 @@ if (require("node:path").basename(process.cwd()).startsWith("agentpack-review-")
 `;
   f.stub("claude", assertInput + `emit({type: "result", subtype: "success", is_error: false,
     structured_output: ${JSON.stringify(report)}});`);
-  f.stub("codex", assertInput + `emit({type: "item.completed", item: {type: "agent_message",
+  f.stub("codex", assertInput + `emit({type: "turn.started"});
+    emit({type: "item.completed", item: {type: "agent_message",
     text: ${JSON.stringify(JSON.stringify(report))}}});
     emit({type: "turn.completed"});`);
   for (const provider of ["claude", "codex"]) {
@@ -105,10 +106,29 @@ test("task review reports exhausted usage and rejects partial output", (t) => {
   assert.equal(codex.status, 1);
   assert.equal(JSON.parse(codex.stdout).reason, "usage_limit");
 
-  f.stub("codex", `emit({type: "turn.completed"});`);
+  f.stub("codex", `emit({type: "turn.started"}); emit({type: "turn.completed"});`);
   const partial = f.review("codex");
   assert.equal(partial.status, 1);
   assert.equal(JSON.parse(partial.stdout).reason, "invalid_output");
+});
+
+test("task review rejects reports from contradictory or multiple terminal events", (t) => {
+  const f = fixture(t);
+  f.stub("claude", `emit({type: "result", subtype: "success", is_error: false,
+    structured_output: ${JSON.stringify(report)}});
+    emit({type: "rate_limit_event", rate_limit_info: {status: "rejected"}});`);
+  const claude = f.review("claude");
+  assert.equal(claude.status, 1);
+  assert.equal(JSON.parse(claude.stdout).reason, "usage_limit");
+
+  f.stub("codex", `emit({type: "turn.started"});
+    emit({type: "item.completed", item: {type: "agent_message", text: ${JSON.stringify(JSON.stringify(report))}}});
+    emit({type: "turn.failed"});
+    emit({type: "turn.started"});
+    emit({type: "turn.completed"});`);
+  const codex = f.review("codex");
+  assert.equal(codex.status, 1);
+  assert.equal(JSON.parse(codex.stdout).reason, "invalid_output");
 });
 
 test("task review rejects stale and out-of-scope candidates", (t) => {
