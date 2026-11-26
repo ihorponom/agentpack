@@ -89,12 +89,6 @@ function parseRun(reviewer: Reviewer, stdout: string): { report?: unknown; failu
   const events = stdout.split("\n").filter((line) => line.trim()).map(parseObject);
   if (events.some((event) => !event)) return { failure: "invalid_output" };
   if (reviewer === "claude") {
-    const results = events.filter((event) => event?.type === "result");
-    const result = events.at(-1);
-    if (results.length === 1 && result?.type === "result"
-      && result.subtype === "success" && result.is_error === false) {
-      return { report: result.structured_output };
-    }
     const rejected = [...events].reverse().find((event) =>
       event?.type === "rate_limit_event" && object(event.rate_limit_info)
       && event.rate_limit_info.status === "rejected")?.rate_limit_info;
@@ -102,6 +96,12 @@ function parseRun(reviewer: Reviewer, stdout: string): { report?: unknown; failu
       failure: "usage_limit",
       ...(typeof rejected.resetsAt === "number" ? { resetsAt: rejected.resetsAt } : {})
     };
+    const results = events.filter((event) => event?.type === "result");
+    const result = events.at(-1);
+    if (results.length === 1 && result?.type === "result"
+      && result.subtype === "success" && result.is_error === false) {
+      return { report: result.structured_output };
+    }
     return { failure: "reviewer_failed" };
   }
 
@@ -116,7 +116,9 @@ function parseRun(reviewer: Reviewer, stdout: string): { report?: unknown; failu
     }
     return { failure: "reviewer_failed" };
   }
-  if (started < 0 || turnEvents.length !== 2) return { failure: "invalid_output" };
+  if (started < 0 || turnEvents.length !== 2 || events.some((event) => event?.type === "error")) {
+    return { failure: "invalid_output" };
+  }
   const message = events.slice(started + 1, -1).reverse().find((event) =>
     event?.type === "item.completed" && object(event.item) && event.item.type === "agent_message")?.item;
   return { report: object(message) && typeof message.text === "string" ? parseObject(message.text) : undefined };

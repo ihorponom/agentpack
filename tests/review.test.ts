@@ -114,12 +114,15 @@ test("task review reports exhausted usage and rejects partial output", (t) => {
 
 test("task review rejects reports from contradictory or multiple terminal events", (t) => {
   const f = fixture(t);
-  f.stub("claude", `emit({type: "result", subtype: "success", is_error: false,
-    structured_output: ${JSON.stringify(report)}});
-    emit({type: "rate_limit_event", rate_limit_info: {status: "rejected"}});`);
-  const claude = f.review("claude");
-  assert.equal(claude.status, 1);
-  assert.equal(JSON.parse(claude.stdout).reason, "usage_limit");
+  const success = `emit({type: "result", subtype: "success", is_error: false,
+    structured_output: ${JSON.stringify(report)}});`;
+  const rejection = 'emit({type: "rate_limit_event", rate_limit_info: {status: "rejected"}});';
+  for (const events of [success + rejection, rejection + success]) {
+    f.stub("claude", events);
+    const claude = f.review("claude");
+    assert.equal(claude.status, 1);
+    assert.equal(JSON.parse(claude.stdout).reason, "usage_limit");
+  }
 
   f.stub("codex", `emit({type: "turn.started"});
     emit({type: "item.completed", item: {type: "agent_message", text: ${JSON.stringify(JSON.stringify(report))}}});
