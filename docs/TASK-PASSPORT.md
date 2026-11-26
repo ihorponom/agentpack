@@ -167,8 +167,28 @@ paths.
 Create the branch before you bind a checkout. To change bindings, the task must
 be active and its verification must be unknown or pending. A repeated update
 appends paths to the scope. The branch and base HEAD do not change. A bound
-checkout must keep its path and its Git directory. To replace a checkout, start a
-new task. You cannot remove a binding.
+checkout must keep its path and its Git directory during ordinary updates.
+
+If a bound checkout was permanently removed, detach it from the active task:
+
+```bash
+agentpack task update --recover-repository api --recovery-reason "Removed the integration worktree"
+```
+
+To bind a replacement, include one `--repository` with the same id and an
+explicit write scope. The scope and HEADs come from the replacement declaration
+and checkout. The MCP `task_update` tool takes `repositoryRecovery` with `id` and
+`reason`, plus an optional replacement in `repositories`.
+
+Recovery requires pending or unknown verification. It rejects a healthy
+binding and allows detaching only if the old path is absent. The local task
+history keeps the previous binding, its verification links, and the reason.
+Recovery resets verification to pending so you can record a fresh verdict.
+Detaching the last binding returns the Passport to schema v1. If the Passport
+has no primary write scope, supply it in the same update with `--write-scope`
+(MCP `writeScope`). Removing a nested binding, or rebinding it to another path,
+returns ownership of the old path to any enclosing checkout. Its scope will
+apply to subsequent edits there.
 
 The task gate treats additional repositories this way:
 

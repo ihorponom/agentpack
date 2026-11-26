@@ -1,6 +1,6 @@
 import path from "node:path";
 import { isWithin, physicalPath, repositoryGit } from "./repositories.js";
-import { getGitBranchState, listStagedEntries, listStagedFiles, readStagedEntries } from "./git.js";
+import { checkoutGitEnv, getGitBranchState, listStagedEntries, readStagedEntries } from "./git.js";
 import { normalizePath } from "./hash.js";
 import { getPackPath, readJson } from "./store.js";
 import { getCurrentPassport, isInWriteScope } from "./tasks.js";
@@ -104,12 +104,8 @@ export function evaluateGate(root: string, options: GateOptions = {}): GateRepor
 
   const repositories = passport?.repositories || [];
   const bound = collectRepositoryFiles(root, repositories, options);
-  const { files, outsideRoot } = collectGateFiles(root, {
-    ...options,
-    files: bound.primary,
-    // Staged paths are routed with explicit paths above.
-    staged: false
-  });
+  const { files, outsideRoot } = collectGateFiles(root, bound.primary);
+  if (bound.primaryError) findings.push(violation("passport-unreadable", "The primary repository's staged state cannot be read."));
   const repositoryTouched = bound.files.some(entry => entry.files.length > 0);
   for (const file of bound.unsafePrimary) findings.push(violation("out-of-scope", `Path escapes the primary checkout through a symlink: ${file}.`));
 
@@ -201,17 +197,21 @@ export function evaluateGate(root: string, options: GateOptions = {}): GateRepor
 
 function collectRepositoryFiles(root: string, repositories: TaskRepository[], options: GateOptions): {
   primary: string[];
+  primaryError: boolean;
   unsafePrimary: string[];
   files: Array<{ repository: TaskRepository; files: string[]; branch?: string; error?: string }>;
 } {
   const primary: string[] = [];
+  let primaryError = false;
   const candidates = new Map((options.files || []).map(file => [path.resolve(root, file), file]));
   if (options.staged && (!options.repository || options.repository === "primary")) {
-    for (const entry of listStagedEntries(root)) {
-      // A Git link is an entry in its parent's index, not an edit of the child root.
-      if (entry.gitlink) primary.push(entry.path);
-      else candidates.set(path.resolve(root, entry.path), entry.path);
-    }
+    try {
+      for (const entry of listStagedEntries(root)) {
+        // A Git link is an entry in its parent's index, not an edit of the child root.
+        if (entry.gitlink) primary.push(entry.path);
+        else candidates.set(path.resolve(root, entry.path), entry.path);
+      }
+    } catch { primaryError = true; }
   }
   const entries = repositories.map(repository => {
     const entry: { repository: TaskRepository; files: string[]; branch?: string; error?: string } = { repository, files: [] };
@@ -220,7 +220,7 @@ function collectRepositoryFiles(root: string, repositories: TaskRepository[], op
       const git = repositoryGit(repository.worktree, repository.identity!);
       entry.branch = git.branch;
       if (options.staged && (!options.repository || options.repository === repository.id)) {
-        for (const staged of readStagedEntries(repository.worktree, repository.worktree)) {
+        for (const staged of readStagedEntries(repository.worktree, repository.worktree, checkoutGitEnv())) {
           if (staged.gitlink) entry.files.push(staged.path);
           else {
             const absolute = path.resolve(repository.worktree, staged.path);
@@ -252,7 +252,7 @@ function collectRepositoryFiles(root: string, repositories: TaskRepository[], op
       else primary.push(display);
     }
   }
-  return { primary, unsafePrimary, files: entries };
+  return { primary, primaryError, unsafePrimary, files: entries };
 }
 
 export function formatGateReport(report: GateReport): string {
@@ -263,13 +263,10 @@ export function formatGateReport(report: GateReport): string {
   return [`Gate: ${report.decision} (mode: ${report.mode})`, ...lines].join("\n");
 }
 
-function collectGateFiles(root: string, options: GateOptions): { files: string[]; outsideRoot: string[] } {
+function collectGateFiles(root: string, candidates: string[]): { files: string[]; outsideRoot: string[] } {
   const files: string[] = [];
   const outsideRoot: string[] = [];
-  if (options.staged) {
-    files.push(...listStagedFiles(root));
-  }
-  for (const file of options.files || []) {
+  for (const file of candidates) {
     const absolutePath = path.resolve(root, file);
     const relativePath = path.relative(root, absolutePath);
     if (!relativePath || relativePath.startsWith("..") || path.isAbsolute(relativePath)) {

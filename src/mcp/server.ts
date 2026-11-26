@@ -624,6 +624,16 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
           items: { type: "string" },
           description: "Constraints to append, or the full replacement list when replaceConstraints is true."
         },
+        repositoryRecovery: {
+          type: "object",
+          description: "Recover an unavailable local binding. Supply one replacement in repositories with the same id, or omit repositories to detach a missing path. Resets verification to pending.",
+          properties: {
+            id: { type: "string", description: "Existing binding id." },
+            reason: { type: "string", description: "Reason recorded in the local task history." }
+          },
+          required: ["id", "reason"],
+          additionalProperties: false
+        },
         repositories: {
           type: "array",
           description: "Additional checkouts keyed by id; the ledger root is primary. Local updates append scopes; imported bindings use only the supplied local scope. Requires an active task with pending or unknown verification.",
@@ -1279,6 +1289,14 @@ function callTool(root: string, name: string, args: Record<string, unknown>, war
       nextActions: stringArray(args.nextActions).map((item) => redactForRoot(root, item)),
       tags: stringArray(args.tags)
     };
+    if (args.repositoryRecovery !== undefined) {
+      const recovery = args.repositoryRecovery;
+      if (!isObject(recovery) || typeof recovery.id !== "string" || typeof recovery.reason !== "string" ||
+        Object.keys(recovery).some(key => key !== "id" && key !== "reason")) {
+        throw new Error("repositoryRecovery requires an id and reason");
+      }
+      updateOptions.repositoryRecovery = { id: recovery.id, reason: recovery.reason };
+    }
     const objective = redactForRoot(root, text(args.objective));
     const risk = taskRisk(args.risk);
     if (objective) {

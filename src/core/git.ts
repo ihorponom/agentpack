@@ -6,10 +6,21 @@ interface GetGitInfoOptions {
   includeDiff?: boolean;
 }
 
-function runGit(root: string, args: string[]): string {
+let localEnvNames: string[] | undefined;
+
+/** Git hooks export checkout-specific variables that must not follow us to other worktrees. */
+export function checkoutGitEnv(): NodeJS.ProcessEnv {
+  localEnvNames ??= runGit(process.cwd(), ["rev-parse", "--local-env-vars"]).trim().split(/\s+/);
+  const env = { ...process.env };
+  for (const name of localEnvNames) delete env[name];
+  return env;
+}
+
+function runGit(root: string, args: string[], env?: NodeJS.ProcessEnv): string {
   try {
     return execFileSync("git", args, {
       cwd: root,
+      env,
       encoding: "utf8",
       stdio: ["ignore", "pipe", "ignore"]
     }).trimEnd();
@@ -67,14 +78,14 @@ export interface GitBranchState {
 
 // Lightweight read for hot paths such as `task gate`; getGitInfo runs several extra git commands.
 export function getGitBranchState(root: string): GitBranchState {
-  const topLevel = runGit(root, ["rev-parse", "--show-toplevel"]);
+  const { cwd, topLevel } = primaryGitContext(root);
   if (!topLevel) {
     return { available: false, branch: null, head: null };
   }
   return {
     available: true,
-    branch: runGit(root, ["branch", "--show-current"]) || "detached",
-    head: runGit(root, ["rev-parse", "--short", "HEAD"]) || null
+    branch: runGit(cwd, ["branch", "--show-current"]) || "detached",
+    head: runGit(cwd, ["rev-parse", "--short", "HEAD"]) || null
   };
 }
 
@@ -84,10 +95,10 @@ export interface StagedEntry {
 }
 
 /** Strict read for callers that must distinguish failure from an empty index. */
-export function readStagedEntries(root: string, topLevel: string): StagedEntry[] {
+export function readStagedEntries(root: string, topLevel: string, env = process.env, cwd = root): StagedEntry[] {
   // --no-renames exposes both sides of a rename; -z preserves arbitrary file names.
-  const raw = execFileSync("git", ["diff", "--cached", "--raw", "--no-renames", "-z", "--"], {
-    cwd: root, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"]
+  const raw = execFileSync("git", ["diff", "--cached", "--raw", "--no-renames", "--no-relative", "-z", "--"], {
+    cwd, env, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"]
   }).split("\0");
   const entries: StagedEntry[] = [];
   for (let i = 0; i < raw.length - 1; i += 2) {
@@ -103,15 +114,48 @@ export function readStagedEntries(root: string, topLevel: string): StagedEntry[]
 }
 
 export function listStagedEntries(root: string): StagedEntry[] {
-  const topLevel = runGit(root, ["rev-parse", "--show-toplevel"]);
+  const { cwd, topLevel } = primaryGitContext(root);
   if (!topLevel) {
+    if (process.env.AGENTPACK_GIT_HOOK_CWD || process.env.GIT_PREFIX !== undefined ||
+        process.env.GIT_DIR || process.env.GIT_WORK_TREE || process.env.GIT_INDEX_FILE) {
+      throw new Error("Cannot resolve the primary Git checkout from the staged Git context");
+    }
     return [];
   }
-  try { return readStagedEntries(root, topLevel); } catch { return []; }
+  return readStagedEntries(root, topLevel, process.env, cwd);
 }
 
-export function listStagedFiles(root: string): string[] {
-  return listStagedEntries(root).map(entry => entry.path);
+function primaryGitContext(root: string): { cwd: string; topLevel: string } {
+  const args = ["rev-parse", "--show-toplevel"];
+  const hookCwd = process.env.AGENTPACK_GIT_HOOK_CWD;
+  if (hookCwd || process.env.GIT_PREFIX === undefined) {
+    const cwd = hookCwd || root;
+    return { cwd, topLevel: runGit(cwd, args) };
+  }
+
+  // Older hooks changed into the pack without passing their original directory.
+  // Infer a checkout root only when the inherited Git context agrees with it.
+  const workTree = process.env.GIT_WORK_TREE;
+  if (!(workTree && path.isAbsolute(workTree))) {
+    const env = checkoutGitEnv();
+    const physicalTopLevel = runGit(root, args, env);
+    if (physicalTopLevel) {
+      const effectiveTopLevel = runGit(physicalTopLevel, args);
+      if (effectiveTopLevel === physicalTopLevel && root !== physicalTopLevel && process.env.GIT_DIR &&
+          (workTree || !runGit(physicalTopLevel, ["config", "--get", "core.worktree"]))) {
+        // A relative or implicit worktree can share the enclosing repository's
+        // Git directory. Matching Git directories cannot establish the hook cwd.
+        return { cwd: root, topLevel: "" };
+      }
+      if (effectiveTopLevel && runGit(effectiveTopLevel, args) === effectiveTopLevel) {
+        return { cwd: effectiveTopLevel, topLevel: effectiveTopLevel };
+      }
+    }
+  }
+  const topLevel = runGit(root, args);
+  return topLevel && runGit(topLevel, args) === topLevel
+    ? { cwd: topLevel, topLevel }
+    : { cwd: root, topLevel: "" };
 }
 
 export function listDirtyFiles(root: string): string[] {

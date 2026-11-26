@@ -581,7 +581,7 @@ function preCommitGateScript(roots: string[]): string {
     "overall=0",
     "run_gate() {",
     "  if [ -d \"$1\" ]; then",
-    "    gate_output=$(cd \"$1\" && agentpack task gate --staged 2>&1)",
+    "    gate_output=$(hook_cwd=$(pwd -P) && cd \"$1\" && AGENTPACK_GIT_HOOK_CWD=\"$hook_cwd\" agentpack task gate --staged 2>&1)",
     "    gate_status=$?",
     "    if [ -n \"$gate_output\" ]; then",
     "      printf '%s\\n' \"Agentpack gate [$2]\" \"$gate_output\"",

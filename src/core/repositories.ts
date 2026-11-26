@@ -2,12 +2,18 @@ import { execFileSync } from "node:child_process";
 import { lstatSync, realpathSync, statSync } from "node:fs";
 import path from "node:path";
 import { normalizePath } from "./hash.js";
+import { checkoutGitEnv } from "./git.js";
 import type { RepositoryIdentity, TaskRepository } from "./types.js";
 
 export interface RepositoryInput {
   id: string;
   worktree: string;
   writeScope: string[];
+}
+
+export interface RepositoryRecovery {
+  id: string;
+  reason: string;
 }
 
 export function isWithin(root: string, target: string): boolean {
@@ -29,8 +35,9 @@ export function physicalPath(target: string): string {
 }
 
 export function repositoryGit(worktree: string, expected?: RepositoryIdentity): { branch: string; head: string; identity: RepositoryIdentity } {
+  const env = checkoutGitEnv();
   const git = (args: string[]): string => execFileSync("git", args, {
-    cwd: worktree, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"]
+    cwd: worktree, env, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"]
   }).trim();
   const canonical = realpathSync(worktree);
   if (canonical !== path.resolve(worktree)) throw new Error(`Repository worktree no longer resolves to its bound path: ${worktree}`);
@@ -132,6 +139,40 @@ export function bindRepositories(root: string, existing: TaskRepository[], incom
     } else result.push({ id: input.id, worktree, identity: git.identity, branch: git.branch, baseHead: git.head, currentHead: git.head, writeScope });
   }
   return result;
+}
+
+/** Change a lost local binding only through an explicit, reasoned recovery. */
+export function recoverRepository(
+  root: string, existing: TaskRepository[], recovery: RepositoryRecovery, incoming: RepositoryInput[]
+): TaskRepository[] {
+  if (!validId(recovery?.id) || typeof recovery.reason !== "string" || !recovery.reason.trim()) {
+    throw new Error("Repository recovery requires one binding id and a non-empty reason");
+  }
+  const old = existing.find(repo => repo.id === recovery.id);
+  if (!old?.worktree) throw new Error(`Repository ${recovery.id} has no local binding to recover`);
+  if (incoming.length > 1 || (incoming.length === 1 && incoming[0]!.id !== old.id)) {
+    throw new Error("Supply at most one replacement repository with the same binding id");
+  }
+  if (boundCheckoutAvailable(old)) {
+    throw new Error(`Repository ${old.id} is still available at its bound path`);
+  }
+  const remaining = existing.filter(repo => repo.id !== old.id);
+  if (!incoming.length) {
+    if (lstatSync(old.worktree, { throwIfNoEntry: false })) {
+      throw new Error(`Repository ${old.id} still exists at its bound path; use explicit rebinding if it was replaced`);
+    }
+    return remaining;
+  }
+  return bindRepositories(root, remaining, incoming);
+}
+
+function boundCheckoutAvailable(repo: TaskRepository): boolean {
+  try {
+    repositoryGit(repo.worktree!, repo.identity!);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 export function snapshotRepositories(repositories: TaskRepository[]): TaskRepository[] {

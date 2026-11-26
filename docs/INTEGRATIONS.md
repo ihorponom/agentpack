@@ -352,6 +352,8 @@ agentpack install git-hooks --write
 
 This installs a `pre-commit` hook. The hook runs `agentpack task gate --staged` on the staged files. It works the same for Codex, Claude Code, Cursor, and human commits.
 
+Rerun the installer after upgrading to refresh an existing Agentpack hook. For custom hooks that change directories before running the gate, pass the original Git hook directory in `AGENTPACK_GIT_HOOK_CWD`. This keeps relative Git index paths anchored at the checkout that started the commit.
+
 - In warn mode, the hook prints findings and the commit continues.
 - In block mode, lifecycle and write scope violations fail the commit with exit code 2.
 - If `agentpack` is not on `PATH`, the hook prints `agentpack not on PATH; Agentpack task gate skipped` and the commit continues.

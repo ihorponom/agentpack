@@ -127,6 +127,7 @@ test("all repository HEADs freeze with final verification and survive park/switc
   assert.notEqual(reviewed, task.repositories![0]!.baseHead);
   assert.equal(evaluateGate(primary, { mode: "block", files: [path.join(api, "src/new.txt")] }).decision, "block");
   assert.throws(() => updateCurrentTaskPassport(primary, { repositories: [{ ...binding, writeScope: ["tests"] }] }), /active task/);
+  assert.throws(() => updateCurrentTaskPassport(primary, { repositoryRecovery: { id: "api", reason: "Rebind" } }), /active task/);
   writeFileSync(path.join(api, "src/app.txt"), "later"); git(api, ["add", "src"]); commit(api, "later");
   parkCurrentTask(primary); switchTask(primary, task.id);
   assert.equal(getCurrentPassport(primary)!.status, "verifying");
@@ -207,6 +208,17 @@ test("MCP exposes and validates the same repository contract on start and update
   assert.ok(!(await call("task_update", { repositories: [{ ...binding, writeScope: ["tests"] }] })).result.isError);
   assert.deepEqual(getCurrentPassport(primary)!.repositories![0]!.writeScope, ["src", "tests"]);
   assert.match(JSON.stringify(await call("task_update", { repositories: [{}] })), /Repository binding requires/);
+  assert.match(JSON.stringify(await call("task_update", { repositoryRecovery: { id: "api" } })), /requires an id and reason/);
+  renameSync(binding.worktree, `${binding.worktree}-gone`);
+  const repositoryRecovery = { id: "api", reason: "Removed worktree" };
+  writeFileSync(path.join(primary, "outside.txt"), "staged outside intended scope");
+  git(primary, ["add", "outside.txt"]);
+  assert.match(JSON.stringify(await call("task_update", { repositoryRecovery })), /requires an explicit primary write scope/);
+  assert.equal(getCurrentPassport(primary)!.repositories!.length, 1);
+  assert.equal(evaluateGate(primary, { mode: "block", staged: true }).decision, "block");
+  assert.ok(!(await call("task_update", { repositoryRecovery, writeScope: ["src"] })).result.isError);
+  assert.equal(getCurrentPassport(primary)!.repositories, undefined);
+  assert.equal(evaluateGate(primary, { mode: "block", staged: true }).decision, "block");
 });
 
 
@@ -239,6 +251,139 @@ test("a corrupt external index is unknown instead of a silently empty staging ar
   const gate = evaluateGate(primary, { mode: "block", staged: true });
   assert.equal(gate.decision, "block");
   assert.ok(gate.findings.some(f => /staged state cannot be read/.test(f.message)));
+});
+
+test("staged gate honors an explicit primary Git directory outside the worktree", t => {
+  const { base, primary, binding } = fixture(t);
+  startTask(primary, { title: "external git dir", writeScope: ["src"], repositories: [binding] });
+  writeFileSync(path.join(primary, ".agentpack", "config.json"), JSON.stringify({ gateMode: "block" }));
+  const gitDir = path.join(base, "primary.git");
+  renameSync(path.join(primary, ".git"), gitDir);
+  const env: NodeJS.ProcessEnv = { ...process.env, GIT_DIR: gitDir, GIT_WORK_TREE: primary };
+  delete env.GIT_PREFIX;
+  writeFileSync(path.join(primary, "outside.txt"), "staged outside scope");
+  execFileSync("git", ["add", "outside.txt"], { cwd: primary, env });
+  const gate = (variables: NodeJS.ProcessEnv) => spawnSync(process.execPath, [cli, "task", "gate", "--staged"], {
+    cwd: primary, env: variables, encoding: "utf8"
+  });
+  for (const variables of [env, { ...env, GIT_PREFIX: "", GIT_INDEX_FILE: path.join(gitDir, "index") }]) {
+    const blocked = gate(variables);
+    assert.equal(blocked.status, 2, blocked.stderr);
+    assert.match(blocked.stderr, /Outside the task write scope: outside\.txt/);
+  }
+  const unreadable = gate({ ...env, GIT_DIR: path.join(base, "missing.git") });
+  assert.equal(unreadable.status, 2);
+  assert.match(unreadable.stderr, /primary repository's staged state cannot be read/);
+});
+
+test("hook staging paths use the configured worktree instead of an enclosing checkout", t => {
+  const { base, primary } = fixture(t);
+  const nested = path.join(primary, "nested");
+  repo(nested);
+  initPack(nested);
+  startTask(nested, { title: "external nested git dir", writeScope: ["src"] });
+  writeFileSync(path.join(nested, ".agentpack", "config.json"), JSON.stringify({ gateMode: "block" }));
+  const gitDir = path.join(base, "nested.git");
+  renameSync(path.join(nested, ".git"), gitDir);
+  git(base, ["--git-dir", gitDir, "config", "core.worktree", nested]);
+
+  const env: NodeJS.ProcessEnv = { ...process.env, GIT_DIR: gitDir, GIT_PREFIX: "", GIT_INDEX_FILE: path.join(gitDir, "index") };
+  delete env.GIT_WORK_TREE;
+  writeFileSync(path.join(nested, "outside.txt"), "staged outside nested scope");
+  execFileSync("git", ["add", "outside.txt"], { cwd: nested, env });
+  const gate = spawnSync(process.execPath, [cli, "task", "gate", "--staged"], {
+    cwd: nested, env, encoding: "utf8"
+  });
+  assert.equal(gate.status, 2, gate.stderr);
+  assert.match(gate.stderr, /Outside the task write scope: outside\.txt/);
+
+  git(base, ["--git-dir", gitDir, "config", "--unset", "core.worktree"]);
+  env.GIT_WORK_TREE = ".";
+  const runGate = (variables: NodeJS.ProcessEnv) => spawnSync(process.execPath, [cli, "task", "gate", "--staged"], {
+    cwd: nested, env: variables, encoding: "utf8"
+  });
+  for (const workTree of [".", undefined]) {
+    const legacyEnv = { ...env, GIT_WORK_TREE: workTree };
+    for (const legacyGitDir of [gitDir, path.join(primary, ".git")]) {
+      const legacy = runGate({ ...legacyEnv, GIT_DIR: legacyGitDir });
+      assert.equal(legacy.status, 2, legacy.stderr);
+      assert.match(legacy.stderr, /primary repository's staged state cannot be read/);
+    }
+    const markedEnv = { ...legacyEnv, AGENTPACK_GIT_HOOK_CWD: nested };
+    const blocked = runGate(markedEnv);
+    assert.equal(blocked.status, 2, blocked.stderr);
+    assert.match(blocked.stderr, /Outside the task write scope: outside\.txt/);
+  }
+});
+
+test("pre-commit reads the initiating index and each bound checkout's own index", { skip: process.platform === "win32" }, t => {
+  const { base, primary, api } = fixture(t);
+  const linked = path.join(base, "linked");
+  git(api, ["worktree", "add", "-qb", "integration", linked]);
+  const pack = path.join(primary, "src");
+  initPack(pack);
+  writeFileSync(path.join(pack, ".agentpack", "config.json"), JSON.stringify({ gateMode: "block" }));
+  writeFileSync(path.join(pack, "outside.txt"), "tracked\n");
+  git(primary, ["add", "src/outside.txt"]);
+  commit(primary, "add out-of-scope fixture");
+  startTask(pack, { title: "hook integration", writeScope: ["app.txt"], repositories: [
+    { id: "linked", worktree: linked, writeScope: ["src"] }
+  ] });
+
+  execFileSync(process.execPath, [cli, "install", "git-hooks", "--write"], { cwd: pack });
+  writeFileSync(path.join(base, "agentpack"), [
+    "#!/usr/bin/env node",
+    "const { spawnSync } = require('node:child_process');",
+    `const result = spawnSync(process.execPath, [${JSON.stringify(cli)}, ...process.argv.slice(2)], { stdio: 'inherit' });`,
+    "process.exit(result.status ?? 1);"
+  ].join("\n"), { mode: 0o755 });
+  const env = { ...process.env, PATH: `${base}${path.delimiter}${process.env.PATH || ""}` };
+  const runCommit = (args: string[], variables = env) => spawnSync("git", [
+    "-c", "user.name=Test", "-c", "user.email=test@example.com", "-c", "commit.gpgsign=false", "commit", "-qm", "hook test", ...args
+  ], { cwd: primary, env: variables, encoding: "utf8" });
+
+  writeFileSync(path.join(pack, "app.txt"), "ordinary\n");
+  git(primary, ["add", "src/app.txt"]);
+  const ordinary = runCommit([]);
+  assert.equal(ordinary.status, 0, ordinary.stderr);
+  assert.doesNotMatch(ordinary.stdout + ordinary.stderr, /gate skipped/);
+
+  writeFileSync(path.join(pack, "outside.txt"), "unstaged scope violation\n");
+  const manualEnv: NodeJS.ProcessEnv = { ...env, GIT_INDEX_FILE: "manual-index" };
+  delete manualEnv.GIT_PREFIX;
+  execFileSync("git", ["read-tree", "HEAD"], { cwd: pack, env: manualEnv });
+  execFileSync("git", ["add", "outside.txt"], { cwd: pack, env: manualEnv });
+  const manual = spawnSync(process.execPath, [cli, "task", "gate", "--staged"], { cwd: pack, env: manualEnv, encoding: "utf8" });
+  assert.equal(manual.status, 2, manual.stderr);
+  assert.match(manual.stderr, /Outside the task write scope: outside\.txt/);
+
+  const all = runCommit(["-a"]);
+  assert.equal(all.status, 1, all.stderr);
+  assert.match(all.stdout + all.stderr, /Outside the task write scope: outside\.txt/);
+  git(primary, ["add", "src/outside.txt"]);
+  writeFileSync(path.join(pack, "app.txt"), "partial\n");
+  const partial = runCommit(["--", "src/app.txt"]);
+  assert.equal(partial.status, 0, partial.stderr);
+  assert.equal(git(primary, ["diff", "--cached", "--name-only"]), "src/outside.txt");
+
+  const alternateEnv = { ...env, GIT_INDEX_FILE: "alternate-index" };
+  execFileSync("git", ["read-tree", "HEAD"], { cwd: primary, env: alternateEnv });
+  writeFileSync(path.join(pack, "app.txt"), "alternate\n");
+  execFileSync("git", ["add", "src/app.txt"], { cwd: primary, env: alternateEnv });
+  const alternate = runCommit([], alternateEnv);
+  assert.equal(alternate.status, 0, alternate.stderr);
+  assert.equal(git(primary, ["show", "HEAD:src/app.txt"]), "alternate");
+
+  writeFileSync(path.join(linked, "outside.txt"), "foreign scope violation\n");
+  git(linked, ["add", "outside.txt"]);
+  const foreign = runCommit(["--allow-empty"], alternateEnv);
+  assert.equal(foreign.status, 1, foreign.stderr);
+  assert.match(foreign.stdout + foreign.stderr, /Outside repository linked write scope: outside\.txt/);
+
+  git(api, ["worktree", "remove", "--force", linked]);
+  const missing = runCommit(["--allow-empty"], alternateEnv);
+  assert.equal(missing.status, 1, missing.stderr);
+  assert.match(missing.stdout + missing.stderr, /Repository linked is unavailable/);
 });
 
 test("an explicitly bound nested checkout takes precedence over primary scope", t => {
@@ -347,6 +492,63 @@ test("checkout replacement at the same path cannot acquire the original binding 
   assert.equal(getCurrentPassport(primary)!.verification.status, "unknown");
   assert.equal(getCurrentPassport(primary)!.repositories![0]!.currentHead, task.repositories![0]!.currentHead);
   assert.ok(auditCurrentTask(primary).issues.some(issue => /api.*unavailable|identity|replaced/.test(issue.message)));
+});
+
+test("explicit recovery detaches a missing worktree or binds a replacement with fresh scope", t => {
+  const { base, primary, api, ui } = fixture(t);
+  const linked = path.join(base, "linked-recovery");
+  git(api, ["worktree", "add", "-qb", "integration", linked]);
+  const binding = { id: "linked", worktree: linked, writeScope: ["."] };
+  const task = startTask(primary, { title: "recover worktree", writeScope: ["src"], repositories: [binding] });
+  const evidence = addEvidence(primary, { content: "Partial checks on the original integration worktree" });
+  updateCurrentTaskVerification(primary, { status: "pending", evidence: [evidence.id] });
+  const run = (...args: string[]) => spawnSync(process.execPath, [cli, "task", ...args], { cwd: primary, encoding: "utf8" });
+  const recover = ["update", "--recover-repository", "linked", "--recovery-reason", "Recreated integration checkout"];
+  assert.match(run(...recover).stderr, /still available/);
+  git(api, ["worktree", "remove", linked]);
+  assert.throws(() => finalizeCurrentTask(primary, { status: "passed" }));
+  assert.equal(evaluateGate(primary, { mode: "block", staged: true }).decision, "block");
+
+  // Same path and HEAD in a different checkout must not silently inherit the old scope.
+  git(api, ["worktree", "add", "-q", linked, "integration"]);
+  assert.throws(() => updateCurrentTaskPassport(primary, { repositories: [binding] }), /identity|replaced/);
+  assert.equal(run(...recover, "--repository", JSON.stringify({ ...binding, id: "ui", worktree: ui })).status, 1);
+  assert.equal(run(...recover).status, 1, "a replacement at the old path requires explicit rebinding");
+  const rebound = run(...recover, "--repository", JSON.stringify({ ...binding, writeScope: ["src"] }));
+  assert.equal(rebound.status, 0, rebound.stderr);
+  const current = getCurrentPassport(primary)!;
+  assert.deepEqual(current.repositories![0]!.writeScope, ["src"]);
+  assert.notDeepEqual(current.repositories![0]!.identity, task.repositories![0]!.identity);
+  assert.equal(evaluateGate(primary, { mode: "block", files: [path.join(linked, "outside.txt")] }).decision, "block");
+  assert.equal(current.verification.status, "pending");
+  assert.deepEqual(current.verification.evidence, []);
+
+  git(api, ["worktree", "remove", linked]);
+  parkCurrentTask(primary);
+  assert.match(run(...recover).stderr, /active task/);
+  switchTask(primary, task.id);
+  const eventsPath = path.join(primary, ".agentpack/tasks", task.id, "events.jsonl");
+  renameSync(eventsPath, `${eventsPath}.saved`);
+  mkdirSync(eventsPath);
+  const beforeDetach = getCurrentPassport(primary);
+  assert.equal(run(...recover).status, 1, "recovery requires a writable audit trail");
+  assert.deepEqual(getCurrentPassport(primary), beforeDetach);
+  rmSync(eventsPath, { recursive: true });
+  renameSync(`${eventsPath}.saved`, eventsPath);
+  const detached = run("update", "--recover-repository", "linked", "--recovery-reason", "Worktree permanently retired");
+  assert.equal(detached.status, 0, detached.stderr);
+  assert.equal(getCurrentPassport(primary)!.schemaVersion, 1);
+  assert.equal(getCurrentPassport(primary)!.repositories, undefined);
+  assert.equal(finalizeCurrentTask(primary, { status: "accepted" }).status, "completed");
+
+  const events = readFileSync(eventsPath, "utf8").trim().split("\n").map(line => JSON.parse(line));
+  const recoveryEvents = events.filter(event => event.repositoryRecovery);
+  assert.equal(recoveryEvents.length, 2);
+  assert.deepEqual(recoveryEvents[0].repositoryRecovery.previous, task.repositories![0]);
+  assert.deepEqual(recoveryEvents[0].repositoryRecovery.previousVerification.evidence, [evidence.id]);
+  assert.deepEqual(recoveryEvents[0].repositories[0], current.repositories![0]);
+  assert.deepEqual(recoveryEvents[1].repositoryRecovery.previous, current.repositories![0]);
+  assert.equal(recoveryEvents[1].repositoryRecovery.reason, "Worktree permanently retired");
 });
 
 for (const parentId of ["primary", "api"] as const) {

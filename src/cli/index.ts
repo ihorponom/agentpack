@@ -588,6 +588,7 @@ Notes:
   task finalize prints advisories (uncommitted in-scope changes, remaining next actions, missing checkpoint); they never block.
   task gate checks the current passport lifecycle, write scope, and branch before edits or commits.
   Repeat --repository on task start/update with JSON {"id":"api","worktree":"../api","writeScope":["src"]}.
+  task update --recover-repository <id> --recovery-reason <text> detaches a missing checkout or rebinds it with one --repository using the same id.
   task gate --staged checks all bound checkouts; --repository <id> selects one (primary is reserved).
   task gate --client adapts native Claude, Codex, or Cursor pre-tool hook JSON on stdin.
   task gate warns by default; set "gateMode": "block" in .agentpack/config.json to enforce (exit code 2).
@@ -901,6 +902,14 @@ function taskCommand(root: string, rest: string[]): void {
       nextActions: toArray(parsed.options.next).map((item) => redactForRoot(root, item)),
       tags: toArray(parsed.options.tag)
     };
+    const recoverId = parsed.options["recover-repository"];
+    const recoveryReason = parsed.options["recovery-reason"];
+    if (recoverId !== undefined || recoveryReason !== undefined) {
+      if (typeof recoverId !== "string" || typeof recoveryReason !== "string") {
+        throw new Error("--recover-repository and --recovery-reason require one value each");
+      }
+      updateOptions.repositoryRecovery = { id: recoverId, reason: recoveryReason };
+    }
     if (optionValue(parsed.options, "objective")) {
       updateOptions.objective = redactForRoot(root, stringOption(parsed.options.objective));
     }

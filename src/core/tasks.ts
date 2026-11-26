@@ -1,6 +1,6 @@
 import { closeSync, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, readSync, realpathSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import { bindRepositories, formatRepositories, repositoryWarnings, snapshotRepositories, validRepositories, type RepositoryInput } from "./repositories.js";
+import { bindRepositories, formatRepositories, recoverRepository, repositoryWarnings, snapshotRepositories, validRepositories, type RepositoryInput, type RepositoryRecovery } from "./repositories.js";
 import { getGitInfo, listDirtyFiles } from "./git.js";
 import { normalizePath, resolveRegularFileWithin } from "./hash.js";
 import { createId } from "./ids.js";
@@ -75,6 +75,7 @@ export interface TaskUpdateOptions {
   constraints?: string[];
   writeScope?: string[];
   repositories?: RepositoryInput[];
+  repositoryRecovery?: RepositoryRecovery;
   nextActions?: string[];
   clearNextActions?: boolean;
   /** Replace constraints with the provided list; removed ones stay in the task-update event. */
@@ -429,11 +430,7 @@ export function switchTask(root: string, taskId: string, options: { parkCurrent?
         { relativePath: path.join("tasks", "current"), content: `${passport.id}\n`, mode: "replace" }
       ];
       const queueEvent = (id: string, type: string, payload: Record<string, unknown>): void => {
-        const relativePath = path.join("tasks", id, "events.jsonl");
-        const existingEvents = existsSync(taskEventsPath(root, id))
-          ? readFileSync(resolveRegularFileWithin(getPackPath(root), relativePath, "task events"), "utf8") : "";
-        const event = { id: createId("evt"), ts: new Date().toISOString(), type, ...payload };
-        files.push({ relativePath, content: `${existingEvents}${JSON.stringify(event)}\n`, mode: "replace" });
+        files.push(taskEventReplacement(root, id, type, payload));
       };
       queueEvent(parked.id, "task-park", {
         status: parked.status, objective: parked.objective, writeScope: parked.writeScope,
@@ -468,6 +465,7 @@ export function blockCurrentTask(root: string, reason = ""): TaskPassport {
 }
 
 export function updateCurrentTaskPassport(root: string, options: TaskUpdateOptions = {}): TaskPassport {
+  const recovery = options.repositoryRecovery;
   return patchCurrentTask(root, "task-update", (existing) => {
     const objective = options.objective?.trim() || "";
     const constraints = uniqueStrings(options.constraints || []);
@@ -475,16 +473,22 @@ export function updateCurrentTaskPassport(root: string, options: TaskUpdateOptio
     const nextActions = uniqueStrings(options.nextActions || []);
     const tags = uniqueStrings(options.tags || []);
 
-    if (!options.clearNextActions && !options.replaceConstraints && !hasTaskUpdate({ objective, constraints, writeScope, nextActions, tags, ...(options.repositories ? { repositories: options.repositories } : {}) }, options.risk)) {
+    if (!recovery && !options.clearNextActions && !options.replaceConstraints && !hasTaskUpdate({ objective, constraints, writeScope, nextActions, tags, ...(options.repositories ? { repositories: options.repositories } : {}) }, options.risk)) {
       throw new Error("task update requires at least one non-empty field");
     }
 
     const patch: Partial<TaskPassport> = {};
-    if (options.repositories?.length) {
+    if (recovery || options.repositories?.length) {
       if (existing.status !== "active" || FINAL_VERIFICATION_STATUSES.has(existing.verification.status)) {
         throw new Error("Repository bindings can only change on an active task with pending or unknown verification");
       }
-      patch.repositories = bindRepositories(root, existing.repositories || [], options.repositories);
+      patch.repositories = recovery
+        ? recoverRepository(root, existing.repositories || [], recovery, options.repositories || [])
+        : bindRepositories(root, existing.repositories || [], options.repositories!);
+      if (!patch.repositories.length && !existing.writeScope.length && !writeScope.length) {
+        throw new Error("Detaching the last repository requires an explicit primary write scope");
+      }
+      if (recovery) patch.verification = { status: "pending", evidence: [], summary: "" };
     }
     if (objective) {
       patch.objective = objective;
@@ -514,7 +518,7 @@ export function updateCurrentTaskPassport(root: string, options: TaskUpdateOptio
     }
 
     return patch;
-  });
+  }, recovery);
 }
 
 export function updateCurrentTaskVerification(root: string, options: TaskVerificationUpdateOptions = {}): TaskVerificationUpdateResult {
@@ -1238,7 +1242,8 @@ function updateCurrentTask(
 function patchCurrentTask(
   root: string,
   eventType: string,
-  patch: Partial<TaskPassport> | ((existing: TaskPassport) => Partial<TaskPassport>) = {}
+  patch: Partial<TaskPassport> | ((existing: TaskPassport) => Partial<TaskPassport>) = {},
+  recovery?: RepositoryRecovery
 ): TaskPassport {
   return withPackWriteLock(root, () => {
     const current = readCurrentTaskId(root);
@@ -1269,15 +1274,23 @@ function patchCurrentTask(
         : git.head,
       updatedAt: now
     };
+    if (resolvedPatch.repositories?.length === 0) {
+      delete passport.repositories;
+      passport.schemaVersion = SCHEMA_VERSION;
+    }
 
     if (passport.status === "completed" || passport.status === "abandoned") {
       passport.closedAt = passport.closedAt || now;
     }
 
-    writePassport(root, passport);
     const removedConstraints = existing.constraints.filter((item) => !passport.constraints.some((kept) => kept.trim() === item.trim()));
-    appendTaskEvent(root, passport.id, eventType, {
+    const event = {
       ...(removedConstraints.length > 0 ? { removedConstraints } : {}),
+      ...(recovery ? { repositoryRecovery: {
+        reason: redactForRoot(root, recovery.reason.trim()),
+        previous: existing.repositories!.find(repo => repo.id === recovery.id),
+        previousVerification: existing.verification
+      } } : {}),
       status: passport.status,
       objective: passport.objective,
       writeScope: passport.writeScope,
@@ -1287,7 +1300,16 @@ function patchCurrentTask(
       reason: passport.blockedReason || "",
       verificationStatus: passport.verification.status,
       evidence: passport.verification.evidence
-    });
+    };
+    if (recovery) {
+      writePackTransaction(root, [
+        { relativePath: path.join("tasks", passport.id, "passport.json"), content: `${JSON.stringify(passport, null, 2)}\n`, mode: "replace" },
+        taskEventReplacement(root, passport.id, eventType, event)
+      ]);
+    } else {
+      writePassport(root, passport);
+      appendTaskEvent(root, passport.id, eventType, event);
+    }
     return passport;
   });
 }
@@ -1461,6 +1483,14 @@ function appendTaskEvent(root: string, taskId: string, type: string, payload: Re
     mode: PACK_FILE_MODE
   });
   return event;
+}
+
+function taskEventReplacement(root: string, taskId: string, type: string, payload: Record<string, unknown>): PackTransactionFile {
+  const relativePath = path.join("tasks", taskId, "events.jsonl");
+  const existingEvents = existsSync(taskEventsPath(root, taskId))
+    ? readFileSync(resolveRegularFileWithin(getPackPath(root), relativePath, "task events"), "utf8") : "";
+  const event = { id: createId("evt"), ts: new Date().toISOString(), type, ...payload };
+  return { relativePath, content: `${existingEvents}${JSON.stringify(event)}\n`, mode: "replace" };
 }
 
 function normalizeWriteScope(root: string, writeScope: string[]): string[] {
