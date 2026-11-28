@@ -371,9 +371,11 @@ agentpack task review --base origin/main --reviewer claude
 agentpack task review --base origin/main --reviewer codex --criteria "Preserve retry behavior"
 ```
 
-Run from a clean checkout on the active Passport's branch after implementation,
-tests, and self-review. Pass the intended comparison ref, including the parent
-branch for a stacked change. The command resolves the merge base and HEAD,
+Run from a clean checkout with an active Passport after implementation, tests,
+and self-review. Pass the intended comparison ref, including the parent branch
+for a stacked change. The review is bound to commits, not to a branch name: if
+the checkout branch differs from the Passport branch, the command prints a
+warning and continues. The command resolves the merge base and HEAD,
 requires changed paths to fit the primary write scope, and sends the committed
 text diff, objective, constraints, risk, and optional criteria to the named
 provider. Choose an account authorized to receive that code. The local CLI uses
@@ -382,7 +384,8 @@ directory and supplies the diff as input. The calling agent runs tests and
 inspects code outside the diff. Binary and submodule changes need manual review.
 For a multi-repository Passport, the report covers the primary repository.
 
-The JSON includes the task ID, reviewer, merge base, and reviewed HEAD. A
+The JSON includes the task ID, reviewer, checkout branch, merge base, and
+reviewed HEAD. A
 completed report has `status: "reviewed"` and exit code 0, including when it
 contains findings. Read the findings, challenge, and limitations before making
 a decision. An incomplete result exits 1. Reasons include a detected usage

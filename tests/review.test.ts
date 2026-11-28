@@ -85,10 +85,34 @@ if (require("node:path").basename(process.cwd()).startsWith("agentpack-review-")
     const response = JSON.parse(result.stdout);
     assert.match(response.taskId, /^task_/);
     assert.deepEqual(response, {
-      taskId: response.taskId, baseSha: f.baseSha, headSha: f.headSha,
+      taskId: response.taskId, branch: "main", baseSha: f.baseSha, headSha: f.headSha,
       reviewer: provider, status: "reviewed", report
     });
+    assert.equal(result.stderr, "");
   }
+});
+
+test("task review warns on a branch that differs from the Passport and reviews its commits", (t) => {
+  const f = fixture(t);
+  f.stub("codex", `emit({type: "turn.started"});
+    emit({type: "item.completed", item: {type: "agent_message", text: ${JSON.stringify(JSON.stringify(report))}}});
+    emit({type: "turn.completed"});`);
+  f.git("switch", "-c", "stacked");
+  const result = f.review("codex");
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  const response = JSON.parse(result.stdout);
+  assert.equal(response.status, "reviewed");
+  assert.equal(response.branch, "stacked");
+  assert.equal(response.headSha, f.headSha);
+  assert.match(result.stderr, /checkout branch stacked differs from the Passport branch main/);
+
+  f.stub("codex", `child.execFileSync("git", ["switch", "-q", "main"], {cwd: ${JSON.stringify(f.root)}});
+    emit({type: "turn.started"});
+    emit({type: "item.completed", item: {type: "agent_message", text: ${JSON.stringify(JSON.stringify(report))}}});
+    emit({type: "turn.completed"});`);
+  const switched = f.review("codex");
+  assert.equal(switched.status, 1);
+  assert.equal(JSON.parse(switched.stdout).reason, "stale_snapshot");
 });
 
 test("task review reports exhausted usage and rejects partial output", (t) => {

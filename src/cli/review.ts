@@ -139,16 +139,19 @@ export function runTaskReview(root: string, options: ReviewOptions) {
   const clean = () => git("status", "--porcelain", "--untracked-files=normal").length === 0;
   if (!clean()) throw new Error("Review requires a clean checkout. Commit the candidate changes first.");
   const branch = () => git("rev-parse", "--abbrev-ref", "HEAD").trim();
-  if (passport.branch !== branch()) throw new Error("Checkout branch differs from the active Task Passport.");
+  const checkoutBranch = branch();
+  if (checkoutBranch !== passport.branch) {
+    process.stderr.write(`Warning: checkout branch ${checkoutBranch} differs from the Passport branch ${passport.branch}; the review is bound to the reported base and head commits.\n`);
+  }
   const head = () => git("rev-parse", "HEAD").trim();
   const headSha = head();
   const baseRef = git("rev-parse", "--verify", "--end-of-options", `${options.base}^{commit}`).trim();
   const baseSha = git("merge-base", baseRef, headSha).trim();
-  const metadata = { taskId: passport.id, reviewer: options.reviewer, baseSha, headSha };
+  const metadata = { taskId: passport.id, reviewer: options.reviewer, branch: checkoutBranch, baseSha, headSha };
   const current = () => {
     const active = getCurrentPassport(root);
     return active?.id === passport.id && active.updatedAt === passport.updatedAt
-      && active.status === "active" && branch() === passport.branch && head() === headSha && clean();
+      && active.status === "active" && branch() === checkoutBranch && head() === headSha && clean();
   };
   const diffArgs = ["--no-color", "--no-ext-diff", "--no-textconv", "--no-renames", "--ignore-submodules=none"];
   const files = git("diff", ...diffArgs, "--name-only", "-z", baseSha, headSha, "--")
